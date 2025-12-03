@@ -52,8 +52,17 @@ const defaultConfig = {
 };
 
 // 初始化配置文件
-if (!fs.existsSync(CONFIG_PATH)) {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2));
+try {
+  const stat = fs.statSync(CONFIG_PATH);
+  if (stat.isDirectory()) {
+    console.error('❌ 错误：config.json 是目录而非文件，正在删除并重建...');
+    fs.rmSync(CONFIG_PATH, { recursive: true, force: true });
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2));
+  }
+} catch (err) {
+  if (err.code === 'ENOENT') {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2));
+  }
 }
 
 // 连接 MongoDB
