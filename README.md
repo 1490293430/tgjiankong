@@ -32,22 +32,28 @@
 
 ## 🚀 快速开始（Debian 12 一键部署）
 
-适用于全新 Debian 12 VPS，自动安装 Docker、克隆私有仓库、写入 .env 并启动服务。
+适用于全新 Debian 12 VPS，自动安装 Docker、克隆仓库、写入 `.env` 并启动服务。
 
 ### 前置准备
 
 - Telegram API 凭证（https://my.telegram.org/apps 获取 `api_id` 和 `api_hash`）
-- GitHub Token（仅该私有仓库的 Contents: Read 权限）
 
-### 一键部署（推荐交互式，避免明文留痕）
+### 公共仓库：一行命令部署（推荐）
 
 ```bash
-# 安全输入变量（不留在 history）
+API_ID=你的API_ID \
+API_HASH=你的API_HASH \
+bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
+```
+
+### 私有仓库：使用 GitHub Token（可选）
+
+```bash
+# 交互式安全输入（避免留下历史）
 read -rsp "GitHub Token: " GH_TOKEN; echo
 read -rsp "Telegram API_ID: " API_ID; echo
 read -rsp "Telegram API_HASH: " API_HASH; echo
 
-# 拉取并执行安装脚本
 curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
    https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh \
    | GH_TOKEN="$GH_TOKEN" API_ID="$API_ID" API_HASH="$API_HASH" bash

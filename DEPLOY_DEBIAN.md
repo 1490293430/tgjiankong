@@ -2,6 +2,40 @@
 
 完整的 Telegram 监控系统在 Debian 12 上的部署教程。
 
+## ⚡️ 极简一键部署（Git 说明）
+
+公开仓库（无需 Token）：
+
+```bash
+API_ID=你的API_ID \
+API_HASH=你的API_HASH \
+bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
+```
+
+私有仓库（需 GitHub Token，仅 Contents: Read 权限）：
+
+```bash
+# 更安全的交互式，不在 history 留痕
+read -rsp "GitHub Token: " GH_TOKEN; echo
+read -rsp "Telegram API_ID: " API_ID; echo
+read -rsp "Telegram API_HASH: " API_HASH; echo
+
+curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+    https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh \
+    | GH_TOKEN="$GH_TOKEN" API_ID="$API_ID" API_HASH="$API_HASH" bash
+```
+
+可选：使用 SSH Deploy Key（免 Token 拉代码）
+- 在服务器生成密钥：`ssh-keygen -t ed25519 -C "vps-deploy" -f ~/.ssh/id_ed25519 -N ""`
+- 将公钥添加到 GitHub 仓库 Settings → Deploy keys（Read access）
+- 运行安装脚本并指定 SSH 模式：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh) -m ssh -i 你的API_ID -s 你的API_HASH
+```
+
+完成后访问 `http://你的服务器IP`，默认账号 `admin` / `admin123`（请尽快修改）。
+
 ## 📋 系统要求
 
 - Debian 12 (Bookworm)
