@@ -12,9 +12,9 @@ CONFIG_PATH = os.getenv("CONFIG_PATH", "/app/config.json")
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017/tglogs")
 API_URL = os.getenv("API_URL", "http://api:3000")
 
-# Telegram API 配置（请替换为你的）
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH", "")
+# Telegram API 配置（优先从配置文件读取，其次 ENV）
+ENV_API_ID = int(os.getenv("API_ID", "0"))
+ENV_API_HASH = os.getenv("API_HASH", "")
 SESSION_PATH = os.getenv("SESSION_PATH", "/app/session/telegram")
 
 # MongoDB 连接
@@ -23,9 +23,6 @@ db = mongo_client["tglogs"]
 logs_collection = db["logs"]
 
 print("✅ MongoDB 已连接")
-
-# Telegram 客户端
-client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
 
 def load_config():
     """加载配置文件"""
@@ -114,8 +111,7 @@ async def save_log(channel, channel_id, sender, message, keywords, message_id):
     except Exception as e:
         print(f"❌ 保存日志失败: {e}")
 
-@client.on(events.NewMessage)
-async def message_handler(event):
+async def message_handler(event, client):
     """消息处理器"""
     try:
         # 加载配置
@@ -218,21 +214,28 @@ async def main():
     """主函数"""
     print("🚀 正在启动 Telegram 监听服务...")
     
-    # 检查 API 配置
-    if API_ID == 0 or not API_HASH:
-        print("❌ 错误：请配置 API_ID 和 API_HASH 环境变量")
+    # 加载配置并读取 API 凭证
+    config = load_config()
+    cfg_api_id = int(str(config.get("telegram", {}).get("api_id", ENV_API_ID or 0)) or 0)
+    cfg_api_hash = str(config.get("telegram", {}).get("api_hash", ENV_API_HASH or ""))
+
+    if cfg_api_id == 0 or not cfg_api_hash:
+        print("❌ 错误：未配置 API_ID/API_HASH。请在 Web 后台的‘配置’页面填写并保存，或设置环境变量 API_ID/API_HASH。")
         print("📝 获取方式：https://my.telegram.org/apps")
         return
-    
-    # 启动客户端
+
+    # 创建并启动客户端
+    client = TelegramClient(SESSION_PATH, cfg_api_id, cfg_api_hash)
     await client.start()
-    
+
+    # 事件处理绑定
+    client.add_event_handler(lambda e: message_handler(e, client), events.NewMessage())
+
     # 获取当前用户信息
     me = await client.get_me()
     print(f"✅ 已登录为: {me.username or me.first_name} (ID: {me.id})")
     
-    # 加载配置并显示监控信息
-    config = load_config()
+    # 显示监控信息
     print(f"📊 监控配置:")
     print(f"  - 关键词: {len(config.get('keywords', []))} 个")
     print(f"  - 告警关键词: {len(config.get('alert_keywords', []))} 个")

@@ -349,6 +349,19 @@
             <div id="configMessage" class="success-message"></div>
             
             <div class="card">
+                <h2>Telegram API 凭证</h2>
+                <div class="form-group">
+                    <label>API_ID</label>
+                    <input type="number" id="tgApiId" placeholder="例如：1234567">
+                    <div class="hint">在 https://my.telegram.org/apps 创建应用后获取</div>
+                </div>
+                <div class="form-group">
+                    <label>API_HASH</label>
+                    <input type="text" id="tgApiHash" placeholder="例如：abcd1234efgh5678">
+                </div>
+            </div>
+
+            <div class="card">
                 <h2>监控关键词</h2>
                 <div class="form-group">
                     <label>普通关键词（每行一个）</label>
@@ -572,6 +585,10 @@
         async function loadConfig() {
             config = await apiRequest('/config');
             if (config) {
+                // Telegram API 凭证
+                document.getElementById('tgApiId').value = (config.telegram?.api_id ?? 0) || 0;
+                document.getElementById('tgApiHash').value = config.telegram?.api_hash || '';
+
                 document.getElementById('keywords').value = (config.keywords || []).join('\n');
                 document.getElementById('alertKeywords').value = (config.alert_keywords || []).join('\n');
                 document.getElementById('alertRegex').value = (config.alert_regex || []).join('\n');
@@ -603,6 +620,10 @@
         // 保存配置
         async function saveConfig() {
             const newConfig = {
+                telegram: {
+                    api_id: parseInt(document.getElementById('tgApiId').value) || 0,
+                    api_hash: document.getElementById('tgApiHash').value.trim()
+                },
                 keywords: document.getElementById('keywords').value.split('\n').filter(k => k.trim()),
                 alert_keywords: document.getElementById('alertKeywords').value.split('\n').filter(k => k.trim()),
                 alert_regex: document.getElementById('alertRegex').value.split('\n').filter(k => k.trim()),

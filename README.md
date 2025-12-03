@@ -41,8 +41,6 @@
 ### 公共仓库：一行命令部署（推荐）
 
 ```bash
-API_ID=你的API_ID \
-API_HASH=你的API_HASH \
 bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
 ```
 
@@ -51,20 +49,16 @@ bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/i
 ```bash
 # 交互式安全输入（避免留下历史）
 read -rsp "GitHub Token: " GH_TOKEN; echo
-read -rsp "Telegram API_ID: " API_ID; echo
-read -rsp "Telegram API_HASH: " API_HASH; echo
 
 curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
    https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh \
-   | GH_TOKEN="$GH_TOKEN" API_ID="$API_ID" API_HASH="$API_HASH" bash
+   | GH_TOKEN="$GH_TOKEN" bash
 ```
 
 或一次性非交互：
 
 ```bash
 GH_TOKEN=你的GitHubToken \
-API_ID=你的API_ID \
-API_HASH=你的API_HASH \
 bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
 ```
 
@@ -72,12 +66,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/i
 - 访问 `http://你的服务器IP` 打开后台
 - 默认账号：`admin`，默认密码：`admin123`（请立即修改）
 
-首次需要登录 Telegram（验证码）：
-
-```bash
-sudo docker compose exec telethon \
-   python -c "from telethon import TelegramClient; import os; c=TelegramClient('/app/session/telegram', int(os.getenv('API_ID')), os.getenv('API_HASH')); c.start(); print('Login done'); c.disconnect()"
-```
+首次启动步骤：
+- 在后台的“⚙️ 配置”页面填写 `API_ID` 与 `API_HASH` 并保存
+- 然后在“📝 日志”或“统计”页面上方提示处点击“登录 Telegram”，按验证码完成登录
 
 ## 📖 使用指南
 

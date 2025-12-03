@@ -26,6 +26,10 @@ const defaultConfig = {
   alert_keywords: [],
   alert_regex: [],
   alert_target: '',
+  telegram: {
+    api_id: 0,
+    api_hash: ''
+  },
   alert_actions: {
     telegram: true,
     email: {
@@ -139,9 +143,16 @@ app.get('/api/config', authMiddleware, (req, res) => {
 app.post('/api/config', authMiddleware, (req, res) => {
   try {
     const currentConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    // 校验 telegram 字段
+    const incoming = { ...req.body };
+    if (incoming.telegram) {
+      incoming.telegram.api_id = Number(incoming.telegram.api_id || 0);
+      incoming.telegram.api_hash = String(incoming.telegram.api_hash || '');
+    }
+
     const newConfig = {
       ...currentConfig,
-      ...req.body,
+      ...incoming,
       admin: currentConfig.admin // 保持管理员配置不变
     };
     
