@@ -12,7 +12,7 @@ REPO_OWNER="1490293430"
 REPO_NAME="tgjiankong"
 BRANCH="main"
 APP_DIR="/opt/telegram-monitor"
-MODE="https"   # https|ssh|codeload (https for private with token; codeload for public)
+MODE="codeload"   # default: codeload for public; use https with GH_TOKEN for private
 
 usage() {
   cat <<EOF

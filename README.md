@@ -44,6 +44,12 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
 ```
 
+如遇 GH_TOKEN 提示，可强制使用源码包模式：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh) -m codeload
+```
+
 ### 私有仓库：使用 GitHub Token（可选）
 
 ```bash
