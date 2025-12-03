@@ -337,6 +337,70 @@ ${messageId ? `👉 跳转链接：t.me/c/${channelId}/${messageId}` : ''}`;
   }
 });
 
+// 测试告警（受保护）：使用当前配置发送一条测试邮件/Webhook
+app.post('/api/alert/test', authMiddleware, async (req, res) => {
+  try {
+    const config = loadConfig();
+    const actions = config.alert_actions || {};
+
+    const keyword = 'TEST_ALERT';
+    const message = 'This is a test alert from tg monitor.';
+    const from = req.user?.username || 'tester';
+    const channel = 'test-channel';
+    const channelId = 'test-channel-id';
+    const messageId = Date.now();
+
+    const alertMessage = `⚠️ 测试告警
+
+来源：${channel} (${channelId})
+发送者：${from}
+关键词：${keyword}
+时间：${new Date().toLocaleString('zh-CN')}
+
+消息内容：
+${message}`;
+
+    const result = { telegram: 'handled-by-telethon', email: null, webhook: null };
+
+    // 邮件测试
+    if (actions.email && actions.email.enable) {
+      try {
+        await sendEmail(actions.email, '⚠️ Telegram 监控测试告警', alertMessage);
+        result.email = 'sent';
+      } catch (e) {
+        result.email = `error: ${e.message}`;
+      }
+    } else {
+      result.email = 'disabled';
+    }
+
+    // Webhook 测试
+    if (actions.webhook && actions.webhook.enable && actions.webhook.url) {
+      try {
+        await axios.post(actions.webhook.url, {
+          type: 'telegram_alert_test',
+          keyword,
+          message,
+          from,
+          channel,
+          channelId,
+          messageId,
+          timestamp: new Date().toISOString()
+        });
+        result.webhook = 'sent';
+      } catch (e) {
+        result.webhook = `error: ${e.message}`;
+      }
+    } else {
+      result.webhook = 'disabled';
+    }
+
+    res.json({ status: 'ok', result });
+  } catch (error) {
+    res.status(500).json({ error: '测试告警失败：' + error.message });
+  }
+});
+
 // 发送邮件函数
 async function sendEmail(emailConfig, subject, text) {
   const transporter = nodemailer.createTransport({

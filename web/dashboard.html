@@ -442,6 +442,10 @@
                         <input type="url" id="webhookUrl" placeholder="https://your-webhook-endpoint.com/alert">
                     </div>
                 </div>
+                <div style="margin-top: 12px;">
+                    <button class="btn btn-secondary" onclick="testAlert()">📩 发送测试告警</button>
+                    <span id="testAlertMsg" style="margin-left: 10px; color: #666;"></span>
+                </div>
             </div>
             
             <button class="btn btn-primary" onclick="saveConfig()">💾 保存配置</button>
@@ -668,6 +672,36 @@
                 msg.textContent = '❌ 保存失败：' + (result?.error || '未知错误');
                 msg.className = 'error-message';
                 msg.style.display = 'block';
+            }
+        }
+
+        // 发送测试告警
+        async function testAlert() {
+            const token = checkAuth();
+            if (!token) return;
+            const el = document.getElementById('testAlertMsg');
+            el.style.color = '#666';
+            el.textContent = '正在发送测试告警...';
+            try {
+                const resp = await fetch(`${API_URL}/alert/test`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+                const data = await resp.json();
+                if (resp.ok && data && data.status === 'ok') {
+                    const r = data.result || {};
+                    el.style.color = '#16a34a';
+                    el.textContent = `完成：email=${r.email}; webhook=${r.webhook}`;
+                } else {
+                    el.style.color = '#dc2626';
+                    el.textContent = `失败：${data?.error || '未知错误'}`;
+                }
+            } catch (err) {
+                el.style.color = '#dc2626';
+                el.textContent = `失败：${err.message}`;
             }
         }
         
