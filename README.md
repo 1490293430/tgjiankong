@@ -30,89 +30,48 @@
                     └────────────────┘
 ```
 
-## 🚀 快速开始
+## 🚀 快速开始（Debian 12 一键部署）
 
-### 前置要求
+适用于全新 Debian 12 VPS，自动安装 Docker、克隆私有仓库、写入 .env 并启动服务。
 
-- Docker 20.10+
-- Docker Compose 1.29+
-- Telegram API 凭证（从 https://my.telegram.org/apps 获取）
+### 前置准备
 
-### 1. 克隆或下载项目
+- Telegram API 凭证（https://my.telegram.org/apps 获取 `api_id` 和 `api_hash`）
+- GitHub Token（仅该私有仓库的 Contents: Read 权限）
 
-```bash
-git clone <your-repo-url>
-cd telegram-monitor
-```
-
-### 2. 配置环境变量
-
-复制环境变量模板并编辑：
+### 一键部署（推荐交互式，避免明文留痕）
 
 ```bash
-copy .env.example .env
+# 安全输入变量（不留在 history）
+read -rsp "GitHub Token: " GH_TOKEN; echo
+read -rsp "Telegram API_ID: " API_ID; echo
+read -rsp "Telegram API_HASH: " API_HASH; echo
+
+# 拉取并执行安装脚本
+curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+   https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh \
+   | GH_TOKEN="$GH_TOKEN" API_ID="$API_ID" API_HASH="$API_HASH" bash
 ```
 
-编辑 `.env` 文件，填入你的 Telegram API 配置：
-
-```env
-API_ID=你的API_ID
-API_HASH=你的API_HASH
-JWT_SECRET=自定义一个随机密钥
-WEB_PORT=80
-```
-
-> **获取 Telegram API 凭证：**
-> 1. 访问 https://my.telegram.org/apps
-> 2. 使用你的手机号登录
-> 3. 创建应用，获取 `api_id` 和 `api_hash`
-
-### 3. 启动服务
+或一次性非交互：
 
 ```bash
-docker-compose up -d
+GH_TOKEN=你的GitHubToken \
+API_ID=你的API_ID \
+API_HASH=你的API_HASH \
+bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
 ```
 
-等待所有服务启动完成（首次启动需要下载镜像，约 3-5 分钟）。
+完成后：
+- 访问 `http://你的服务器IP` 打开后台
+- 默认账号：`admin`，默认密码：`admin123`（请立即修改）
 
-### 4. 首次登录 Telegram
-
-由于 Telethon 需要登录 Telegram 账号，首次启动需要进行验证：
+首次需要登录 Telegram（验证码）：
 
 ```bash
-# 查看 telethon 服务日志
-docker-compose logs -f telethon
+sudo docker compose exec telethon \
+   python -c "from telethon import TelegramClient; import os; c=TelegramClient('/app/session/telegram', int(os.getenv('API_ID')), os.getenv('API_HASH')); c.start(); print('Login done'); c.disconnect()"
 ```
-
-按照提示输入手机号和验证码：
-
-```bash
-# 进入容器交互模式
-docker exec -it tg_listener python monitor.py
-```
-
-或者在主机上运行验证脚本（推荐）：
-
-```bash
-# Windows PowerShell
-docker-compose exec telethon python -c "from telethon import TelegramClient; import os; client = TelegramClient('/app/session/telegram', int(os.getenv('API_ID')), os.getenv('API_HASH')); client.start()"
-```
-
-验证完成后，session 文件会保存在 `data/session/` 目录中。
-
-### 5. 访问 Web 界面
-
-打开浏览器访问：
-
-```
-http://localhost
-```
-
-**默认登录信息：**
-- 用户名：`admin`
-- 密码：`admin123`
-
-> ⚠️ **安全提示**：首次登录后请立即修改默认密码！
 
 ## 📖 使用指南
 
