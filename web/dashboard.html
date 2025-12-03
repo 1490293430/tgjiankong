@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>控制面板 - Telegram 监控系统</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f5f7fa;
+            color: #333;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 40px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header h1 {
+            font-size: 24px;
+        }
+        
+        .header .user-info {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        
+        .btn-logout {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            border: none;
+            padding: 8px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .btn-logout:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+        
+        .nav-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            background: white;
+            padding: 10px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        
+        .nav-tab {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 15px;
+            font-weight: 500;
+            color: #666;
+            transition: all 0.3s;
+        }
+        
+        .nav-tab.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .nav-tab:hover:not(.active) {
+            background: #f0f0f0;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        
+        .stat-card h3 {
+            color: #666;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 12px;
+        }
+        
+        .stat-card .number {
+            font-size: 32px;
+            font-weight: 700;
+            color: #667eea;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+        
+        .card h2 {
+            font-size: 20px;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: #555;
+        }
+        
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .form-group textarea {
+            min-height: 100px;
+            resize: vertical;
+            font-family: monospace;
+        }
+        
+        .form-group .hint {
+            font-size: 13px;
+            color: #999;
+            margin-top: 4px;
+        }
+        
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+        }
+        
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #666;
+        }
+        
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+        
+        .log-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .log-table th,
+        .log-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        .log-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #555;
+        }
+        
+        .log-table tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .keyword-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            background: #667eea;
+            color: white;
+            border-radius: 12px;
+            font-size: 12px;
+            margin: 2px;
+        }
+        
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        .pagination button {
+            padding: 8px 16px;
+            border: 2px solid #e0e0e0;
+            background: white;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .pagination button:hover:not(:disabled) {
+            border-color: #667eea;
+            color: #667eea;
+        }
+        
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .pagination .page-info {
+            color: #666;
+        }
+        
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 10px 0;
+        }
+        
+        .checkbox-group input[type="checkbox"] {
+            width: auto;
+        }
+        
+        .success-message,
+        .error-message {
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .success-message {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📱 Telegram 监控系统</h1>
+        <div class="user-info">
+            <span id="username"></span>
+            <button class="btn-logout" onclick="logout()">退出登录</button>
+        </div>
+    </div>
+    
+    <div class="container">
+        <div class="nav-tabs">
+            <button class="nav-tab active" onclick="switchTab('dashboard')">📊 仪表盘</button>
+            <button class="nav-tab" onclick="switchTab('config')">⚙️ 配置</button>
+            <button class="nav-tab" onclick="switchTab('logs')">📝 日志</button>
+            <button class="nav-tab" onclick="switchTab('settings')">🔐 设置</button>
+        </div>
+        
+        <!-- 仪表盘 -->
+        <div id="dashboard" class="tab-content active">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>总消息数</h3>
+                    <div class="number" id="totalLogs">-</div>
+                </div>
+                <div class="stat-card">
+                    <h3>今日消息</h3>
+                    <div class="number" id="todayLogs">-</div>
+                </div>
+                <div class="stat-card">
+                    <h3>告警次数</h3>
+                    <div class="number" id="alertedLogs">-</div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>最近日志</h2>
+                <div id="recentLogs" class="loading">加载中...</div>
+            </div>
+        </div>
+        
+        <!-- 配置 -->
+        <div id="config" class="tab-content">
+            <div id="configMessage" class="success-message"></div>
+            
+            <div class="card">
+                <h2>监控关键词</h2>
+                <div class="form-group">
+                    <label>普通关键词（每行一个）</label>
+                    <textarea id="keywords" placeholder="例如：&#10;关键词1&#10;关键词2"></textarea>
+                    <div class="hint">监控到包含这些关键词的消息时会记录</div>
+                </div>
+                
+                <div class="form-group">
+                    <label>告警关键词（每行一个）</label>
+                    <textarea id="alertKeywords" placeholder="例如：&#10;错误&#10;error&#10;fail"></textarea>
+                    <div class="hint">匹配这些关键词时会触发告警通知</div>
+                </div>
+                
+                <div class="form-group">
+                    <label>正则表达式（每行一个）</label>
+                    <textarea id="alertRegex" placeholder="例如：&#10;错误.+失败&#10;订单.*取消"></textarea>
+                    <div class="hint">支持正则表达式匹配，更灵活的规则</div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>监控频道</h2>
+                <div class="form-group">
+                    <label>频道 ID 列表（每行一个）</label>
+                    <textarea id="channels" placeholder="例如：&#10;-1001234567890&#10;-1009876543210"></textarea>
+                    <div class="hint">留空则监控所有消息。可在 Telegram 中获取频道 ID</div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>告警配置</h2>
+                <div class="form-group">
+                    <label>Telegram 告警目标</label>
+                    <input type="text" id="alertTarget" placeholder="your_telegram_id 或 @username">
+                    <div class="hint">触发告警时会发送到这个账号</div>
+                </div>
+                
+                <div class="checkbox-group">
+                    <input type="checkbox" id="enableEmail">
+                    <label>启用邮件告警</label>
+                </div>
+                
+                <div id="emailConfig" style="display: none; margin-left: 30px;">
+                    <div class="form-group">
+                        <label>SMTP 服务器</label>
+                        <input type="text" id="smtpHost" placeholder="smtp.gmail.com">
+                    </div>
+                    <div class="form-group">
+                        <label>SMTP 端口</label>
+                        <input type="number" id="smtpPort" value="465">
+                    </div>
+                    <div class="form-group">
+                        <label>邮箱账号</label>
+                        <input type="email" id="emailUsername">
+                    </div>
+                    <div class="form-group">
+                        <label>邮箱密码</label>
+                        <input type="password" id="emailPassword">
+                    </div>
+                    <div class="form-group">
+                        <label>接收邮箱</label>
+                        <input type="email" id="emailTo">
+                    </div>
+                </div>
+                
+                <div class="checkbox-group">
+                    <input type="checkbox" id="enableWebhook">
+                    <label>启用 Webhook 告警</label>
+                </div>
+                
+                <div id="webhookConfig" style="display: none; margin-left: 30px;">
+                    <div class="form-group">
+                        <label>Webhook URL</label>
+                        <input type="url" id="webhookUrl" placeholder="https://your-webhook-endpoint.com/alert">
+                    </div>
+                </div>
+            </div>
+            
+            <button class="btn btn-primary" onclick="saveConfig()">💾 保存配置</button>
+        </div>
+        
+        <!-- 日志 -->
+        <div id="logs" class="tab-content">
+            <div class="card">
+                <h2>日志记录</h2>
+                <div class="form-group">
+                    <input type="text" id="searchKeyword" placeholder="搜索关键词...">
+                </div>
+                <button class="btn btn-primary" onclick="loadLogs()">🔍 搜索</button>
+                
+                <div id="logsTable" class="loading" style="margin-top: 20px;">加载中...</div>
+                
+                <div class="pagination" id="pagination" style="display: none;">
+                    <button onclick="changePage(-1)">上一页</button>
+                    <span class="page-info">第 <span id="currentPage">1</span> / <span id="totalPages">1</span> 页</span>
+                    <button onclick="changePage(1)">下一页</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 设置 -->
+        <div id="settings" class="tab-content">
+            <div id="settingsMessage" class="success-message"></div>
+            
+            <div class="card">
+                <h2>修改密码</h2>
+                <div class="form-group">
+                    <label>原密码</label>
+                    <input type="password" id="oldPassword">
+                </div>
+                <div class="form-group">
+                    <label>新密码</label>
+                    <input type="password" id="newPassword">
+                </div>
+                <div class="form-group">
+                    <label>确认新密码</label>
+                    <input type="password" id="confirmPassword">
+                </div>
+                <button class="btn btn-primary" onclick="changePassword()">🔐 修改密码</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = '/api';
+        let currentPage = 1;
+        let config = {};
+        
+        // 检查登录
+        function checkAuth() {
+            const token = localStorage.getItem('token');
+            if (!token) {
+                window.location.href = 'index.html';
+                return false;
+            }
+            return token;
+        }
+        
+        // API 请求
+        async function apiRequest(endpoint, options = {}) {
+            const token = checkAuth();
+            if (!token) return;
+            
+            const headers = {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+                ...options.headers
+            };
+            
+            try {
+                const response = await fetch(`${API_URL}${endpoint}`, {
+                    ...options,
+                    headers
+                });
+                
+                if (response.status === 401) {
+                    localStorage.removeItem('token');
+                    window.location.href = 'index.html';
+                    return;
+                }
+                
+                return await response.json();
+            } catch (error) {
+                console.error('API Error:', error);
+                return null;
+            }
+        }
+        
+        // 切换标签
+        function switchTab(tabName) {
+            document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            
+            event.target.classList.add('active');
+            document.getElementById(tabName).classList.add('active');
+            
+            if (tabName === 'dashboard') {
+                loadStats();
+                loadRecentLogs();
+            } else if (tabName === 'config') {
+                loadConfig();
+            } else if (tabName === 'logs') {
+                loadLogs();
+            }
+        }
+        
+        // 加载统计信息
+        async function loadStats() {
+            const data = await apiRequest('/stats');
+            if (data) {
+                document.getElementById('totalLogs').textContent = data.total || 0;
+                document.getElementById('todayLogs').textContent = data.todayCount || 0;
+                document.getElementById('alertedLogs').textContent = data.alertedCount || 0;
+            }
+        }
+        
+        // 加载最近日志
+        async function loadRecentLogs() {
+            const data = await apiRequest('/logs?page=1&pageSize=10');
+            const container = document.getElementById('recentLogs');
+            
+            if (data && data.logs && data.logs.length > 0) {
+                let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>关键词</th><th>消息</th></tr></thead><tbody>';
+                data.logs.forEach(log => {
+                    const keywords = log.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('');
+                    html += `<tr>
+                        <td>${new Date(log.time).toLocaleString('zh-CN')}</td>
+                        <td>${log.channel}</td>
+                        <td>${keywords}</td>
+                        <td>${log.message.substring(0, 100)}${log.message.length > 100 ? '...' : ''}</td>
+                    </tr>`;
+                });
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } else {
+                container.innerHTML = '<p style="text-align: center; color: #999;">暂无日志</p>';
+            }
+        }
+        
+        // 加载配置
+        async function loadConfig() {
+            config = await apiRequest('/config');
+            if (config) {
+                document.getElementById('keywords').value = (config.keywords || []).join('\n');
+                document.getElementById('alertKeywords').value = (config.alert_keywords || []).join('\n');
+                document.getElementById('alertRegex').value = (config.alert_regex || []).join('\n');
+                document.getElementById('channels').value = (config.channels || []).join('\n');
+                document.getElementById('alertTarget').value = config.alert_target || '';
+                
+                const emailEnable = config.alert_actions?.email?.enable || false;
+                const webhookEnable = config.alert_actions?.webhook?.enable || false;
+                
+                document.getElementById('enableEmail').checked = emailEnable;
+                document.getElementById('enableWebhook').checked = webhookEnable;
+                
+                if (emailEnable && config.alert_actions.email) {
+                    document.getElementById('smtpHost').value = config.alert_actions.email.smtp_host || '';
+                    document.getElementById('smtpPort').value = config.alert_actions.email.smtp_port || 465;
+                    document.getElementById('emailUsername').value = config.alert_actions.email.username || '';
+                    document.getElementById('emailPassword').value = config.alert_actions.email.password || '';
+                    document.getElementById('emailTo').value = config.alert_actions.email.to || '';
+                    document.getElementById('emailConfig').style.display = 'block';
+                }
+                
+                if (webhookEnable && config.alert_actions.webhook) {
+                    document.getElementById('webhookUrl').value = config.alert_actions.webhook.url || '';
+                    document.getElementById('webhookConfig').style.display = 'block';
+                }
+            }
+        }
+        
+        // 保存配置
+        async function saveConfig() {
+            const newConfig = {
+                keywords: document.getElementById('keywords').value.split('\n').filter(k => k.trim()),
+                alert_keywords: document.getElementById('alertKeywords').value.split('\n').filter(k => k.trim()),
+                alert_regex: document.getElementById('alertRegex').value.split('\n').filter(k => k.trim()),
+                channels: document.getElementById('channels').value.split('\n').filter(c => c.trim()),
+                alert_target: document.getElementById('alertTarget').value.trim(),
+                alert_actions: {
+                    telegram: true,
+                    email: {
+                        enable: document.getElementById('enableEmail').checked,
+                        smtp_host: document.getElementById('smtpHost').value,
+                        smtp_port: parseInt(document.getElementById('smtpPort').value) || 465,
+                        username: document.getElementById('emailUsername').value,
+                        password: document.getElementById('emailPassword').value,
+                        to: document.getElementById('emailTo').value
+                    },
+                    webhook: {
+                        enable: document.getElementById('enableWebhook').checked,
+                        url: document.getElementById('webhookUrl').value
+                    }
+                }
+            };
+            
+            const result = await apiRequest('/config', {
+                method: 'POST',
+                body: JSON.stringify(newConfig)
+            });
+            
+            const msg = document.getElementById('configMessage');
+            if (result && result.status === 'ok') {
+                msg.textContent = '✅ 配置保存成功！';
+                msg.className = 'success-message';
+                msg.style.display = 'block';
+                setTimeout(() => msg.style.display = 'none', 3000);
+            } else {
+                msg.textContent = '❌ 保存失败：' + (result?.error || '未知错误');
+                msg.className = 'error-message';
+                msg.style.display = 'block';
+            }
+        }
+        
+        // 加载日志
+        async function loadLogs() {
+            const keyword = document.getElementById('searchKeyword').value;
+            const data = await apiRequest(`/logs?page=${currentPage}&pageSize=20&keyword=${encodeURIComponent(keyword)}`);
+            
+            const container = document.getElementById('logsTable');
+            const pagination = document.getElementById('pagination');
+            
+            if (data && data.logs && data.logs.length > 0) {
+                let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>发送者</th><th>关键词</th><th>消息内容</th></tr></thead><tbody>';
+                data.logs.forEach(log => {
+                    const keywords = log.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('');
+                    html += `<tr>
+                        <td>${new Date(log.time).toLocaleString('zh-CN')}</td>
+                        <td>${log.channel}</td>
+                        <td>${log.sender}</td>
+                        <td>${keywords}</td>
+                        <td>${log.message.substring(0, 150)}${log.message.length > 150 ? '...' : ''}</td>
+                    </tr>`;
+                });
+                html += '</tbody></table>';
+                container.innerHTML = html;
+                
+                document.getElementById('currentPage').textContent = data.page;
+                document.getElementById('totalPages').textContent = data.totalPages;
+                pagination.style.display = 'flex';
+            } else {
+                container.innerHTML = '<p style="text-align: center; color: #999; padding: 40px;">暂无日志</p>';
+                pagination.style.display = 'none';
+            }
+        }
+        
+        // 切换页码
+        function changePage(delta) {
+            currentPage += delta;
+            if (currentPage < 1) currentPage = 1;
+            loadLogs();
+        }
+        
+        // 修改密码
+        async function changePassword() {
+            const oldPassword = document.getElementById('oldPassword').value;
+            const newPassword = document.getElementById('newPassword').value;
+            const confirmPassword = document.getElementById('confirmPassword').value;
+            
+            if (newPassword !== confirmPassword) {
+                alert('两次输入的新密码不一致！');
+                return;
+            }
+            
+            if (newPassword.length < 6) {
+                alert('新密码长度不能少于6位！');
+                return;
+            }
+            
+            const result = await apiRequest('/auth/change-password', {
+                method: 'POST',
+                body: JSON.stringify({ oldPassword, newPassword })
+            });
+            
+            const msg = document.getElementById('settingsMessage');
+            if (result && result.status === 'ok') {
+                msg.textContent = '✅ 密码修改成功！';
+                msg.className = 'success-message';
+                msg.style.display = 'block';
+                
+                document.getElementById('oldPassword').value = '';
+                document.getElementById('newPassword').value = '';
+                document.getElementById('confirmPassword').value = '';
+                
+                setTimeout(() => msg.style.display = 'none', 3000);
+            } else {
+                msg.textContent = '❌ 修改失败：' + (result?.error || '未知错误');
+                msg.className = 'error-message';
+                msg.style.display = 'block';
+            }
+        }
+        
+        // 退出登录
+        function logout() {
+            localStorage.removeItem('token');
+            localStorage.removeItem('username');
+            window.location.href = 'index.html';
+        }
+        
+        // 邮件/Webhook 复选框事件
+        document.getElementById('enableEmail').addEventListener('change', (e) => {
+            document.getElementById('emailConfig').style.display = e.target.checked ? 'block' : 'none';
+        });
+        
+        document.getElementById('enableWebhook').addEventListener('change', (e) => {
+            document.getElementById('webhookConfig').style.display = e.target.checked ? 'block' : 'none';
+        });
+        
+        // 初始化
+        checkAuth();
+        document.getElementById('username').textContent = localStorage.getItem('username') || 'Admin';
+        loadStats();
+        loadRecentLogs();
+    </script>
+</body>
+</html>
