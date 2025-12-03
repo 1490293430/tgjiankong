@@ -363,6 +363,10 @@
 
             <div class="card">
                 <h2>监控关键词</h2>
+                <div class="checkbox-group" style="margin-bottom: 10px;">
+                    <input type="checkbox" id="logAllMessages">
+                    <label for="logAllMessages">记录所有消息（不依赖关键词匹配）</label>
+                </div>
                 <div class="form-group">
                     <label>普通关键词（每行一个）</label>
                     <textarea id="keywords" placeholder="例如：&#10;关键词1&#10;关键词2"></textarea>
@@ -588,6 +592,8 @@
                 // Telegram API 凭证
                 document.getElementById('tgApiId').value = (config.telegram?.api_id ?? 0) || 0;
                 document.getElementById('tgApiHash').value = config.telegram?.api_hash || '';
+                // 记录所有消息开关
+                document.getElementById('logAllMessages').checked = !!config.log_all_messages;
 
                 document.getElementById('keywords').value = (config.keywords || []).join('\n');
                 document.getElementById('alertKeywords').value = (config.alert_keywords || []).join('\n');
@@ -624,6 +630,7 @@
                     api_id: parseInt(document.getElementById('tgApiId').value) || 0,
                     api_hash: document.getElementById('tgApiHash').value.trim()
                 },
+                log_all_messages: document.getElementById('logAllMessages').checked,
                 keywords: document.getElementById('keywords').value.split('\n').filter(k => k.trim()),
                 alert_keywords: document.getElementById('alertKeywords').value.split('\n').filter(k => k.trim()),
                 alert_regex: document.getElementById('alertRegex').value.split('\n').filter(k => k.trim()),

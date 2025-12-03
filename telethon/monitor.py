@@ -116,6 +116,7 @@ async def message_handler(event, client):
     try:
         # 加载配置
         config = load_config()
+        log_all = bool(config.get("log_all_messages", False))
         
         # 获取消息内容
         text = event.raw_text or ""
@@ -164,18 +165,20 @@ async def message_handler(event, client):
                 except re.error:
                     pass
         
-        # 如果有匹配，保存日志
-        if matched_keywords:
+        # 如果关键词命中或开启全量记录，则保存日志
+        if matched_keywords or log_all:
             await save_log(
                 channel_name,
                 channel_id,
                 sender,
                 text,
-                matched_keywords,
+                matched_keywords if matched_keywords else [],
                 event.id
             )
-            
-            print(f"🎯 监控触发 | 频道: {channel_name} | 关键词: {matched_keywords}")
+            if matched_keywords:
+                print(f"🎯 监控触发 | 频道: {channel_name} | 关键词: {matched_keywords}")
+            elif log_all:
+                print(f"📝 已记录消息（全量）| 频道: {channel_name}")
             
             # 如果有告警关键词，发送告警
             if alert_keyword:
@@ -241,6 +244,7 @@ async def main():
     print(f"  - 告警关键词: {len(config.get('alert_keywords', []))} 个")
     print(f"  - 正则表达式: {len(config.get('alert_regex', []))} 个")
     print(f"  - 监控频道: {len(config.get('channels', []))} 个")
+    print(f"  - 全量记录: {'开启' if config.get('log_all_messages') else '关闭'}")
     
     if not config.get('channels'):
         print("⚠️  警告：未配置监控频道，将监控所有消息")
