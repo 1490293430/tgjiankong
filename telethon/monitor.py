@@ -134,12 +134,25 @@ async def message_handler(event, client):
         if monitored_channels and channel_id not in monitored_channels:
             return
         
-        # 获取发送者信息
+        # 获取发送者信息（优先从 get_sender 获取，回退到 sender_id 或频道名）
         sender = "Unknown"
-        if event.sender:
-            sender = getattr(event.sender, 'username', None) or \
-                     getattr(event.sender, 'first_name', None) or \
-                     str(event.sender.id)
+        try:
+            sender_entity = await event.get_sender()
+        except Exception:
+            sender_entity = None
+
+        if sender_entity:
+            username = getattr(sender_entity, 'username', None)
+            first_name = getattr(sender_entity, 'first_name', None)
+            last_name = getattr(sender_entity, 'last_name', None)
+            full_name = ' '.join([n for n in [first_name, last_name] if n]) if (first_name or last_name) else None
+            sender = username or full_name or str(getattr(sender_entity, 'id', '') or '')
+        else:
+            sid = getattr(event, 'sender_id', None)
+            if sid:
+                sender = str(sid)
+            else:
+                sender = channel_name or "Unknown"
         
         # 检查普通关键词
         matched_keywords = []
