@@ -136,6 +136,42 @@ fi
 
 mkdir -p data/mongo data/session logs/api logs/telethon
 
+# Create default config.json if not exists (prevent Docker from creating it as directory)
+if [ ! -f backend/config.json ]; then
+  cat > backend/config.json << 'CONFIGEOF'
+{
+  "keywords": [],
+  "channels": [],
+  "alert_keywords": [],
+  "alert_regex": [],
+  "alert_target": "",
+  "telegram": {
+    "api_id": 0,
+    "api_hash": ""
+  },
+  "alert_actions": {
+    "telegram": true,
+    "email": {
+      "enable": false,
+      "smtp_host": "",
+      "smtp_port": 465,
+      "username": "",
+      "password": "",
+      "to": ""
+    },
+    "webhook": {
+      "enable": false,
+      "url": ""
+    }
+  },
+  "admin": {
+    "username": "admin",
+    "password_hash": "$2b$10$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36Q6H2V.L7Bl6h8zXRDRJJe"
+  }
+}
+CONFIGEOF
+fi
+
 # Up containers
 echo "[6/6] Starting services..."
 sudo docker compose up -d
