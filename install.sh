@@ -12,7 +12,7 @@ REPO_OWNER="1490293430"
 REPO_NAME="tgjiankong"
 BRANCH="main"
 APP_DIR="/opt/telegram-monitor"
-MODE="https"   # https or ssh (https for private repo via token)
+MODE="https"   # https|ssh|codeload (https for private with token; codeload for public)
 
 usage() {
   cat <<EOF
@@ -24,7 +24,7 @@ Options:
   -s <api_hash>   Telegram API_HASH
   -b <branch>     Git branch (default: main)
   -d <dir>        Install directory (default: /opt/telegram-monitor)
-  -m <mode>       clone mode: https|ssh (default: https)
+  -m <mode>       fetch mode: https|ssh|codeload (default: https)
   -h              Show help
 
 Environment variables supported:
@@ -83,26 +83,39 @@ sudo chown -R "$USER:$USER" "$APP_DIR"
 # Clone or update
 echo "[4/6] Fetching repository (${MODE})..."
 if [ ! -d "$APP_DIR/.git" ]; then
-  if [ "$MODE" = "ssh" ]; then
-    git clone -b "$BRANCH" git@github.com:${REPO_OWNER}/${REPO_NAME}.git "$APP_DIR"
-  else
-    if [ -z "${GH_TOKEN:-}" ]; then
-      echo "Error: Private repo requires GH_TOKEN. Export GH_TOKEN or use -t <token>." >&2
-      exit 1
-    fi
-    git -c http.extraHeader="Authorization: Bearer $GH_TOKEN" clone -b "$BRANCH" https://github.com/${REPO_OWNER}/${REPO_NAME}.git "$APP_DIR"
-  fi
+  case "$MODE" in
+    ssh)
+      git clone -b "$BRANCH" git@github.com:${REPO_OWNER}/${REPO_NAME}.git "$APP_DIR";;
+    codeload)
+      curl -fsSL "https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${BRANCH}" -o /tmp/${REPO_NAME}.tar.gz
+      tar -xzf /tmp/${REPO_NAME}.tar.gz -C "$APP_DIR" --strip-components=1;;
+    https|*)
+      if [ -z "${GH_TOKEN:-}" ]; then
+        # Try public download via codeload fallback
+        echo "No GH_TOKEN provided; attempting public download via codeload..."
+        curl -fsSL "https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${BRANCH}" -o /tmp/${REPO_NAME}.tar.gz
+        tar -xzf /tmp/${REPO_NAME}.tar.gz -C "$APP_DIR" --strip-components=1
+      else
+        git -c http.extraHeader="Authorization: Bearer $GH_TOKEN" clone -b "$BRANCH" https://github.com/${REPO_OWNER}/${REPO_NAME}.git "$APP_DIR"
+      fi;;
+  esac
 else
   cd "$APP_DIR"
-  if [ "$MODE" = "ssh" ]; then
-    git pull --ff-only
-  else
-    if [ -z "${GH_TOKEN:-}" ]; then
-      echo "Error: Private repo requires GH_TOKEN to pull. Export GH_TOKEN or use -t <token>." >&2
-      exit 1
-    fi
-    git -c http.extraHeader="Authorization: Bearer $GH_TOKEN" pull --ff-only
-  fi
+  case "$MODE" in
+    ssh)
+      git pull --ff-only;;
+    codeload)
+      curl -fsSL "https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${BRANCH}" -o /tmp/${REPO_NAME}.tar.gz
+      tar -xzf /tmp/${REPO_NAME}.tar.gz -C "$APP_DIR" --strip-components=1;;
+    https|*)
+      if [ -z "${GH_TOKEN:-}" ]; then
+        echo "No GH_TOKEN; refreshing from public codeload..."
+        curl -fsSL "https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${BRANCH}" -o /tmp/${REPO_NAME}.tar.gz
+        tar -xzf /tmp/${REPO_NAME}.tar.gz -C "$APP_DIR" --strip-components=1
+      else
+        git -c http.extraHeader="Authorization: Bearer $GH_TOKEN" pull --ff-only
+      fi;;
+  esac
 fi
 
 cd "$APP_DIR"
