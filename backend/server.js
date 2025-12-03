@@ -26,6 +26,7 @@ const defaultConfig = {
   alert_keywords: [],
   alert_regex: [],
   alert_target: '',
+  log_all_messages: false,
   telegram: {
     api_id: 0,
     api_hash: ''
