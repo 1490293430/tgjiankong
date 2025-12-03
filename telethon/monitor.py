@@ -3,6 +3,7 @@ import os
 import re
 import asyncio
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 import pymongo
 from datetime import datetime
 import requests
@@ -221,6 +222,10 @@ async def main():
     config = load_config()
     cfg_api_id = int(str(config.get("telegram", {}).get("api_id", ENV_API_ID or 0)) or 0)
     cfg_api_hash = str(config.get("telegram", {}).get("api_hash", ENV_API_HASH or ""))
+    cfg_session_string = (
+        str(config.get("telegram", {}).get("session_string", "")).strip()
+        or os.getenv("SESSION_STRING", "").strip()
+    )
 
     if cfg_api_id == 0 or not cfg_api_hash:
         print("❌ 错误：未配置 API_ID/API_HASH。请在 Web 后台的‘配置’页面填写并保存，或设置环境变量 API_ID/API_HASH。")
@@ -228,7 +233,12 @@ async def main():
         return
 
     # 创建并启动客户端
-    client = TelegramClient(SESSION_PATH, cfg_api_id, cfg_api_hash)
+    if cfg_session_string:
+        print("🔐 使用会话类型: StringSession (来自配置/环境)")
+        client = TelegramClient(StringSession(cfg_session_string), cfg_api_id, cfg_api_hash)
+    else:
+        print(f"💾 使用会话类型: FileSession @ {SESSION_PATH}")
+        client = TelegramClient(SESSION_PATH, cfg_api_id, cfg_api_hash)
     await client.start()
 
     # 事件处理绑定
