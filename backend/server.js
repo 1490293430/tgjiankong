@@ -51,19 +51,32 @@ const defaultConfig = {
   }
 };
 
-// 初始化配置文件
-try {
-  const stat = fs.statSync(CONFIG_PATH);
-  if (stat.isDirectory()) {
-    console.error('❌ 错误：config.json 是目录而非文件，正在删除并重建...');
-    fs.rmSync(CONFIG_PATH, { recursive: true, force: true });
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2));
-  }
-} catch (err) {
-  if (err.code === 'ENOENT') {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2));
+// 安全读取配置文件（处理目录情况）
+function loadConfig() {
+  try {
+    const stat = fs.statSync(CONFIG_PATH);
+    if (stat.isDirectory()) {
+      console.error('❌ 错误：config.json 是目录而非文件，正在删除并重建...');
+      fs.rmSync(CONFIG_PATH, { recursive: true, force: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2));
+      return defaultConfig;
+    }
+    return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'EISDIR') {
+      console.log('⚠️  配置文件不存在或损坏，正在创建...');
+      if (fs.existsSync(CONFIG_PATH)) {
+        fs.rmSync(CONFIG_PATH, { recursive: true, force: true });
+      }
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2));
+      return defaultConfig;
+    }
+    throw err;
   }
 }
+
+// 初始化配置文件
+loadConfig();
 
 // 连接 MongoDB
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017/tglogs';
@@ -97,7 +110,7 @@ const authMiddleware = (req, res, next) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const config = loadConfig();
     
     if (username !== config.admin.username) {
       return res.status(401).json({ error: '用户名或密码错误' });
@@ -119,7 +132,7 @@ app.post('/api/auth/login', async (req, res) => {
 app.post('/api/auth/change-password', authMiddleware, async (req, res) => {
   try {
     const { oldPassword, newPassword } = req.body;
-    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const config = loadConfig();
     
     const valid = await bcrypt.compare(oldPassword, config.admin.password_hash);
     if (!valid) {
@@ -140,7 +153,7 @@ app.post('/api/auth/change-password', authMiddleware, async (req, res) => {
 // 获取配置（不包含敏感信息）
 app.get('/api/config', authMiddleware, (req, res) => {
   try {
-    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const config = loadConfig();
     delete config.admin; // 不返回管理员信息
     res.json(config);
   } catch (error) {
@@ -151,7 +164,7 @@ app.get('/api/config', authMiddleware, (req, res) => {
 // 更新配置
 app.post('/api/config', authMiddleware, (req, res) => {
   try {
-    const currentConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const currentConfig = loadConfig();
     // 校验 telegram 字段
     const incoming = { ...req.body };
     if (incoming.telegram) {
@@ -266,7 +279,7 @@ app.post('/api/alert/push', async (req, res) => {
     });
     await log.save();
     
-    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const config = loadConfig();
     const actions = config.alert_actions;
     
     // 构建告警消息
