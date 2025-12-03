@@ -192,8 +192,20 @@ async def message_handler(event, client):
                     event.id
                 )
                 
-                # 同时发送到自己的 Telegram（Saved Messages）
+                # 发送到 Telegram 目标：优先使用配置的 alert_target，否则发到“保存的消息”（me）
                 try:
+                    target = (config.get("alert_target") or "me").strip() or "me"
+                    # 将纯数字/负数字字符串转换为整数 chat_id（支持 -100... 群/频道）
+                    def _normalize_target(t):
+                        ts = str(t).strip()
+                        if (ts.isdigit()) or (ts.startswith('-') and ts[1:].isdigit()):
+                            try:
+                                return int(ts)
+                            except Exception:
+                                return ts
+                        return ts
+
+                    target_id = _normalize_target(target)
                     alert_message = f"""⚠️ 关键词告警触发
 
 来源：{channel_name} ({channel_id})
@@ -205,9 +217,8 @@ async def message_handler(event, client):
 {text[:500]}{'...' if len(text) > 500 else ''}
 
 👉 跳转链接：t.me/c/{channel_id.replace('-100', '')}/{event.id}"""
-                    
-                    await client.send_message("me", alert_message)
-                    print(f"📱 告警已发送到 Telegram")
+                    await client.send_message(target_id, alert_message)
+                    print(f"📱 告警已发送到 Telegram: {target}")
                 except Exception as e:
                     print(f"⚠️  发送 Telegram 消息失败: {e}")
     
