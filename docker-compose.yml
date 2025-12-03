@@ -31,7 +31,8 @@ services:
       - JWT_SECRET=${JWT_SECRET:-change-this-secret-key-in-production}
       - PORT=3000
     volumes:
-      - ./backend/config.json:/app/config.json
+      - ./backend:/app
+      - /app/node_modules
       - ./logs/api:/app/logs
     networks:
       - tg-network
