@@ -128,16 +128,36 @@ cd "$APP_DIR"
 
 # Configure ENV
 echo "[5/6] Configuring environment..."
-cp -n .env.example .env || true
+
+# Create .env if not exists
+if [ ! -f .env ]; then
+  if [ -f .env.example ]; then
+    cp .env.example .env
+  else
+    # Create default .env if no example exists
+    cat > .env << 'ENVEOF'
+API_ID=0
+API_HASH=
+JWT_SECRET=change-this
+NODE_ENV=development
+PORT=3000
+MONGO_URL=mongodb://mongo:27017/tglogs
+ALLOWED_ORIGINS=http://localhost,http://localhost:3000
+ENVEOF
+  fi
+fi
+
+# Update JWT_SECRET if it's the default value
+if grep -q '^JWT_SECRET=change-this' .env; then
+  RAND=$(openssl rand -base64 32)
+  sed -i "s/^JWT_SECRET=.*/JWT_SECRET=${RAND}/" .env
+fi
+
 if [ -n "${API_ID:-}" ]; then
   sed -i "s/^API_ID=.*/API_ID=${API_ID}/" .env
 fi
 if [ -n "${API_HASH:-}" ]; then
   sed -i "s/^API_HASH=.*/API_HASH=${API_HASH}/" .env
-fi
-if grep -q '^JWT_SECRET=change-this' .env; then
-  RAND=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
-  sed -i "s/^JWT_SECRET=.*/JWT_SECRET=${RAND}/" .env
 fi
 
 mkdir -p data/mongo data/session logs/api logs/telethon
