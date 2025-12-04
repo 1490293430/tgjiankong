@@ -131,6 +131,49 @@
             margin-bottom: 20px;
         }
         
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            user-select: none;
+            padding: 8px 0;
+        }
+        
+        .card-header:hover {
+            opacity: 0.8;
+        }
+        
+        .card-header h2 {
+            font-size: 20px;
+            color: #333;
+            margin: 0;
+            flex: 1;
+        }
+        
+        .card-toggle {
+            font-size: 20px;
+            color: #667eea;
+            transition: transform 0.3s ease;
+            margin-left: 12px;
+        }
+        
+        .card-toggle.collapsed {
+            transform: rotate(-90deg);
+        }
+        
+        .card-content {
+            max-height: 2000px;
+            overflow: hidden;
+            transition: max-height 0.3s ease, opacity 0.3s ease;
+            opacity: 1;
+        }
+        
+        .card-content.collapsed {
+            max-height: 0;
+            opacity: 0;
+        }
+        
         .card h2 {
             font-size: 20px;
             margin-bottom: 20px;
@@ -350,162 +393,183 @@
             <div id="configMessage" class="success-message"></div>
             
             <div class="card">
-                <h2>Telegram API 凭证</h2>
-                <div class="form-group">
-                    <label>API_ID</label>
-                    <input type="number" id="tgApiId" placeholder="例如：1234567">
-                    <div class="hint">在 https://my.telegram.org/apps 创建应用后获取</div>
+                <div class="card-header" onclick="toggleCard(this)">
+                    <h2>Telegram API 凭证</h2>
+                    <span class="card-toggle">▼</span>
                 </div>
-                <div class="form-group">
-                    <label>API_HASH</label>
-                    <input type="text" id="tgApiHash" placeholder="例如：abcd1234efgh5678">
+                <div class="card-content">
+                    <div class="form-group">
+                        <label>API_ID</label>
+                        <input type="number" id="tgApiId" placeholder="例如：1234567">
+                        <div class="hint">在 https://my.telegram.org/apps 创建应用后获取</div>
+                    </div>
+                    <div class="form-group">
+                        <label>API_HASH</label>
+                        <input type="text" id="tgApiHash" placeholder="例如：abcd1234efgh5678">
+                    </div>
                 </div>
             </div>
 
             <div class="card">
-                <h2>监控关键词</h2>
-                <div class="checkbox-group" style="margin-bottom: 10px;">
-                    <input type="checkbox" id="logAllMessages">
-                    <label for="logAllMessages">记录所有消息（不依赖关键词匹配）</label>
+                <div class="card-header" onclick="toggleCard(this)">
+                    <h2>监控关键词</h2>
+                    <span class="card-toggle">▼</span>
                 </div>
-                <div class="form-group">
-                    <label>普通关键词（每行一个）</label>
-                    <textarea id="keywords" placeholder="例如：&#10;关键词1&#10;关键词2"></textarea>
-                    <div class="hint">监控到包含这些关键词的消息时会记录</div>
-                </div>
-                
-                <div class="form-group">
-                    <label>告警关键词（每行一个）</label>
-                    <textarea id="alertKeywords" placeholder="例如：&#10;错误&#10;error&#10;fail"></textarea>
-                    <div class="hint">匹配这些关键词时会触发告警通知</div>
-                </div>
-                
-                <div class="form-group">
-                    <label>正则表达式（每行一个）</label>
-                    <textarea id="alertRegex" placeholder="例如：&#10;错误.+失败&#10;订单.*取消"></textarea>
-                    <div class="hint">支持正则表达式匹配，更灵活的规则</div>
+                <div class="card-content">
+                    <div class="checkbox-group" style="margin-bottom: 10px;">
+                        <input type="checkbox" id="logAllMessages">
+                        <label for="logAllMessages">记录所有消息（不依赖关键词匹配）</label>
+                    </div>
+                    <div class="form-group">
+                        <label>普通关键词（每行一个）</label>
+                        <textarea id="keywords" placeholder="例如：&#10;关键词1&#10;关键词2"></textarea>
+                        <div class="hint">监控到包含这些关键词的消息时会记录</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>告警关键词（每行一个）</label>
+                        <textarea id="alertKeywords" placeholder="例如：&#10;错误&#10;error&#10;fail"></textarea>
+                        <div class="hint">匹配这些关键词时会触发告警通知</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>正则表达式（每行一个）</label>
+                        <textarea id="alertRegex" placeholder="例如：&#10;错误.+失败&#10;订单.*取消"></textarea>
+                        <div class="hint">支持正则表达式匹配，更灵活的规则</div>
+                    </div>
                 </div>
             </div>
             
             <div class="card">
-                <h2>监控频道</h2>
-                <div class="form-group">
-                    <label>频道 ID 列表（每行一个）</label>
-                    <textarea id="channels" placeholder="例如：&#10;-1001234567890&#10;-1009876543210"></textarea>
-                    <div class="hint">留空则监控所有消息。可在 Telegram 中获取频道 ID</div>
+                <div class="card-header" onclick="toggleCard(this)">
+                    <h2>监控频道</h2>
+                    <span class="card-toggle">▼</span>
+                </div>
+                <div class="card-content">
+                    <div class="form-group">
+                        <label>频道 ID 列表（每行一个）</label>
+                        <textarea id="channels" placeholder="例如：&#10;-1001234567890&#10;-1009876543210"></textarea>
+                        <div class="hint">留空则监控所有消息。可在 Telegram 中获取频道 ID</div>
+                    </div>
                 </div>
             </div>
             
             <div class="card">
-                <h2>告警配置</h2>
-                <div class="form-group">
-                    <label>Telegram 告警目标</label>
-                    <input type="text" id="alertTarget" placeholder="your_telegram_id 或 @username">
-                    <div class="hint">触发告警时会发送到这个账号</div>
+                <div class="card-header" onclick="toggleCard(this)">
+                    <h2>告警配置</h2>
+                    <span class="card-toggle">▼</span>
                 </div>
-                
-                <div class="checkbox-group">
-                    <input type="checkbox" id="enableEmail">
-                    <label>启用邮件告警</label>
-                </div>
-                
-                <div id="emailConfig" style="display: none; margin-left: 30px;">
+                <div class="card-content">
                     <div class="form-group">
-                        <label>SMTP 服务器</label>
-                        <input type="text" id="smtpHost" placeholder="smtp.gmail.com">
-                    </div>
-                    <div class="form-group">
-                        <label>SMTP 端口</label>
-                        <input type="number" id="smtpPort" value="465">
-                    </div>
-                    <div class="form-group">
-                        <label>邮箱账号</label>
-                        <input type="email" id="emailUsername">
-                    </div>
-                    <div class="form-group">
-                        <label>邮箱密码</label>
-                        <input type="password" id="emailPassword">
-                    </div>
-                    <div class="form-group">
-                        <label>接收邮箱</label>
-                        <input type="email" id="emailTo">
-                    </div>
-                </div>
-                
-                <div class="checkbox-group">
-                    <input type="checkbox" id="enableWebhook">
-                    <label>启用 Webhook 告警</label>
-                </div>
-                
-                <div id="webhookConfig" style="display: none; margin-left: 30px;">
-                    <div class="form-group">
-                        <label>Webhook URL</label>
-                        <input type="url" id="webhookUrl" placeholder="https://your-webhook-endpoint.com/alert">
-                    </div>
-                </div>
-                <div style="margin-top: 12px;">
-                    <button class="btn btn-secondary" onclick="testAlert()">📩 发送测试告警</button>
-                    <span id="testAlertMsg" style="margin-left: 10px; color: #666;"></span>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h2>🤖 AI 分析配置</h2>
-                <div class="checkbox-group">
-                    <input type="checkbox" id="enableAI">
-                    <label>启用 AI 分析功能</label>
-                </div>
-                
-                <div id="aiConfig" style="display: none; margin-left: 30px;">
-                    <div class="form-group">
-                        <label>OpenAI API Key <span style="color: #e74c3c;">*</span></label>
-                        <input type="password" id="openaiApiKey" placeholder="sk-...">
-                        <div class="hint">在 <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI 平台</a> 获取</div>
+                        <label>Telegram 告警目标</label>
+                        <input type="text" id="alertTarget" placeholder="your_telegram_id 或 @username">
+                        <div class="hint">触发告警时会发送到这个账号</div>
                     </div>
                     
-                    <div class="form-group">
-                        <label>API Base URL</label>
-                        <input type="text" id="openaiBaseUrl" value="https://api.openai.com/v1">
-                        <div class="hint">如使用代理或第三方服务，可修改此 URL</div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="enableEmail">
+                        <label>启用邮件告警</label>
                     </div>
                     
-                    <div class="form-group">
-                        <label>AI 模型</label>
-                        <select id="openaiModel">
-                            <option value="gpt-3.5-turbo">GPT-3.5 Turbo (经济实惠)</option>
-                            <option value="gpt-4">GPT-4 (更智能)</option>
-                            <option value="gpt-4-turbo">GPT-4 Turbo (平衡性能)</option>
-                        </select>
+                    <div id="emailConfig" style="display: none; margin-left: 30px;">
+                        <div class="form-group">
+                            <label>SMTP 服务器</label>
+                            <input type="text" id="smtpHost" placeholder="smtp.gmail.com">
+                        </div>
+                        <div class="form-group">
+                            <label>SMTP 端口</label>
+                            <input type="number" id="smtpPort" value="465">
+                        </div>
+                        <div class="form-group">
+                            <label>邮箱账号</label>
+                            <input type="email" id="emailUsername">
+                        </div>
+                        <div class="form-group">
+                            <label>邮箱密码</label>
+                            <input type="password" id="emailPassword">
+                        </div>
+                        <div class="form-group">
+                            <label>接收邮箱</label>
+                            <input type="email" id="emailTo">
+                        </div>
                     </div>
                     
-                    <div class="form-group">
-                        <label>触发方式</label>
-                        <select id="analysisTriggerType" onchange="toggleAnalysisTriggerOptions()">
-                            <option value="time">定时触发</option>
-                            <option value="count">消息数量触发</option>
-                        </select>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="enableWebhook">
+                        <label>启用 Webhook 告警</label>
                     </div>
                     
-                    <div id="timeInterval" class="form-group">
-                        <label>分析间隔（分钟）</label>
-                        <input type="number" id="timeIntervalMinutes" value="30" min="1">
-                        <div class="hint">每隔多少分钟自动分析一次消息</div>
+                    <div id="webhookConfig" style="display: none; margin-left: 30px;">
+                        <div class="form-group">
+                            <label>Webhook URL</label>
+                            <input type="url" id="webhookUrl" placeholder="https://your-webhook-endpoint.com/alert">
+                        </div>
                     </div>
-                    
-                    <div id="countThreshold" class="form-group" style="display: none;">
-                        <label>消息数量阈值</label>
-                        <input type="number" id="messageCountThreshold" value="50" min="1">
-                        <div class="hint">累积多少条未分析消息后自动触发分析</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>分析提示词</label>
-                        <textarea id="analysisPrompt" rows="3" placeholder="自定义 AI 分析提示词..."></textarea>
-                    </div>
-                    
                     <div style="margin-top: 12px;">
-                        <button class="btn btn-secondary" onclick="testAIAnalysis()">🧪 立即分析</button>
-                        <span id="aiTestMsg" style="margin-left: 10px; color: #666;"></span>
+                        <button class="btn btn-secondary" onclick="testAlert()">📩 发送测试告警</button>
+                        <span id="testAlertMsg" style="margin-left: 10px; color: #666;"></span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header" onclick="toggleCard(this)">
+                    <h2>🤖 AI 分析配置</h2>
+                    <span class="card-toggle">▼</span>
+                </div>
+                <div class="card-content">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="enableAI">
+                        <label>启用 AI 分析功能</label>
+                    </div>
+                    
+                    <div id="aiConfig" style="display: none; margin-left: 30px;">
+                        <div class="form-group">
+                            <label>OpenAI API Key <span style="color: #e74c3c;">*</span></label>
+                            <input type="password" id="openaiApiKey" placeholder="sk-...">
+                            <div class="hint">在 <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI 平台</a> 获取</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>API Base URL</label>
+                            <input type="text" id="openaiBaseUrl" value="https://api.openai.com/v1">
+                            <div class="hint">如使用代理或第三方服务，可修改此 URL</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>AI 模型</label>
+                            <input type="text" id="openaiModel" placeholder="例如: gpt-3.5-turbo, gpt-4, qwen-turbo 等" value="gpt-3.5-turbo">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>触发方式</label>
+                            <select id="analysisTriggerType" onchange="toggleAnalysisTriggerOptions()">
+                                <option value="time">定时触发</option>
+                                <option value="count">消息数量触发</option>
+                            </select>
+                        </div>
+                        
+                        <div id="timeInterval" class="form-group">
+                            <label>分析间隔（分钟）</label>
+                            <input type="number" id="timeIntervalMinutes" value="30" min="1">
+                            <div class="hint">每隔多少分钟自动分析一次消息</div>
+                        </div>
+                        
+                        <div id="countThreshold" class="form-group" style="display: none;">
+                            <label>消息数量阈值</label>
+                            <input type="number" id="messageCountThreshold" value="50" min="1">
+                            <div class="hint">累积多少条未分析消息后自动触发分析</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>分析提示词</label>
+                            <textarea id="analysisPrompt" rows="3" placeholder="自定义 AI 分析提示词..."></textarea>
+                        </div>
+                        
+                        <div style="margin-top: 12px;">
+                            <button class="btn btn-secondary" onclick="testAIAnalysis()">🧪 立即分析</button>
+                            <span id="aiTestMsg" style="margin-left: 10px; color: #666;"></span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -647,6 +711,20 @@
         let currentPage = 1;
         let currentAIPage = 1;
         let config = {};
+        
+        // 卡片折叠/展开函数
+        function toggleCard(header) {
+            const content = header.nextElementSibling;
+            const toggle = header.querySelector('.card-toggle');
+            
+            if (content.classList.contains('collapsed')) {
+                content.classList.remove('collapsed');
+                toggle.classList.remove('collapsed');
+            } else {
+                content.classList.add('collapsed');
+                toggle.classList.add('collapsed');
+            }
+        }
         
         // 检查登录
         function checkAuth() {
