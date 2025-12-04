@@ -7,6 +7,9 @@ const fs = require('fs');
 const path = require('path');
 const nodemailer = require('nodemailer');
 const axios = require('axios');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const Joi = require('joi');
 require('dotenv').config();
 
 const Log = require('./logModel');
@@ -15,11 +18,71 @@ const AIAnalysisService = require('./services/aiAnalysis');
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+
+// 🔒 配置 CORS 白名单
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+  : ['http://localhost', 'http://localhost:3000', 'http://127.0.0.1'];
+
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  maxAge: 3600,
+  optionsSuccessStatus: 200
+}));
+
+// 🔒 添加安全响应头
+app.use(helmet());
+app.use(helmet.contentSecurityPolicy({
+  directives: {
+    defaultSrc: ["'self'"],
+    scriptSrc: ["'self'"],
+    styleSrc: ["'self'", "'unsafe-inline'"],
+    imgSrc: ["'self'", 'data:', 'https:'],
+    connectSrc: ["'self'"],
+    fontSrc: ["'self'"],
+    objectSrc: ["'none'"],
+    mediaSrc: ["'self'"],
+    frameSrc: ["'none'"],
+    upgradeInsecureRequests: []
+  }
+}));
+app.use(helmet.noSniff());
+app.use(helmet.xssFilter());
+app.use(helmet.frameguard({ action: 'deny' }));
+app.disable('x-powered-by');
+
+// 🔒 配置速率限制
+const loginLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 5,
+  message: '登录尝试过多，请 5 分钟后再试',
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 100,
+  message: 'API 请求过于频繁，请稍后再试',
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+app.use('/api/', apiLimiter);
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 const PORT = process.env.PORT || 3000;
+
+// 🔒 启动时验证 JWT_SECRET
+if (!process.env.JWT_SECRET || JWT_SECRET === 'your-secret-key-change-this') {
+  console.error('❌ 致命错误：JWT_SECRET 未设置或使用默认值！');
+  console.error('请设置环境变量 JWT_SECRET 为强随机值（使用 install.sh 或手动设置）');
+  process.exit(1);
+}
 
 // 默认配置
 const defaultConfig = {
@@ -119,8 +182,8 @@ const authMiddleware = (req, res, next) => {
 
 // ===== 认证相关 API =====
 
-// 登录
-app.post('/api/auth/login', async (req, res) => {
+// 登录（添加速率限制）
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
     const config = loadConfig();
@@ -168,6 +231,18 @@ app.get('/api/config', authMiddleware, (req, res) => {
   try {
     const config = loadConfig();
     delete config.admin; // 不返回管理员信息
+    
+    // 🔒 不返回敏感信息给前端
+    if (config.telegram) {
+      delete config.telegram.api_hash; // 不返回 API Hash
+    }
+    if (config.ai_analysis) {
+      delete config.ai_analysis.openai_api_key; // 不返回 OpenAI API Key
+    }
+    if (config.alert_actions?.email) {
+      delete config.alert_actions.email.password; // 不返回邮箱密码
+    }
+    
     res.json(config);
   } catch (error) {
     res.status(500).json({ error: '读取配置失败：' + error.message });
@@ -178,13 +253,33 @@ app.get('/api/config', authMiddleware, (req, res) => {
 app.post('/api/config', authMiddleware, (req, res) => {
   try {
     const currentConfig = loadConfig();
-    // 校验 telegram 字段
     const incoming = { ...req.body };
+    
+    // 校验并清理 telegram 字段
     if (incoming.telegram) {
       incoming.telegram.api_id = Number(incoming.telegram.api_id || 0);
-      incoming.telegram.api_hash = String(incoming.telegram.api_hash || '');
+      // ✅ 如果前端没有发送 api_hash（因为我们不返回），则保留原有值
+      if (!incoming.telegram.api_hash) {
+        incoming.telegram.api_hash = currentConfig.telegram?.api_hash || '';
+      }
     }
-
+    
+    // 校验并保留 AI 配置中的敏感信息
+    if (incoming.ai_analysis) {
+      // ✅ 如果前端没有发送 API Key（因为我们不返回），则保留原有值
+      if (!incoming.ai_analysis.openai_api_key) {
+        incoming.ai_analysis.openai_api_key = currentConfig.ai_analysis?.openai_api_key || '';
+      }
+    }
+    
+    // 校验并保留邮箱密码
+    if (incoming.alert_actions?.email) {
+      // ✅ 如果前端没有发送密码（因为我们不返回），则保留原有值
+      if (!incoming.alert_actions.email.password) {
+        incoming.alert_actions.email.password = currentConfig.alert_actions?.email?.password || '';
+      }
+    }
+    
     const newConfig = {
       ...currentConfig,
       ...incoming,
@@ -203,23 +298,42 @@ app.post('/api/config', authMiddleware, (req, res) => {
     
     res.json({ status: 'ok', message: '配置保存成功' });
   } catch (error) {
-    res.status(500).json({ error: '保存配置失败：' + error.message });
+    // ✅ 改进的错误处理
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[CONFIG_ERROR]', { timestamp: new Date().toISOString(), error: error.message });
+      res.status(500).json({ error: '保存配置失败' });
+    } else {
+      res.status(500).json({ error: '保存配置失败：' + error.message });
+    }
   }
 });
 
 // ===== 日志相关 API =====
 
+// ✅ 定义查询验证 schema
+const logsQuerySchema = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  pageSize: Joi.number().integer().min(1).max(100).default(20),
+  keyword: Joi.string().max(500).default(''),
+  channelId: Joi.string().max(50).default('')
+});
+
 // 获取日志列表（分页）
 app.get('/api/logs', authMiddleware, async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const pageSize = parseInt(req.query.pageSize) || 20;
-    const keyword = req.query.keyword || '';
-    const channelId = req.query.channelId || '';
+    // ✅ 验证查询参数
+    const { error, value } = logsQuerySchema.validate(req.query);
+    if (error) {
+      return res.status(400).json({ error: '无效的查询参数：' + error.message });
+    }
+    
+    const { page, pageSize, keyword, channelId } = value;
     
     const query = {};
     if (keyword) {
-      query.message = { $regex: keyword, $options: 'i' };
+      // ✅ 清理正则表达式特殊字符（防止 ReDoS）
+      const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.message = { $regex: escapedKeyword, $options: 'i' };
     }
     if (channelId) {
       query.channelId = channelId;
@@ -239,7 +353,11 @@ app.get('/api/logs', authMiddleware, async (req, res) => {
       logs
     });
   } catch (error) {
-    res.status(500).json({ error: '获取日志失败：' + error.message });
+    if (process.env.NODE_ENV === 'production') {
+      res.status(500).json({ error: '获取日志失败' });
+    } else {
+      res.status(500).json({ error: '获取日志失败：' + error.message });
+    }
   }
 });
 
@@ -284,18 +402,34 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
 
 // ===== 告警相关 API =====
 
-// 推送告警
-app.post('/api/alert/push', async (req, res) => {
+// 🚨 推送告警（CRITICAL FIX：添加 authMiddleware）
+app.post('/api/alert/push', authMiddleware, async (req, res) => {
   try {
     const { keyword, message, from, channel, channelId, messageId } = req.body;
     
+    // ✅ 验证必要字段
+    if (!keyword || !message) {
+      return res.status(400).json({ error: '缺少必要字段：keyword 和 message' });
+    }
+    
+    // ✅ 限制消息长度
+    if (message.length > 5000) {
+      return res.status(400).json({ error: '消息过长（最大 5000 字符）' });
+    }
+    
+    // ✅ 清理输入
+    const cleanKeyword = String(keyword).trim().substring(0, 500);
+    const cleanMessage = String(message).trim();
+    const cleanFrom = String(from || 'Unknown').trim().substring(0, 200);
+    const cleanChannel = String(channel || 'Unknown').trim().substring(0, 200);
+    
     // 保存日志到数据库
     const log = new Log({
-      channel: channel || 'Unknown',
+      channel: cleanChannel,
       channelId: channelId || '',
-      sender: from || 'Unknown',
-      message,
-      keywords: [keyword],
+      sender: cleanFrom,
+      message: cleanMessage,
+      keywords: [cleanKeyword],
       messageId,
       alerted: true
     });
@@ -307,13 +441,13 @@ app.post('/api/alert/push', async (req, res) => {
     // 构建告警消息
     const alertMessage = `⚠️ 关键词告警触发
 
-来源：${channel} (${channelId})
-发送者：${from}
-关键词：${keyword}
+来源：${cleanChannel} (${channelId})
+发送者：${cleanFrom}
+关键词：${cleanKeyword}
 时间：${new Date().toLocaleString('zh-CN')}
 
 消息内容：
-${message}
+${cleanMessage}
 
 ${messageId ? `👉 跳转链接：t.me/c/${channelId}/${messageId}` : ''}`;
     

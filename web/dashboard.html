@@ -393,11 +393,11 @@
             <div id="configMessage" class="success-message"></div>
             
             <div class="card">
-                <div class="card-header" onclick="toggleCard(this)">
+                <div class="card-header" onclick="toggleCard(this)" data-card-id="telegram-api">
                     <h2>Telegram API 凭证</h2>
-                    <span class="card-toggle">▼</span>
+                    <span class="card-toggle collapsed">▼</span>
                 </div>
-                <div class="card-content">
+                <div class="card-content collapsed">
                     <div class="form-group">
                         <label>API_ID</label>
                         <input type="number" id="tgApiId" placeholder="例如：1234567">
@@ -411,11 +411,11 @@
             </div>
 
             <div class="card">
-                <div class="card-header" onclick="toggleCard(this)">
+                <div class="card-header" onclick="toggleCard(this)" data-card-id="keywords">
                     <h2>监控关键词</h2>
-                    <span class="card-toggle">▼</span>
+                    <span class="card-toggle collapsed">▼</span>
                 </div>
-                <div class="card-content">
+                <div class="card-content collapsed">
                     <div class="checkbox-group" style="margin-bottom: 10px;">
                         <input type="checkbox" id="logAllMessages">
                         <label for="logAllMessages">记录所有消息（不依赖关键词匹配）</label>
@@ -441,11 +441,11 @@
             </div>
             
             <div class="card">
-                <div class="card-header" onclick="toggleCard(this)">
+                <div class="card-header" onclick="toggleCard(this)" data-card-id="channels">
                     <h2>监控频道</h2>
-                    <span class="card-toggle">▼</span>
+                    <span class="card-toggle collapsed">▼</span>
                 </div>
-                <div class="card-content">
+                <div class="card-content collapsed">
                     <div class="form-group">
                         <label>频道 ID 列表（每行一个）</label>
                         <textarea id="channels" placeholder="例如：&#10;-1001234567890&#10;-1009876543210"></textarea>
@@ -455,11 +455,11 @@
             </div>
             
             <div class="card">
-                <div class="card-header" onclick="toggleCard(this)">
+                <div class="card-header" onclick="toggleCard(this)" data-card-id="alert">
                     <h2>告警配置</h2>
-                    <span class="card-toggle">▼</span>
+                    <span class="card-toggle collapsed">▼</span>
                 </div>
-                <div class="card-content">
+                <div class="card-content collapsed">
                     <div class="form-group">
                         <label>Telegram 告警目标</label>
                         <input type="text" id="alertTarget" placeholder="your_telegram_id 或 @username">
@@ -513,11 +513,11 @@
             </div>
             
             <div class="card">
-                <div class="card-header" onclick="toggleCard(this)">
+                <div class="card-header" onclick="toggleCard(this)" data-card-id="ai-analysis">
                     <h2>🤖 AI 分析配置</h2>
-                    <span class="card-toggle">▼</span>
+                    <span class="card-toggle collapsed">▼</span>
                 </div>
-                <div class="card-content">
+                <div class="card-content collapsed">
                     <div class="checkbox-group">
                         <input type="checkbox" id="enableAI">
                         <label>启用 AI 分析功能</label>
@@ -579,6 +579,17 @@
         
         <!-- AI 分析 -->
         <div id="ai" class="tab-content">
+            <!-- AI 功能状态提示 -->
+            <div id="aiStatusCard" class="card" style="border-left: 4px solid #f39c12; background: #fff8e1;">
+                <div style="display: flex; align-items: center; gap: 15px;">
+                    <div style="font-size: 36px;">⚠️</div>
+                    <div style="flex: 1;">
+                        <h3 style="margin-bottom: 5px; color: #f39c12;">AI 分析功能状态</h3>
+                        <p id="aiStatusText" style="margin: 0; color: #666;">检查中...</p>
+                    </div>
+                </div>
+            </div>
+            
             <div class="card">
                 <h2>🤖 AI 分析统计</h2>
                 <div class="stats-grid">
@@ -711,19 +722,39 @@
         let currentPage = 1;
         let currentAIPage = 1;
         let config = {};
+        let autoRefreshInterval = null; // 自动刷新计时器
+        const REFRESH_INTERVAL = 10000; // 10秒刷新一次
         
         // 卡片折叠/展开函数
         function toggleCard(header) {
             const content = header.nextElementSibling;
             const toggle = header.querySelector('.card-toggle');
+            const cardId = header.getAttribute('data-card-id');
             
             if (content.classList.contains('collapsed')) {
                 content.classList.remove('collapsed');
                 toggle.classList.remove('collapsed');
+                if (cardId) localStorage.setItem(`card-${cardId}`, 'open');
             } else {
                 content.classList.add('collapsed');
                 toggle.classList.add('collapsed');
+                if (cardId) localStorage.setItem(`card-${cardId}`, 'collapsed');
             }
+        }
+        
+        // 恢复卡片折叠状态
+        function restoreCardStates() {
+            document.querySelectorAll('.card-header[data-card-id]').forEach(header => {
+                const cardId = header.getAttribute('data-card-id');
+                const state = localStorage.getItem(`card-${cardId}`);
+                
+                if (state === 'open') {
+                    const content = header.nextElementSibling;
+                    const toggle = header.querySelector('.card-toggle');
+                    content.classList.remove('collapsed');
+                    toggle.classList.remove('collapsed');
+                }
+            });
         }
         
         // 检查登录
@@ -774,16 +805,50 @@
             event.target.classList.add('active');
             document.getElementById(tabName).classList.add('active');
             
+            // 保存当前标签页
+            localStorage.setItem('currentTab', tabName);
+            
+            // 停止之前的自动刷新
+            stopAutoRefresh();
+            
             if (tabName === 'dashboard') {
                 loadStats();
                 loadRecentLogs();
+                startAutoRefresh('dashboard');
             } else if (tabName === 'config') {
                 loadConfig();
             } else if (tabName === 'ai') {
                 loadAIStats();
                 loadAISummaries();
+                startAutoRefresh('ai');
             } else if (tabName === 'logs') {
                 loadLogs();
+                startAutoRefresh('logs');
+            }
+        }
+        
+        // 启动自动刷新
+        function startAutoRefresh(tabName) {
+            stopAutoRefresh(); // 先清除之前的计时器
+            
+            autoRefreshInterval = setInterval(() => {
+                if (tabName === 'dashboard') {
+                    loadStats();
+                    loadRecentLogs();
+                } else if (tabName === 'ai') {
+                    loadAIStats();
+                    loadAISummaries(currentAIPage);
+                } else if (tabName === 'logs') {
+                    loadLogs();
+                }
+            }, REFRESH_INTERVAL);
+        }
+        
+        // 停止自动刷新
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
             }
         }
         
@@ -826,7 +891,10 @@
             if (config) {
                 // Telegram API 凭证
                 document.getElementById('tgApiId').value = (config.telegram?.api_id ?? 0) || 0;
-                document.getElementById('tgApiHash').value = config.telegram?.api_hash || '';
+                // 🔒 API Hash 不发送给前端，使用占位符
+                document.getElementById('tgApiHash').placeholder = '🔒 已隐藏 - 严仅保存在服务器，如果需要更改请输入新值';
+                document.getElementById('tgApiHash').value = '';
+                
                 // 记录所有消息开关
                 document.getElementById('logAllMessages').checked = !!config.log_all_messages;
 
@@ -846,7 +914,9 @@
                     document.getElementById('smtpHost').value = config.alert_actions.email.smtp_host || '';
                     document.getElementById('smtpPort').value = config.alert_actions.email.smtp_port || 465;
                     document.getElementById('emailUsername').value = config.alert_actions.email.username || '';
-                    document.getElementById('emailPassword').value = config.alert_actions.email.password || '';
+                    // 🔒 邮箱密码不发送给前端，使用占位符
+                    document.getElementById('emailPassword').placeholder = '🔒 已隐藏 - 如果需要更改请输入新密码';
+                    document.getElementById('emailPassword').value = '';
                     document.getElementById('emailTo').value = config.alert_actions.email.to || '';
                     document.getElementById('emailConfig').style.display = 'block';
                 }
@@ -861,7 +931,9 @@
                 document.getElementById('enableAI').checked = aiEnable;
                 
                 if (aiEnable && config.ai_analysis) {
-                    document.getElementById('openaiApiKey').value = config.ai_analysis.openai_api_key || '';
+                    // 🔒 OpenAI API Key 不发送给前端，使用占位符
+                    document.getElementById('openaiApiKey').placeholder = '🔒 已隐藏 - 如果需要更改请输入新值 (sk-...)';
+                    document.getElementById('openaiApiKey').value = '';
                     document.getElementById('openaiBaseUrl').value = config.ai_analysis.openai_base_url || 'https://api.openai.com/v1';
                     document.getElementById('openaiModel').value = config.ai_analysis.openai_model || 'gpt-3.5-turbo';
                     document.getElementById('analysisTriggerType').value = config.ai_analysis.analysis_trigger_type || 'time';
@@ -879,7 +951,10 @@
             const newConfig = {
                 telegram: {
                     api_id: parseInt(document.getElementById('tgApiId').value) || 0,
-                    api_hash: document.getElementById('tgApiHash').value.trim()
+                    // 🔒 如果不是空的，有新值就发送，没有新值就忽略，让服务器保留原有值
+                    ...(document.getElementById('tgApiHash').value.trim() && {
+                        api_hash: document.getElementById('tgApiHash').value.trim()
+                    })
                 },
                 log_all_messages: document.getElementById('logAllMessages').checked,
                 keywords: document.getElementById('keywords').value.split('\n').filter(k => k.trim()),
@@ -894,7 +969,10 @@
                         smtp_host: document.getElementById('smtpHost').value,
                         smtp_port: parseInt(document.getElementById('smtpPort').value) || 465,
                         username: document.getElementById('emailUsername').value,
-                        password: document.getElementById('emailPassword').value,
+                        // 🔒 如果不是空的，有新值就发送，没有新值就忽略
+                        ...(document.getElementById('emailPassword').value && {
+                            password: document.getElementById('emailPassword').value
+                        }),
                         to: document.getElementById('emailTo').value
                     },
                     webhook: {
@@ -904,7 +982,10 @@
                 },
                 ai_analysis: {
                     enabled: document.getElementById('enableAI').checked,
-                    openai_api_key: document.getElementById('openaiApiKey').value,
+                    // 🔒 如果不是空的，有新值就发送，没有新值就忽略
+                    ...(document.getElementById('openaiApiKey').value.trim() && {
+                        openai_api_key: document.getElementById('openaiApiKey').value.trim()
+                    }),
                     openai_base_url: document.getElementById('openaiBaseUrl').value,
                     openai_model: document.getElementById('openaiModel').value,
                     analysis_trigger_type: document.getElementById('analysisTriggerType').value,
@@ -1076,6 +1157,31 @@
                 document.getElementById('aiUnanalyzedMessages').textContent = stats.unanalyzed_messages || 0;
                 document.getElementById('aiModel').textContent = stats.ai_config?.model || 'N/A';
                 
+                // 更新 AI 功能状态卡片
+                const statusCard = document.getElementById('aiStatusCard');
+                const statusText = document.getElementById('aiStatusText');
+                const aiConfig = stats.ai_config || {};
+                
+                if (aiConfig.enabled && aiConfig.api_configured) {
+                    statusCard.style.borderColor = '#27ae60';
+                    statusCard.style.background = '#d4edda';
+                    statusCard.querySelector('div[style*="font-size: 36px"]').textContent = '✅';
+                    statusText.innerHTML = '<strong>AI 功能已启用</strong> - 可以使用立即分析功能';
+                    statusText.style.color = '#155724';
+                } else if (aiConfig.enabled && !aiConfig.api_configured) {
+                    statusCard.style.borderColor = '#f39c12';
+                    statusCard.style.background = '#fff8e1';
+                    statusCard.querySelector('div[style*="font-size: 36px"]').textContent = '⚠️';
+                    statusText.innerHTML = '<strong>AI 功能已启用但未配置 API Key</strong> - 请在"配置"页面设置 OpenAI API Key';
+                    statusText.style.color = '#856404';
+                } else {
+                    statusCard.style.borderColor = '#dc3545';
+                    statusCard.style.background = '#f8d7da';
+                    statusCard.querySelector('div[style*="font-size: 36px"]').textContent = '❌';
+                    statusText.innerHTML = '<strong>AI 功能未启用</strong> - 请在"配置"页面启用并配置 AI 分析功能';
+                    statusText.style.color = '#721c24';
+                }
+                
                 // 情感分布
                 const sentimentDist = stats.sentiment_distribution || [];
                 let positive = 0, neutral = 0, negative = 0;
@@ -1206,6 +1312,8 @@
             if (!token) return;
             
             const el = document.getElementById('aiTestMsg');
+            const btn = event.target;
+            btn.disabled = true;
             el.style.color = '#666';
             el.textContent = '⏳ 正在执行 AI 分析...';
             
@@ -1221,23 +1329,73 @@
                 const data = await resp.json();
                 
                 if (data.success) {
-                    el.style.color = '#27ae60';
-                    el.textContent = `✅ 分析成功！共 ${data.message_count} 条消息，情感: ${data.analysis?.sentiment || '未知'}`;
+                    if (data.message_count === 0) {
+                        el.style.color = '#f39c12';
+                        el.textContent = `ℹ️ 没有待分析的消息`;
+                    } else {
+                        el.style.color = '#27ae60';
+                        const sentiment = data.analysis?.sentiment || '未知';
+                        const riskLevel = data.analysis?.risk_level || '未知';
+                        el.textContent = `✅ 分析成功！共 ${data.message_count} 条消息 | 情感: ${sentiment} | 风险: ${riskLevel}`;
+                        // 刷新分析列表
+                        setTimeout(() => {
+                            loadAIStats();
+                            loadAISummaries();
+                        }, 1000);
+                    }
                 } else {
                     el.style.color = '#e74c3c';
-                    el.textContent = `❌ ${data.error || data.message || '分析失败'}`;
+                    let errorMsg = data.error || data.message || '分析失败';
+                    
+                    // 添加常见错误的提示
+                    if (errorMsg.includes('AI 分析功能未启用')) {
+                        errorMsg += ' - 请在配置页面启用 AI 分析';
+                    } else if (errorMsg.includes('OpenAI API Key')) {
+                        errorMsg += ' - 请在配置页面设置 API Key';
+                    }
+                    
+                    el.textContent = `❌ ${errorMsg}`;
                 }
             } catch (error) {
                 el.style.color = '#e74c3c';
                 el.textContent = `❌ 请求失败: ${error.message}`;
+            } finally {
+                btn.disabled = false;
             }
         }
         
         // 初始化
         checkAuth();
         document.getElementById('username').textContent = localStorage.getItem('username') || 'Admin';
-        loadStats();
-        loadRecentLogs();
+        restoreCardStates(); // 恢复卡片折叠状态
+        
+        // 恢复上次选中的标签页
+        const savedTab = localStorage.getItem('currentTab') || 'dashboard';
+        document.querySelectorAll('.nav-tab').forEach((tab, index) => {
+            tab.classList.remove('active');
+            const tabNames = ['dashboard', 'config', 'ai', 'logs', 'settings'];
+            if (tabNames[index] === savedTab) {
+                tab.classList.add('active');
+            }
+        });
+        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+        document.getElementById(savedTab).classList.add('active');
+        
+        // 根据标签页加载对应内容
+        if (savedTab === 'dashboard') {
+            loadStats();
+            loadRecentLogs();
+            startAutoRefresh('dashboard');
+        } else if (savedTab === 'config') {
+            loadConfig();
+        } else if (savedTab === 'ai') {
+            loadAIStats();
+            loadAISummaries();
+            startAutoRefresh('ai');
+        } else if (savedTab === 'logs') {
+            loadLogs();
+            startAutoRefresh('logs');
+        }
     </script>
 </body>
 </html>

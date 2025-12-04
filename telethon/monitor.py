@@ -104,7 +104,8 @@ async def save_log(channel, channel_id, sender, message, keywords, message_id):
             "keywords": keywords if isinstance(keywords, list) else [keywords],
             "time": datetime.now(),
             "messageId": message_id,
-            "alerted": len(keywords) > 0 if isinstance(keywords, list) else bool(keywords)
+            "alerted": len(keywords) > 0 if isinstance(keywords, list) else bool(keywords),
+            "ai_analyzed": False  # 新消息默认标记为未分析
         }
         
         logs_collection.insert_one(log)
