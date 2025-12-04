@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then 
+  echo "❌ This script must be run as root"
+  echo "Please run: sudo bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)"
+  exit 1
+fi
+
 # Telegram Monitor - One line installer
 # Usage examples:
 #  - Non-interactive (recommended):
