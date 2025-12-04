@@ -167,7 +167,10 @@ if [ ! -f backend/config.json ]; then
   cp backend/config.json.example backend/config.json
 fi
 
-# Up containers
+# Build & Up containers
+echo "[6/6] Building containers..."
+docker compose build --pull
+
 echo "[6/6] Starting services..."
 docker compose up -d
 sleep 10
