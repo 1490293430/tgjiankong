@@ -11,7 +11,10 @@ echo ""
 
 # 颜色输出
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
+YELLOW='\033[1;33m'cd /opt/telegram-monitor
+git pull origin main
+docker-compose up -d
+docker-compose ps
 RED='\033[0;31m'
 NC='\033[0m'
 
