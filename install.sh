@@ -201,16 +201,42 @@ fi
 # Up containers
 echo "[6/6] Starting services..."
 docker compose up -d
-sleep 2
+sleep 10
 docker compose ps || true
+
+# Verify backend is running
+echo ""
+echo "验证后端服务状态..."
+if docker compose logs api --tail 5 2>/dev/null | grep -q "API 服务运行在端口 3000"; then
+  echo "✅ API 服务正常运行"
+else
+  echo "⚠️  查看完整日志："
+  docker compose logs api --tail 20
+fi
 
 cat <<SUCCESS
 
-✅ Deployment finished.
-- Web: http://<your-server-ip>
-- Login: admin / admin123 (please change after login)
-- First-time Telegram login (if needed):
+✅ 部署完成！
+
+📋 访问信息：
+- 前端：http://<your-server-ip>
+- API：http://<your-server-ip>:3000
+- 默认登录：admin / admin123（请立即修改密码）
+
+📝 首次 Telegram 登录（如需要）：
   docker compose exec telethon \\
     python -c "from telethon import TelegramClient; import os; c=TelegramClient('/app/session/telegram', int(os.getenv('API_ID')), os.getenv('API_HASH')); c.start(); print('Login done'); c.disconnect()"
 
+🔧 常用命令：
+  查看状态：docker compose ps
+  查看日志：docker compose logs api -f
+  重启服务：docker compose restart api
+  停止服务：docker compose down
+
+🔐 安全提醒：
+  1. 立即修改默认密码
+  2. 配置 HTTPS（推荐使用 NPM）
+  3. 定期备份数据库
+
 SUCCESS
+
