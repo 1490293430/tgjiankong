@@ -173,9 +173,9 @@ fi
 
 # Up containers
 echo "[6/6] Starting services..."
-sudo docker compose up -d
+docker compose up -d
 sleep 2
-sudo docker compose ps || true
+docker compose ps || true
 
 cat <<SUCCESS
 
@@ -183,7 +183,7 @@ cat <<SUCCESS
 - Web: http://<your-server-ip>
 - Login: admin / admin123 (please change after login)
 - First-time Telegram login (if needed):
-  sudo docker compose exec telethon \
+  docker compose exec telethon \\
     python -c "from telethon import TelegramClient; import os; c=TelegramClient('/app/session/telegram', int(os.getenv('API_ID')), os.getenv('API_HASH')); c.start(); print('Login done'); c.disconnect()"
 
 SUCCESS
