@@ -359,9 +359,9 @@
     <div class="container">
         <div class="nav-tabs">
             <button class="nav-tab active" onclick="switchTab('dashboard')">📊 仪表盘</button>
-            <button class="nav-tab" onclick="switchTab('config')">⚙️ 配置</button>
             <button class="nav-tab" onclick="switchTab('ai')">🤖 AI 分析</button>
             <button class="nav-tab" onclick="switchTab('logs')">📝 日志</button>
+            <button class="nav-tab" onclick="switchTab('config')">⚙️ 配置</button>
             <button class="nav-tab" onclick="switchTab('settings')">🔐 设置</button>
         </div>
         
@@ -611,6 +611,30 @@
                     </div>
                 </div>
             </div>
+
+            <div class="card">
+                <h2>📋 最近分析结果</h2>
+                <div class="form-group">
+                    <select id="filterSentiment" onchange="loadAISummaries()">
+                        <option value="">所有情感</option>
+                        <option value="积极">积极</option>
+                        <option value="中性">中性</option>
+                        <option value="消极">消极</option>
+                    </select>
+                    <select id="filterRisk" onchange="loadAISummaries()" style="margin-left: 10px;">
+                        <option value="">所有风险等级</option>
+                        <option value="低风险">低风险</option>
+                        <option value="中风险">中风险</option>
+                        <option value="高风险">高风险</option>
+                    </select>
+                </div>
+                <div id="aiSummaryList"></div>
+                <div class="pagination">
+                    <button id="aiPrevPage" onclick="loadAISummaries(currentAIPage - 1)">上一页</button>
+                    <span id="aiPageInfo">第 1 页 / 共 1 页</span>
+                    <button id="aiNextPage" onclick="loadAISummaries(currentAIPage + 1)">下一页</button>
+                </div>
+            </div>
             
             <div class="card">
                 <h2>📈 情感分布</h2>
@@ -647,30 +671,6 @@
                         <div style="font-size: 36px; font-weight: bold; color: #e74c3c;" id="highRisk">0</div>
                         <div style="color: #666;">高风险</div>
                     </div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h2>📋 最近分析结果</h2>
-                <div class="form-group">
-                    <select id="filterSentiment" onchange="loadAISummaries()">
-                        <option value="">所有情感</option>
-                        <option value="positive">积极</option>
-                        <option value="neutral">中性</option>
-                        <option value="negative">消极</option>
-                    </select>
-                    <select id="filterRisk" onchange="loadAISummaries()" style="margin-left: 10px;">
-                        <option value="">所有风险等级</option>
-                        <option value="low">低风险</option>
-                        <option value="medium">中风险</option>
-                        <option value="high">高风险</option>
-                    </select>
-                </div>
-                <div id="aiSummaryList"></div>
-                <div class="pagination">
-                    <button id="aiPrevPage" onclick="loadAISummaries(currentAIPage - 1)">上一页</button>
-                    <span id="aiPageInfo">第 1 页 / 共 1 页</span>
-                    <button id="aiNextPage" onclick="loadAISummaries(currentAIPage + 1)">下一页</button>
                 </div>
             </div>
         </div>
@@ -868,12 +868,13 @@
             const container = document.getElementById('recentLogs');
             
             if (data && data.logs && data.logs.length > 0) {
-                let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>关键词</th><th>消息</th></tr></thead><tbody>';
+                let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>ID</th><th>关键词</th><th>消息</th></tr></thead><tbody>';
                 data.logs.forEach(log => {
                     const keywords = log.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('');
                     html += `<tr>
-                        <td>${new Date(log.time).toLocaleString('zh-CN')}</td>
+                        <td style="white-space: nowrap;">${new Date(log.time).toLocaleString('zh-CN')}</td>
                         <td>${log.channel}</td>
+                        <td style="font-size: 12px; color: #999;">${log.channelId || 'N/A'}</td>
                         <td>${keywords}</td>
                         <td>${log.message.substring(0, 100)}${log.message.length > 100 ? '...' : ''}</td>
                     </tr>`;
@@ -1046,7 +1047,11 @@
         // 加载日志
         async function loadLogs() {
             const keyword = document.getElementById('searchKeyword').value;
-            const data = await apiRequest(`/logs?page=${currentPage}&pageSize=20&keyword=${encodeURIComponent(keyword)}`);
+            let url = `/logs?page=${currentPage}&pageSize=20`;
+            if (keyword && keyword.trim() !== "") {
+                url += `&keyword=${encodeURIComponent(keyword)}`;
+            }
+            const data = await apiRequest(url);
             
             const container = document.getElementById('logsTable');
             const pagination = document.getElementById('pagination');
