@@ -77,11 +77,6 @@ services:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - tg-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
 networks:
   tg-network:
