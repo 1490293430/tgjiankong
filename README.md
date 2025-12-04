@@ -30,51 +30,92 @@
                     └────────────────┘
 ```
 
-## 🚀 快速开始（Debian 12 一键部署）
+## 🚀 快速开始
 
-适用于全新 Debian 12 VPS，自动安装 Docker、克隆仓库、写入 `.env` 并启动服务。
+### 环境要求
+- Docker 和 Docker Compose（已安装）
+- Telegram API 凭证（[获取地址](https://my.telegram.org/apps) 申请 `API_ID` 和 `API_HASH`）
 
-### 前置准备
+### 一键部署
 
-- Telegram API 凭证（https://my.telegram.org/apps 获取 `api_id` 和 `api_hash`）
-
-### 公共仓库：一行命令部署（推荐）
-
+**方法一：源码包部署（推荐，无需 GitHub Token）**
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
 ```
 
-如遇 GH_TOKEN 提示，可强制使用源码包模式：
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh) -m codeload
-```
-
-### 私有仓库：使用 GitHub Token（可选）
-
-```bash
-# 交互式安全输入（避免留下历史）
-read -rsp "GitHub Token: " GH_TOKEN; echo
-
-curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
-   https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh \
-   | GH_TOKEN="$GH_TOKEN" bash
-```
-
-或一次性非交互：
-
+**方法二：使用 GitHub Token（私有仓库适用）**
 ```bash
 GH_TOKEN=你的GitHubToken \
 bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
 ```
 
-完成后：
-- 访问 `http://你的服务器IP` 打开后台
-- 默认账号：`admin`，默认密码：`admin123`（请立即修改）
+### 首次启动
 
-首次启动步骤：
-- 在后台的“⚙️ 配置”页面填写 `API_ID` 与 `API_HASH` 并保存
-- 然后在“📝 日志”或“统计”页面上方提示处点击“登录 Telegram”，按验证码完成登录
+1. **访问后台**
+   - 打开 `http://你的服务器IP:5555`
+   - 默认账号：`admin` | 默认密码：`admin123`
+   - ⚠️ 第一时间修改默认密码
+
+2. **配置 Telegram API**
+   - 进入 **⚙️ 配置** 标签
+   - 填写 `API_ID` 和 `API_HASH`（从 https://my.telegram.org/apps 获取）
+   - 点击 **💾 保存配置**
+
+3. **首次登录 Telegram**
+   - 保存配置后，Telethon 容器会自动重新加载配置
+   - 访问服务器终端，执行交互式登录：
+     ```bash
+     cd /path/to/tgjiankong
+     docker compose run --rm -it telethon python -u monitor.py
+     ```
+   - 按提示输入你的 Telegram 账号（国内号码需加 +86）
+   - 输入收到的验证码，完成登录
+   - 登录成功后，session 会自动保存到 `data/session/`，无需每次都登录
+   - 按 `Ctrl+C` 停止容器，重启守护容器：
+     ```bash
+     docker compose up -d telethon
+     ```
+
+4. **配置监控规则**
+   - 返回后台配置页：
+     - 添加 **普通关键词**（满足即记录）
+     - 添加 **告警关键词**（满足即告警）
+     - 勾选 **记录所有消息**（可选，记录所有消息不分关键词）
+     - 添加 **监控频道**（频道 ID，留空则监控所有）
+   - 配置告警方式：
+     - **Telegram 告警**：设置告警目标（用户 ID 或 @username）
+     - **邮件告警**（可选）：配置 SMTP 参数
+     - **Webhook 告警**（可选）：提供接收 URL
+   - 点击 **💾 保存配置**
+
+5. **启用监听服务**
+   - 所有配置完成后，服务会自动监听 Telegram 消息
+   - 进入 **📊 统计** 或 **📝 日志** 标签，检查消息是否正常记录
+   - 查看 Telethon 日志确认服务状态：
+     ```bash
+     docker compose logs telethon --tail 100
+     ```
+
+### 常用命令
+
+```bash
+cd /path/to/tgjiankong
+
+# 查看服务状态
+docker compose ps
+
+# 查看实时日志
+docker compose logs -f telethon
+
+# 重启服务
+docker compose restart
+
+# 停止服务
+docker compose down
+
+# 查看消息记录数量
+docker compose exec mongo mongosh --eval 'db = db.getSiblingDB("tglogs"); db.logs.countDocuments()'
+```
 
 ## 📖 使用指南
 
@@ -106,6 +147,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/i
 - 勾选 **"启用邮件告警"**
 - 配置 SMTP 服务器信息
 - 推荐使用 Gmail、Outlook 等支持 SMTP 的邮箱
+- 点击 **"📩 发送测试告警"** 按钮验证邮件配置是否成功
 
 #### 3. Webhook 告警
 - 勾选 **"启用 Webhook 告警"**
@@ -308,7 +350,7 @@ docker stats
 | `API_ID` | Telegram API ID | ✅ | - |
 | `API_HASH` | Telegram API Hash | ✅ | - |
 | `JWT_SECRET` | JWT 签名密钥 | ✅ | - |
-| `WEB_PORT` | Web 服务端口 | ❌ | 80 |
+| `WEB_PORT` | Web 服务端口 | ❌ | 5555 |
 | `MONGO_URL` | MongoDB 连接地址 | ❌ | mongodb://mongo:27017/tglogs |
 | `PORT` | API 服务端口 | ❌ | 3000 |
 
@@ -326,8 +368,12 @@ A: 支持，只要你的账号可以访问该对话
 **Q: 如何升级到新版本？**
 A: 拉取最新代码，执行 `docker-compose down` 和 `docker-compose up -d --build`
 
-**Q: 数据存储在哪里？**
-A: MongoDB 数据在 `data/mongo/`，session 在 `data/session/`
+**Q: 邮件告警怎么配置？**
+A: 
+- QQ 邮箱：SMTP 服务器 `smtp.qq.com`，端口 `465`，密码用授权码
+- 163 邮箱：SMTP 服务器 `smtp.163.com`，端口 `465`，密码用授权码
+- Gmail：SMTP 服务器 `smtp.gmail.com`，端口 `587`，密码用应用专用密码
+- 配置完成后点击"📩 发送测试告警"按钮验证
 
 ## 📄 开源协议
 
