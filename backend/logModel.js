@@ -30,6 +30,14 @@ const logSchema = new mongoose.Schema({
   alerted: {
     type: Boolean,
     default: false
+  },
+  ai_analyzed: {
+    type: Boolean,
+    default: false
+  },
+  ai_summary_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'AISummary'
   }
 }, {
   timestamps: true
@@ -39,5 +47,6 @@ const logSchema = new mongoose.Schema({
 logSchema.index({ time: -1 });
 logSchema.index({ channelId: 1 });
 logSchema.index({ keywords: 1 });
+logSchema.index({ ai_analyzed: 1 });
 
 module.exports = mongoose.model('Log', logSchema);

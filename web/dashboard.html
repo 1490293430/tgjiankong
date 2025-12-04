@@ -317,6 +317,7 @@
         <div class="nav-tabs">
             <button class="nav-tab active" onclick="switchTab('dashboard')">📊 仪表盘</button>
             <button class="nav-tab" onclick="switchTab('config')">⚙️ 配置</button>
+            <button class="nav-tab" onclick="switchTab('ai')">🤖 AI 分析</button>
             <button class="nav-tab" onclick="switchTab('logs')">📝 日志</button>
             <button class="nav-tab" onclick="switchTab('settings')">🔐 设置</button>
         </div>
@@ -448,7 +449,155 @@
                 </div>
             </div>
             
+            <div class="card">
+                <h2>🤖 AI 分析配置</h2>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="enableAI">
+                    <label>启用 AI 分析功能</label>
+                </div>
+                
+                <div id="aiConfig" style="display: none; margin-left: 30px;">
+                    <div class="form-group">
+                        <label>OpenAI API Key <span style="color: #e74c3c;">*</span></label>
+                        <input type="password" id="openaiApiKey" placeholder="sk-...">
+                        <div class="hint">在 <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI 平台</a> 获取</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>API Base URL</label>
+                        <input type="text" id="openaiBaseUrl" value="https://api.openai.com/v1">
+                        <div class="hint">如使用代理或第三方服务，可修改此 URL</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>AI 模型</label>
+                        <select id="openaiModel">
+                            <option value="gpt-3.5-turbo">GPT-3.5 Turbo (经济实惠)</option>
+                            <option value="gpt-4">GPT-4 (更智能)</option>
+                            <option value="gpt-4-turbo">GPT-4 Turbo (平衡性能)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>触发方式</label>
+                        <select id="analysisTriggerType" onchange="toggleAnalysisTriggerOptions()">
+                            <option value="time">定时触发</option>
+                            <option value="count">消息数量触发</option>
+                        </select>
+                    </div>
+                    
+                    <div id="timeInterval" class="form-group">
+                        <label>分析间隔（分钟）</label>
+                        <input type="number" id="timeIntervalMinutes" value="30" min="1">
+                        <div class="hint">每隔多少分钟自动分析一次消息</div>
+                    </div>
+                    
+                    <div id="countThreshold" class="form-group" style="display: none;">
+                        <label>消息数量阈值</label>
+                        <input type="number" id="messageCountThreshold" value="50" min="1">
+                        <div class="hint">累积多少条未分析消息后自动触发分析</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>分析提示词</label>
+                        <textarea id="analysisPrompt" rows="3" placeholder="自定义 AI 分析提示词..."></textarea>
+                    </div>
+                    
+                    <div style="margin-top: 12px;">
+                        <button class="btn btn-secondary" onclick="testAIAnalysis()">🧪 立即分析</button>
+                        <span id="aiTestMsg" style="margin-left: 10px; color: #666;"></span>
+                    </div>
+                </div>
+            </div>
+            
             <button class="btn btn-primary" onclick="saveConfig()">💾 保存配置</button>
+        </div>
+        
+        <!-- AI 分析 -->
+        <div id="ai" class="tab-content">
+            <div class="card">
+                <h2>🤖 AI 分析统计</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>总分析次数</h3>
+                        <div class="number" id="aiTotalAnalyses">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>已分析消息</h3>
+                        <div class="number" id="aiTotalMessages">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>待分析消息</h3>
+                        <div class="number" id="aiUnanalyzedMessages">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>AI 模型</h3>
+                        <div class="number" id="aiModel" style="font-size: 14px;">-</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>📈 情感分布</h2>
+                <div id="sentimentChart" style="min-height: 200px;">
+                    <div style="display: flex; gap: 20px; justify-content: space-around; align-items: center; padding: 20px;">
+                        <div style="text-align: center;">
+                            <div style="font-size: 48px; font-weight: bold; color: #27ae60;" id="positiveCount">0</div>
+                            <div style="color: #666;">😊 积极</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="font-size: 48px; font-weight: bold; color: #95a5a6;" id="neutralCount">0</div>
+                            <div style="color: #666;">😐 中性</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="font-size: 48px; font-weight: bold; color: #e74c3c;" id="negativeCount">0</div>
+                            <div style="color: #666;">😔 消极</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>⚠️ 风险等级分布</h2>
+                <div style="display: flex; gap: 20px; justify-content: space-around; align-items: center; padding: 20px;">
+                    <div style="text-align: center;">
+                        <div style="font-size: 36px; font-weight: bold; color: #27ae60;" id="lowRisk">0</div>
+                        <div style="color: #666;">低风险</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <div style="font-size: 36px; font-weight: bold; color: #f39c12;" id="mediumRisk">0</div>
+                        <div style="color: #666;">中风险</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <div style="font-size: 36px; font-weight: bold; color: #e74c3c;" id="highRisk">0</div>
+                        <div style="color: #666;">高风险</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>📋 最近分析结果</h2>
+                <div class="form-group">
+                    <select id="filterSentiment" onchange="loadAISummaries()">
+                        <option value="">所有情感</option>
+                        <option value="positive">积极</option>
+                        <option value="neutral">中性</option>
+                        <option value="negative">消极</option>
+                    </select>
+                    <select id="filterRisk" onchange="loadAISummaries()" style="margin-left: 10px;">
+                        <option value="">所有风险等级</option>
+                        <option value="low">低风险</option>
+                        <option value="medium">中风险</option>
+                        <option value="high">高风险</option>
+                    </select>
+                </div>
+                <div id="aiSummaryList"></div>
+                <div class="pagination">
+                    <button id="aiPrevPage" onclick="loadAISummaries(currentAIPage - 1)">上一页</button>
+                    <span id="aiPageInfo">第 1 页 / 共 1 页</span>
+                    <button id="aiNextPage" onclick="loadAISummaries(currentAIPage + 1)">下一页</button>
+                </div>
+            </div>
         </div>
         
         <!-- 日志 -->
@@ -496,6 +645,7 @@
     <script>
         const API_URL = '/api';
         let currentPage = 1;
+        let currentAIPage = 1;
         let config = {};
         
         // 检查登录
@@ -551,6 +701,9 @@
                 loadRecentLogs();
             } else if (tabName === 'config') {
                 loadConfig();
+            } else if (tabName === 'ai') {
+                loadAIStats();
+                loadAISummaries();
             } else if (tabName === 'logs') {
                 loadLogs();
             }
@@ -624,6 +777,22 @@
                     document.getElementById('webhookUrl').value = config.alert_actions.webhook.url || '';
                     document.getElementById('webhookConfig').style.display = 'block';
                 }
+                
+                // AI 分析配置
+                const aiEnable = config.ai_analysis?.enabled || false;
+                document.getElementById('enableAI').checked = aiEnable;
+                
+                if (aiEnable && config.ai_analysis) {
+                    document.getElementById('openaiApiKey').value = config.ai_analysis.openai_api_key || '';
+                    document.getElementById('openaiBaseUrl').value = config.ai_analysis.openai_base_url || 'https://api.openai.com/v1';
+                    document.getElementById('openaiModel').value = config.ai_analysis.openai_model || 'gpt-3.5-turbo';
+                    document.getElementById('analysisTriggerType').value = config.ai_analysis.analysis_trigger_type || 'time';
+                    document.getElementById('timeIntervalMinutes').value = config.ai_analysis.time_interval_minutes || 30;
+                    document.getElementById('messageCountThreshold').value = config.ai_analysis.message_count_threshold || 50;
+                    document.getElementById('analysisPrompt').value = config.ai_analysis.analysis_prompt || '请分析以下 Telegram 消息，提供：1) 整体情感倾向（积极/中性/消极）；2) 主要内容分类；3) 关键主题和摘要；4) 重要关键词';
+                    document.getElementById('aiConfig').style.display = 'block';
+                    toggleAnalysisTriggerOptions();
+                }
             }
         }
         
@@ -654,6 +823,16 @@
                         enable: document.getElementById('enableWebhook').checked,
                         url: document.getElementById('webhookUrl').value
                     }
+                },
+                ai_analysis: {
+                    enabled: document.getElementById('enableAI').checked,
+                    openai_api_key: document.getElementById('openaiApiKey').value,
+                    openai_base_url: document.getElementById('openaiBaseUrl').value,
+                    openai_model: document.getElementById('openaiModel').value,
+                    analysis_trigger_type: document.getElementById('analysisTriggerType').value,
+                    time_interval_minutes: parseInt(document.getElementById('timeIntervalMinutes').value) || 30,
+                    message_count_threshold: parseInt(document.getElementById('messageCountThreshold').value) || 50,
+                    analysis_prompt: document.getElementById('analysisPrompt').value
                 }
             };
             
@@ -790,7 +969,7 @@
             window.location.href = 'index.html';
         }
         
-        // 邮件/Webhook 复选框事件
+        // 邮件/Webhook/AI 复选框事件
         document.getElementById('enableEmail').addEventListener('change', (e) => {
             document.getElementById('emailConfig').style.display = e.target.checked ? 'block' : 'none';
         });
@@ -798,6 +977,183 @@
         document.getElementById('enableWebhook').addEventListener('change', (e) => {
             document.getElementById('webhookConfig').style.display = e.target.checked ? 'block' : 'none';
         });
+        
+        document.getElementById('enableAI').addEventListener('change', (e) => {
+            document.getElementById('aiConfig').style.display = e.target.checked ? 'block' : 'none';
+        });
+        
+        // 切换 AI 触发方式选项
+        function toggleAnalysisTriggerOptions() {
+            const triggerType = document.getElementById('analysisTriggerType').value;
+            document.getElementById('timeInterval').style.display = triggerType === 'time' ? 'block' : 'none';
+            document.getElementById('countThreshold').style.display = triggerType === 'count' ? 'block' : 'none';
+        }
+        
+        // 加载 AI 统计信息
+        async function loadAIStats() {
+            const stats = await apiRequest('/ai/stats');
+            if (stats) {
+                document.getElementById('aiTotalAnalyses').textContent = stats.total_analyses || 0;
+                document.getElementById('aiTotalMessages').textContent = stats.total_messages_analyzed || 0;
+                document.getElementById('aiUnanalyzedMessages').textContent = stats.unanalyzed_messages || 0;
+                document.getElementById('aiModel').textContent = stats.ai_config?.model || 'N/A';
+                
+                // 情感分布
+                const sentimentDist = stats.sentiment_distribution || [];
+                let positive = 0, neutral = 0, negative = 0;
+                sentimentDist.forEach(item => {
+                    if (item._id === 'positive') positive = item.count;
+                    if (item._id === 'neutral') neutral = item.count;
+                    if (item._id === 'negative') negative = item.count;
+                });
+                document.getElementById('positiveCount').textContent = positive;
+                document.getElementById('neutralCount').textContent = neutral;
+                document.getElementById('negativeCount').textContent = negative;
+                
+                // 风险分布
+                const riskDist = stats.risk_distribution || [];
+                let low = 0, medium = 0, high = 0;
+                riskDist.forEach(item => {
+                    if (item._id === 'low') low = item.count;
+                    if (item._id === 'medium') medium = item.count;
+                    if (item._id === 'high') high = item.count;
+                });
+                document.getElementById('lowRisk').textContent = low;
+                document.getElementById('mediumRisk').textContent = medium;
+                document.getElementById('highRisk').textContent = high;
+            }
+        }
+        
+        // 加载 AI 分析结果列表
+        async function loadAISummaries(page = 1) {
+            currentAIPage = page;
+            const sentiment = document.getElementById('filterSentiment').value;
+            const riskLevel = document.getElementById('filterRisk').value;
+            
+            let url = `/ai/summary?page=${page}&pageSize=10`;
+            if (sentiment) url += `&sentiment=${sentiment}`;
+            if (riskLevel) url += `&riskLevel=${riskLevel}`;
+            
+            const data = await apiRequest(url);
+            if (data) {
+                const list = document.getElementById('aiSummaryList');
+                if (data.summaries && data.summaries.length > 0) {
+                    list.innerHTML = data.summaries.map(summary => {
+                        const sentiment = summary.analysis_result?.sentiment || 'neutral';
+                        const sentimentEmoji = sentiment === 'positive' ? '😊' : sentiment === 'negative' ? '😔' : '😐';
+                        const sentimentColor = sentiment === 'positive' ? '#27ae60' : sentiment === 'negative' ? '#e74c3c' : '#95a5a6';
+                        
+                        const risk = summary.analysis_result?.risk_level || 'low';
+                        const riskEmoji = risk === 'low' ? '✅' : risk === 'medium' ? '⚠️' : '🚨';
+                        const riskColor = risk === 'low' ? '#27ae60' : risk === 'medium' ? '#f39c12' : '#e74c3c';
+                        
+                        const date = new Date(summary.analysis_time).toLocaleString('zh-CN');
+                        const keywords = (summary.analysis_result?.keywords || []).slice(0, 5).join(', ');
+                        const summary_text = summary.analysis_result?.summary || '无摘要';
+                        
+                        // 频道统计
+                        const channelStats = (summary.channel_stats || []).map(ch => 
+                            `<span style="background: #3498db; color: white; padding: 2px 8px; border-radius: 3px; margin-right: 5px; font-size: 11px;">
+                                📢 ${ch.name} (${ch.count})
+                            </span>`
+                        ).join('');
+                        
+                        // 发送者统计（显示前5个）
+                        const senderStats = (summary.sender_stats || []).slice(0, 5).map(sender => 
+                            `<span style="background: #9b59b6; color: white; padding: 2px 8px; border-radius: 3px; margin-right: 5px; font-size: 11px;">
+                                👤 ${sender.name} (${sender.count})
+                            </span>`
+                        ).join('');
+                        
+                        // 消息预览
+                        const messagePreview = (summary.messages_preview || []).map(msg => {
+                            const msgDate = new Date(msg.timestamp).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
+                            const msgText = msg.text.length > 50 ? msg.text.substring(0, 50) + '...' : msg.text;
+                            return `
+                                <div style="background: #f8f9fa; padding: 8px; margin-top: 5px; border-left: 3px solid #3498db; font-size: 12px;">
+                                    <div style="color: #666; margin-bottom: 3px;">
+                                        <strong>${msgDate}</strong> | 📢 ${msg.channel} | 👤 ${msg.sender}
+                                    </div>
+                                    <div style="color: #333;">${msgText}</div>
+                                </div>
+                            `;
+                        }).join('');
+                        
+                        return `
+                            <div style="border: 1px solid #ddd; padding: 15px; margin-bottom: 15px; border-radius: 5px;">
+                                <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                                    <div>
+                                        <strong>${date}</strong> - ${summary.message_count} 条消息
+                                    </div>
+                                    <div>
+                                        <span style="background: ${sentimentColor}; color: white; padding: 3px 10px; border-radius: 3px; margin-right: 5px;">
+                                            ${sentimentEmoji} ${sentiment}
+                                        </span>
+                                        <span style="background: ${riskColor}; color: white; padding: 3px 10px; border-radius: 3px;">
+                                            ${riskEmoji} ${risk}
+                                        </span>
+                                    </div>
+                                </div>
+                                
+                                ${channelStats ? `<div style="margin-bottom: 8px;">${channelStats}</div>` : ''}
+                                ${senderStats ? `<div style="margin-bottom: 10px;">${senderStats}</div>` : ''}
+                                
+                                <div style="color: #666; margin-bottom: 8px;">
+                                    <strong>📝 AI 摘要:</strong> ${summary_text}
+                                </div>
+                                ${keywords ? `<div style="color: #888; font-size: 12px; margin-bottom: 10px;"><strong>🔑 关键词:</strong> ${keywords}</div>` : ''}
+                                
+                                ${messagePreview ? `
+                                    <details style="margin-top: 10px;">
+                                        <summary style="cursor: pointer; color: #3498db; font-size: 12px;">📋 查看消息预览 (${summary.messages_preview?.length || 0}/${summary.message_count})</summary>
+                                        ${messagePreview}
+                                    </details>
+                                ` : ''}
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    list.innerHTML = '<p style="text-align: center; color: #999;">暂无分析结果</p>';
+                }
+                
+                document.getElementById('aiPageInfo').textContent = `第 ${page} 页 / 共 ${data.totalPages || 1} 页`;
+                document.getElementById('aiPrevPage').disabled = page <= 1;
+                document.getElementById('aiNextPage').disabled = page >= (data.totalPages || 1);
+            }
+        }
+        
+        // 测试 AI 分析
+        async function testAIAnalysis() {
+            const token = checkAuth();
+            if (!token) return;
+            
+            const el = document.getElementById('aiTestMsg');
+            el.style.color = '#666';
+            el.textContent = '⏳ 正在执行 AI 分析...';
+            
+            try {
+                const resp = await fetch(`${API_URL}/ai/analyze-now`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await resp.json();
+                
+                if (data.success) {
+                    el.style.color = '#27ae60';
+                    el.textContent = `✅ 分析成功！共 ${data.message_count} 条消息，情感: ${data.analysis?.sentiment || '未知'}`;
+                } else {
+                    el.style.color = '#e74c3c';
+                    el.textContent = `❌ ${data.error || data.message || '分析失败'}`;
+                }
+            } catch (error) {
+                el.style.color = '#e74c3c';
+                el.textContent = `❌ 请求失败: ${error.message}`;
+            }
+        }
         
         // 初始化
         checkAuth();

@@ -10,6 +10,8 @@ const axios = require('axios');
 require('dotenv').config();
 
 const Log = require('./logModel');
+const AISummary = require('./aiSummaryModel');
+const AIAnalysisService = require('./services/aiAnalysis');
 
 const app = express();
 app.use(express.json());
@@ -45,6 +47,16 @@ const defaultConfig = {
       enable: false,
       url: ''
     }
+  },
+  ai_analysis: {
+    enabled: false,
+    openai_api_key: '',
+    openai_model: 'gpt-3.5-turbo',
+    openai_base_url: 'https://api.openai.com/v1',
+    analysis_trigger_type: 'time', // 'time' 或 'count'
+    time_interval_minutes: 30,
+    message_count_threshold: 50,
+    analysis_prompt: '请分析以下 Telegram 消息，提供：1) 整体情感倾向（积极/中性/消极）；2) 主要内容分类；3) 关键主题和摘要；4) 重要关键词'
   },
   admin: {
     username: 'admin',
@@ -180,6 +192,15 @@ app.post('/api/config', authMiddleware, (req, res) => {
     };
     
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(newConfig, null, 2));
+    
+    // 如果 AI 分析配置有变化，重启定时器
+    if (incoming.ai_analysis) {
+      setTimeout(() => {
+        startAIAnalysisTimer();
+        console.log('🔄 AI 分析配置已更新，定时器已重启');
+      }, 1000);
+    }
+    
     res.json({ status: 'ok', message: '配置保存成功' });
   } catch (error) {
     res.status(500).json({ error: '保存配置失败：' + error.message });
@@ -421,10 +442,287 @@ async function sendEmail(emailConfig, subject, text) {
   });
 }
 
+// ===== AI 分析 API =====
+
+// 获取 AI 分析结果列表
+app.get('/api/ai/summary', authMiddleware, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const pageSize = parseInt(req.query.pageSize) || 10;
+    const sentiment = req.query.sentiment || '';
+    const riskLevel = req.query.riskLevel || '';
+    
+    const query = {};
+    if (sentiment) {
+      query['analysis_result.sentiment'] = sentiment;
+    }
+    if (riskLevel) {
+      query['analysis_result.risk_level'] = riskLevel;
+    }
+    
+    const total = await AISummary.countDocuments(query);
+    const summaries = await AISummary.find(query)
+      .sort({ analysis_time: -1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize);
+    
+    // 为每个分析结果添加频道统计信息
+    const summariesWithStats = summaries.map(summary => {
+      const channels = {};
+      const senders = {};
+      
+      summary.messages_analyzed.forEach(msg => {
+        channels[msg.channel] = (channels[msg.channel] || 0) + 1;
+        senders[msg.sender] = (senders[msg.sender] || 0) + 1;
+      });
+      
+      return {
+        ...summary.toObject(),
+        channel_stats: Object.entries(channels).map(([name, count]) => ({ name, count })),
+        sender_stats: Object.entries(senders).map(([name, count]) => ({ name, count })),
+        messages_preview: summary.messages_analyzed.slice(0, 3) // 只返回前3条消息预览
+      };
+    });
+    
+    res.json({
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize),
+      summaries: summariesWithStats
+    });
+  } catch (error) {
+    res.status(500).json({ error: '获取 AI 分析结果失败：' + error.message });
+  }
+});
+
+// 获取单个 AI 分析详情
+app.get('/api/ai/summary/:id', authMiddleware, async (req, res) => {
+  try {
+    const summary = await AISummary.findById(req.params.id);
+    
+    if (!summary) {
+      return res.status(404).json({ error: '分析结果不存在' });
+    }
+    
+    res.json(summary);
+  } catch (error) {
+    res.status(500).json({ error: '获取分析详情失败：' + error.message });
+  }
+});
+
+// 手动触发 AI 分析
+app.post('/api/ai/analyze-now', authMiddleware, async (req, res) => {
+  try {
+    const result = await performAIAnalysis('manual');
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: '触发 AI 分析失败：' + error.message });
+  }
+});
+
+// 获取 AI 分析统计信息
+app.get('/api/ai/stats', authMiddleware, async (req, res) => {
+  try {
+    const total = await AISummary.countDocuments();
+    const totalMessagesAnalyzed = await AISummary.aggregate([
+      { $group: { _id: null, total: { $sum: '$message_count' } } }
+    ]);
+    
+    const sentimentStats = await AISummary.aggregate([
+      { $group: { _id: '$analysis_result.sentiment', count: { $sum: 1 } } }
+    ]);
+    
+    const riskStats = await AISummary.aggregate([
+      { $group: { _id: '$analysis_result.risk_level', count: { $sum: 1 } } }
+    ]);
+    
+    const unanalyzedCount = await Log.countDocuments({ ai_analyzed: false });
+    
+    const config = loadConfig();
+    const aiConfig = config.ai_analysis || {};
+    
+    res.json({
+      total_analyses: total,
+      total_messages_analyzed: totalMessagesAnalyzed[0]?.total || 0,
+      unanalyzed_messages: unanalyzedCount,
+      sentiment_distribution: sentimentStats,
+      risk_distribution: riskStats,
+      ai_config: {
+        enabled: aiConfig.enabled || false,
+        model: aiConfig.openai_model || 'gpt-3.5-turbo',
+        trigger_type: aiConfig.analysis_trigger_type || 'time',
+        time_interval: aiConfig.time_interval_minutes || 30,
+        count_threshold: aiConfig.message_count_threshold || 50,
+        api_configured: !!(aiConfig.openai_api_key)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: '获取 AI 统计信息失败：' + error.message });
+  }
+});
+
+// 重启 AI 分析定时器（配置更新后调用）
+app.post('/api/ai/restart-timer', authMiddleware, async (req, res) => {
+  try {
+    startAIAnalysisTimer();
+    res.json({ status: 'ok', message: 'AI 分析定时器已重启' });
+  } catch (error) {
+    res.status(500).json({ error: '重启定时器失败：' + error.message });
+  }
+});
+
 // ===== 健康检查 =====
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
+
+// ===== AI 分析功能 =====
+let aiAnalysisTimer = null;
+let messageCounter = 0;
+let lastAnalysisTime = new Date();
+
+// 执行 AI 批量分析
+async function performAIAnalysis(triggerType = 'manual') {
+  const config = loadConfig();
+  
+  if (!config.ai_analysis?.enabled) {
+    console.log('⏸️  AI 分析功能未启用');
+    return { success: false, error: 'AI 分析功能未启用' };
+  }
+
+  const aiService = new AIAnalysisService(config.ai_analysis);
+  
+  if (!aiService.isConfigured()) {
+    console.log('⚠️  AI 分析配置不完整');
+    return { success: false, error: 'OpenAI API Key 未配置' };
+  }
+
+  try {
+    // 查询未分析的消息
+    const unanalyzedMessages = await Log.find({ ai_analyzed: false })
+      .sort({ time: -1 })
+      .limit(100); // 最多分析最近 100 条
+
+    if (unanalyzedMessages.length === 0) {
+      console.log('📭 没有待分析的消息');
+      return { success: true, message: '没有待分析的消息', message_count: 0 };
+    }
+
+    console.log(`🤖 开始 AI 分析 ${unanalyzedMessages.length} 条消息 (触发方式: ${triggerType})...`);
+
+    // 准备分析数据
+    const messagesToAnalyze = unanalyzedMessages.map(log => ({
+      text: log.message,
+      sender: log.sender,
+      channel: log.channel,
+      timestamp: log.time
+    }));
+
+    // 调用 AI 分析服务
+    const analysisResult = await aiService.analyzeMessages(messagesToAnalyze);
+
+    if (!analysisResult.success) {
+      console.error('❌ AI 分析失败:', analysisResult.error);
+      return analysisResult;
+    }
+
+    // 保存分析结果
+    const summary = new AISummary({
+      message_count: unanalyzedMessages.length,
+      messages_analyzed: unanalyzedMessages.map(log => ({
+        log_id: log._id,
+        text: log.message,
+        sender: log.sender,
+        channel: log.channel,
+        timestamp: log.time
+      })),
+      analysis_result: analysisResult.analysis,
+      model_info: {
+        model: analysisResult.model,
+        tokens_used: analysisResult.tokens_used
+      },
+      trigger_type: triggerType
+    });
+
+    await summary.save();
+
+    // 标记消息为已分析
+    const messageIds = unanalyzedMessages.map(log => log._id);
+    await Log.updateMany(
+      { _id: { $in: messageIds } },
+      { $set: { ai_analyzed: true, ai_summary_id: summary._id } }
+    );
+
+    console.log(`✅ AI 分析完成，情感: ${analysisResult.analysis.sentiment}, 风险: ${analysisResult.analysis.risk_level}`);
+    
+    // 重置消息计数器
+    messageCounter = 0;
+    lastAnalysisTime = new Date();
+
+    return {
+      success: true,
+      summary_id: summary._id,
+      message_count: unanalyzedMessages.length,
+      analysis: analysisResult.analysis
+    };
+
+  } catch (error) {
+    console.error('❌ AI 分析过程出错:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// 启动 AI 分析定时器
+function startAIAnalysisTimer() {
+  const config = loadConfig();
+  
+  if (!config.ai_analysis?.enabled) {
+    console.log('⏸️  AI 分析功能未启用');
+    return;
+  }
+
+  const triggerType = config.ai_analysis.analysis_trigger_type || 'time';
+  
+  if (triggerType === 'time') {
+    const intervalMinutes = config.ai_analysis.time_interval_minutes || 30;
+    const intervalMs = intervalMinutes * 60 * 1000;
+    
+    if (aiAnalysisTimer) {
+      clearInterval(aiAnalysisTimer);
+    }
+    
+    aiAnalysisTimer = setInterval(() => {
+      console.log(`⏰ 定时触发 AI 分析 (间隔: ${intervalMinutes} 分钟)`);
+      performAIAnalysis('time');
+    }, intervalMs);
+    
+    console.log(`✅ AI 定时分析已启动，间隔: ${intervalMinutes} 分钟`);
+  } else if (triggerType === 'count') {
+    const threshold = config.ai_analysis.message_count_threshold || 50;
+    console.log(`✅ AI 计数触发已配置，阈值: ${threshold} 条消息`);
+  }
+}
+
+// 监听新消息（用于计数触发）
+async function checkMessageCountTrigger() {
+  const config = loadConfig();
+  
+  if (!config.ai_analysis?.enabled || config.ai_analysis.analysis_trigger_type !== 'count') {
+    return;
+  }
+
+  const threshold = config.ai_analysis.message_count_threshold || 50;
+  const unanalyzedCount = await Log.countDocuments({ ai_analyzed: false });
+  
+  if (unanalyzedCount >= threshold) {
+    console.log(`📊 未分析消息达到阈值 ${threshold}，触发 AI 分析`);
+    await performAIAnalysis('count');
+  }
+}
+
+// 定期检查消息计数（每分钟检查一次）
+setInterval(checkMessageCountTrigger, 60000);
 
 // 启动服务器
 app.listen(PORT, () => {
@@ -432,4 +730,9 @@ app.listen(PORT, () => {
   console.log(`📝 默认用户名: admin`);
   console.log(`📝 默认密码: admin123`);
   console.log(`⚠️  请及时修改默认密码！`);
+  
+  // 启动 AI 分析
+  setTimeout(() => {
+    startAIAnalysisTimer();
+  }, 3000);
 });
