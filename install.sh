@@ -58,27 +58,26 @@ API_HASH="${API_HASH:-${API_HASH:-""}}"
 # Ensure deps
 echo "[1/6] Installing base dependencies..."
 if command -v apt >/dev/null 2>&1; then
-  sudo apt update -y
-  sudo apt install -y ca-certificates curl gnupg lsb-release git >/dev/null
+  apt update -y
+  apt install -y ca-certificates curl gnupg lsb-release git >/dev/null
 fi
 
 # Install docker if missing
 if ! command -v docker >/dev/null 2>&1; then
   echo "[2/6] Installing Docker..."
-  sudo install -m 0755 -d /etc/apt/keyrings || true
-  curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release; echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-  sudo apt update -y
-  sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  sudo systemctl enable --now docker
+  install -m 0755 -d /etc/apt/keyrings || true
+  curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release; echo $VERSION_CODENAME) stable" | tee /etc/apt/sources.list.d/docker.list >/dev/null
+  apt update -y
+  apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  systemctl enable --now docker
 else
   echo "[2/6] Docker already installed"
 fi
 
 # Prepare directory
 echo "[3/6] Preparing app directory at ${APP_DIR}..."
-sudo mkdir -p "$APP_DIR"
-sudo chown -R "$USER:$USER" "$APP_DIR"
+mkdir -p "$APP_DIR"
 
 # Clone or update
 echo "[4/6] Fetching repository (${MODE})..."
