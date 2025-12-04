@@ -150,14 +150,14 @@ fi
 # Update JWT_SECRET if it's the default value
 if grep -q '^JWT_SECRET=change-this' .env; then
   RAND=$(openssl rand -base64 32)
-  sed -i "s/^JWT_SECRET=.*/JWT_SECRET=${RAND}/" .env
+  sed -i "s|^JWT_SECRET=.*|JWT_SECRET=${RAND}|" .env
 fi
 
 if [ -n "${API_ID:-}" ]; then
-  sed -i "s/^API_ID=.*/API_ID=${API_ID}/" .env
+  sed -i "s|^API_ID=.*|API_ID=${API_ID}|" .env
 fi
 if [ -n "${API_HASH:-}" ]; then
-  sed -i "s/^API_HASH=.*/API_HASH=${API_HASH}/" .env
+  sed -i "s|^API_HASH=.*|API_HASH=${API_HASH}|" .env
 fi
 
 mkdir -p data/mongo data/session logs/api logs/telethon
