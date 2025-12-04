@@ -17,6 +17,10 @@ const AISummary = require('./aiSummaryModel');
 const AIAnalysisService = require('./services/aiAnalysis');
 
 const app = express();
+
+// 🔒 信任反向代理（用于 X-Forwarded-For 头部，在 Docker + Nginx 环境中必需）
+app.set('trust proxy', 1);
+
 app.use(express.json());
 
 // 🔒 配置 CORS 白名单
