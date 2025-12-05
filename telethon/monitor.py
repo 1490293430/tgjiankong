@@ -97,10 +97,11 @@ async def trigger_ai_analysis(sender_id, client):
     """触发 AI 分析并发送结果给指定用户"""
     try:
         # 调用内部 AI 分析接口（不需要认证）
+        # 增加超时时间到 120 秒，因为 AI 分析可能需要较长时间
         response = requests.post(
             f"{API_URL}/api/internal/ai/analyze-now",
             json={"trigger_type": "user_message"},
-            timeout=30
+            timeout=120
         )
         
         if response.status_code == 200:

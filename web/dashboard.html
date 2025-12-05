@@ -1427,7 +1427,7 @@
         const savedTab = localStorage.getItem('currentTab') || 'dashboard';
         document.querySelectorAll('.nav-tab').forEach((tab, index) => {
             tab.classList.remove('active');
-            const tabNames = ['dashboard', 'config', 'ai', 'logs', 'settings'];
+            const tabNames = ['dashboard', 'ai', 'logs', 'config', 'settings'];
             if (tabNames[index] === savedTab) {
                 tab.classList.add('active');
             }
