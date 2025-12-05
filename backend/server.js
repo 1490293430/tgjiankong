@@ -123,7 +123,12 @@ const defaultConfig = {
     analysis_trigger_type: 'time', // 'time' 或 'count'
     time_interval_minutes: 30,
     message_count_threshold: 50,
-    analysis_prompt: '请分析以下 Telegram 消息，提供：1) 整体情感倾向（积极/中性/消极）；2) 主要内容分类；3) 关键主题和摘要；4) 重要关键词'
+    analysis_prompt: '请分析以下 Telegram 消息，提供：1) 整体情感倾向（积极/中性/消极）；2) 主要内容分类；3) 关键主题和摘要；4) 重要关键词',
+    ai_send_telegram: true,
+    ai_send_email: false,
+    ai_send_webhook: false,
+    ai_trigger_enabled: false, // 是否启用固定用户触发
+    ai_trigger_users: [] // 固定用户列表，当这些用户发送消息时立刻分析
   },
   admin: {
     username: 'admin',
@@ -793,6 +798,53 @@ async function performAIAnalysis(triggerType = 'manual') {
     );
 
     console.log(`✅ AI 分析完成，情感: ${analysisResult.analysis.sentiment}, 风险: ${analysisResult.analysis.risk_level}`);
+    
+    // 根据配置发送告警
+    const aiSendTelegram = config.ai_analysis?.ai_send_telegram !== false; // 默认启用
+    const aiSendEmail = config.ai_analysis?.ai_send_email || false;
+    const aiSendWebhook = config.ai_analysis?.ai_send_webhook || false;
+    
+    if (aiSendTelegram || aiSendEmail || aiSendWebhook) {
+      const alertMessage = `🤖 AI 分析完成\n\n总分析消息数: ${unanalyzedMessages.length}\n情感倾向: ${analysisResult.analysis.sentiment}\n风险等级: ${analysisResult.analysis.risk_level}\n\n摘要:\n${analysisResult.analysis.summary}\n\n关键词: ${(analysisResult.analysis.keywords || []).join(', ')}`;
+      
+      // 发送 Telegram 告警
+      if (aiSendTelegram && config.alert_target) {
+        try {
+          // 这里需要通过监听服务发送，暂时记录日志
+          console.log('📱 AI 分析结果将通过 Telegram 发送至:', config.alert_target);
+        } catch (error) {
+          console.error('❌ Telegram 发送失败:', error.message);
+        }
+      }
+      
+      // 发送邮件告警
+      if (aiSendEmail && config.alert_actions?.email?.enable) {
+        try {
+          await sendEmail(config.alert_actions.email, '🤖 AI 分析结果通知', alertMessage);
+          console.log('📧 AI 分析结果已通过邮件发送');
+        } catch (error) {
+          console.error('❌ 邮件发送失败:', error.message);
+        }
+      }
+      
+      // 发送 Webhook 告警
+      if (aiSendWebhook && config.alert_actions?.webhook?.enable && config.alert_actions.webhook.url) {
+        try {
+          await axios.post(config.alert_actions.webhook.url, {
+            type: 'ai_analysis',
+            timestamp: new Date().toISOString(),
+            message_count: unanalyzedMessages.length,
+            sentiment: analysisResult.analysis.sentiment,
+            risk_level: analysisResult.analysis.risk_level,
+            summary: analysisResult.analysis.summary,
+            keywords: analysisResult.analysis.keywords
+          });
+          console.log('🔗 AI 分析结果已通过 Webhook 发送');
+        } catch (error) {
+          console.error('❌ Webhook 发送失败:', error.message);
+        }
+      }
+    }
     
     // 重置消息计数器
     messageCounter = 0;

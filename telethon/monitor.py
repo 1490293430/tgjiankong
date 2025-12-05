@@ -93,6 +93,55 @@ async def send_alert(keyword, message, sender, channel, channel_id, message_id):
     except Exception as e:
         print(f"❌ 发送告警失败: {e}")
 
+async def trigger_ai_analysis(sender_id, client):
+    """触发 AI 分析并发送结果给指定用户"""
+    try:
+        # 调用 AI 分析接口
+        response = requests.post(
+            f"{API_URL}/api/ai/analyze-now",
+            json={"trigger_type": "user_message"},
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("success"):
+                analysis = result.get("analysis", {})
+                summary = f"""
+🤖 AI 分析结果
+
+📊 统计信息:
+- 分析消息数: {result.get('message_count', 0)}
+
+😊/😐/😔 情感分析:
+- 整体情感: {analysis.get('sentiment', 'unknown')}
+- 情感分数: {analysis.get('sentiment_score', 0)}
+
+⚠️ 风险评估:
+- 风险等级: {analysis.get('risk_level', 'unknown')}
+
+📝 内容摘要:
+{analysis.get('summary', '无法生成摘要')}
+
+🔑 关键词:
+{', '.join(analysis.get('keywords', []))}
+"""
+                
+                # 发送分析结果给用户
+                try:
+                    # 尝试通过用户 ID 发送
+                    await client.send_message(int(sender_id), summary)
+                    print(f"✅ AI 分析结果已发送给用户 {sender_id}")
+                except Exception as e:
+                    print(f"❌ 发送分析结果失败: {e}")
+            else:
+                error_msg = result.get("error", "未知错误")
+                print(f"❌ AI 分析失败: {error_msg}")
+        else:
+            print(f"❌ AI 分析请求失败: {response.status_code}")
+    except Exception as e:
+        print(f"❌ 触发 AI 分析异常: {e}")
+
 async def save_log(channel, channel_id, sender, message, keywords, message_id):
     """保存日志到 MongoDB"""
     try:
@@ -163,6 +212,32 @@ async def message_handler(event, client):
                 sender = str(sid)
             else:
                 sender = channel_name or "Unknown"
+        
+        # 获取发送者的 ID（用于固定用户触发检查和 AI 分析返回）
+        sender_id = None
+        if sender_entity:
+            sender_id = getattr(sender_entity, 'id', None)
+        if not sender_id:
+            sender_id = getattr(event, 'sender_id', None)
+        
+        # 检查是否为固定用户，如果是则立刻触发 AI 分析
+        ai_trigger_enabled = config.get("ai_analysis", {}).get("ai_trigger_enabled", False)
+        ai_trigger_users = config.get("ai_analysis", {}).get("ai_trigger_users", [])
+        
+        if ai_trigger_enabled and ai_trigger_users and sender_id:
+            # 检查发送者是否在固定用户列表中（支持用户名、显示名、ID）
+            sender_triggers = [
+                str(sender_id),  # 数字 ID
+                f"@{getattr(sender_entity, 'username', '')}" if sender_entity and getattr(sender_entity, 'username', None) else None,  # @username
+                full_name if 'full_name' in locals() else None,  # 真实名字
+                sender  # 完整的 sender 字符串
+            ]
+            
+            for trigger_user in ai_trigger_users:
+                if trigger_user.strip() in [str(s) for s in sender_triggers if s]:
+                    print(f"🤖 固定用户 {sender} 触发 AI 分析")
+                    asyncio.create_task(trigger_ai_analysis(sender_id, client))
+                    break
         
         # 检查普通关键词
         matched_keywords = []

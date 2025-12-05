@@ -565,6 +565,39 @@
                             <label>分析提示词</label>
                             <textarea id="analysisPrompt" rows="3" placeholder="自定义 AI 分析提示词..."></textarea>
                         </div>
+
+                        <div class="form-group">
+                            <label style="display: block; margin-bottom: 10px;">📢 AI 结果发送方式</label>
+                            <div style="margin-left: 15px;">
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="aiSendTelegram">
+                                    <label>📱 Telegram 告警</label>
+                                </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="aiSendEmail">
+                                    <label>📧 邮件告警</label>
+                                </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="aiSendWebhook">
+                                    <label>🔗 Webhook 告警</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="enableAITrigger" onchange="toggleAITriggerConfig()">
+                                <label>🔔 启用固定用户触发分析</label>
+                            </div>
+                        </div>
+
+                        <div id="aiTriggerConfig" style="display: none; margin-left: 30px;">
+                            <div class="form-group">
+                                <label>固定用户列表</label>
+                                <textarea id="aiTriggerUsers" rows="3" placeholder="输入用户名或用户ID，每行一个&#10;例如：&#10;user123&#10;张三&#10;1234567890"></textarea>
+                                <div class="hint">当这些用户发送消息时，立刻触发 AI 分析，并将结果返回给该用户</div>
+                            </div>
+                        </div>
                         
                         <div style="margin-top: 12px;">
                             <button class="btn btn-secondary" onclick="testAIAnalysis()">🧪 立即分析</button>
@@ -941,8 +974,14 @@
                     document.getElementById('timeIntervalMinutes').value = config.ai_analysis.time_interval_minutes || 30;
                     document.getElementById('messageCountThreshold').value = config.ai_analysis.message_count_threshold || 50;
                     document.getElementById('analysisPrompt').value = config.ai_analysis.analysis_prompt || '请分析以下 Telegram 消息，提供：1) 整体情感倾向（积极/中性/消极）；2) 主要内容分类；3) 关键主题和摘要；4) 重要关键词';
+                    document.getElementById('aiSendTelegram').checked = config.ai_analysis.ai_send_telegram !== false; // 默认开启
+                    document.getElementById('aiSendEmail').checked = config.ai_analysis.ai_send_email || false;
+                    document.getElementById('aiSendWebhook').checked = config.ai_analysis.ai_send_webhook || false;
+                    document.getElementById('enableAITrigger').checked = config.ai_analysis.ai_trigger_enabled || false;
+                    document.getElementById('aiTriggerUsers').value = (config.ai_analysis.ai_trigger_users || []).join('\n');
                     document.getElementById('aiConfig').style.display = 'block';
                     toggleAnalysisTriggerOptions();
+                    toggleAITriggerConfig();
                 }
             }
         }
@@ -992,7 +1031,12 @@
                     analysis_trigger_type: document.getElementById('analysisTriggerType').value,
                     time_interval_minutes: parseInt(document.getElementById('timeIntervalMinutes').value) || 30,
                     message_count_threshold: parseInt(document.getElementById('messageCountThreshold').value) || 50,
-                    analysis_prompt: document.getElementById('analysisPrompt').value
+                    analysis_prompt: document.getElementById('analysisPrompt').value,
+                    ai_send_telegram: document.getElementById('aiSendTelegram').checked,
+                    ai_send_email: document.getElementById('aiSendEmail').checked,
+                    ai_send_webhook: document.getElementById('aiSendWebhook').checked,
+                    ai_trigger_enabled: document.getElementById('enableAITrigger').checked,
+                    ai_trigger_users: document.getElementById('enableAITrigger').checked ? document.getElementById('aiTriggerUsers').value.split('\n').filter(u => u.trim()) : []
                 }
             };
             
@@ -1151,6 +1195,11 @@
             const triggerType = document.getElementById('analysisTriggerType').value;
             document.getElementById('timeInterval').style.display = triggerType === 'time' ? 'block' : 'none';
             document.getElementById('countThreshold').style.display = triggerType === 'count' ? 'block' : 'none';
+        }
+
+        function toggleAITriggerConfig() {
+            const enableAITrigger = document.getElementById('enableAITrigger').checked;
+            document.getElementById('aiTriggerConfig').style.display = enableAITrigger ? 'block' : 'none';
         }
         
         // 加载 AI 统计信息
