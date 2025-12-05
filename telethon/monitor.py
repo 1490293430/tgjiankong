@@ -96,9 +96,9 @@ async def send_alert(keyword, message, sender, channel, channel_id, message_id):
 async def trigger_ai_analysis(sender_id, client):
     """触发 AI 分析并发送结果给指定用户"""
     try:
-        # 调用 AI 分析接口
+        # 调用内部 AI 分析接口（不需要认证）
         response = requests.post(
-            f"{API_URL}/api/ai/analyze-now",
+            f"{API_URL}/api/internal/ai/analyze-now",
             json={"trigger_type": "user_message"},
             timeout=30
         )

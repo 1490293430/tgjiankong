@@ -664,6 +664,18 @@ app.post('/api/ai/analyze-now', authMiddleware, async (req, res) => {
   }
 });
 
+// 内部 API：Telethon 服务调用的 AI 分析接口（不需要认证）
+app.post('/api/internal/ai/analyze-now', async (req, res) => {
+  try {
+    console.log('📋 Telethon 内部 API 调用: AI 分析');
+    const result = await performAIAnalysis('user_message');
+    res.json(result);
+  } catch (error) {
+    console.error('❌ 内部 AI 分析请求失败:', error.message);
+    res.status(500).json({ error: '触发 AI 分析失败：' + error.message });
+  }
+});
+
 // 获取 AI 分析统计信息
 app.get('/api/ai/stats', authMiddleware, async (req, res) => {
   try {
