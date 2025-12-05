@@ -93,14 +93,18 @@ async def send_alert(keyword, message, sender, channel, channel_id, message_id):
     except Exception as e:
         print(f"❌ 发送告警失败: {e}")
 
-async def trigger_ai_analysis(sender_id, client):
+async def trigger_ai_analysis(sender_id, client, log_id=None):
     """触发 AI 分析并发送结果给指定用户"""
     try:
         # 调用内部 AI 分析接口（不需要认证）
         # 增加超时时间到 120 秒，因为 AI 分析可能需要较长时间
+        payload = {"trigger_type": "user_message"}
+        if log_id:
+            payload["log_id"] = log_id  # 传递日志ID，只分析这条消息
+        
         response = requests.post(
             f"{API_URL}/api/internal/ai/analyze-now",
-            json={"trigger_type": "user_message"},
+            json=payload,
             timeout=120
         )
         
@@ -108,6 +112,10 @@ async def trigger_ai_analysis(sender_id, client):
             result = response.json()
             if result.get("success"):
                 analysis = result.get("analysis", {})
+                
+                # 调试：打印完整的分析结果
+                print(f"🔍 分析结果详情: {analysis}")
+                
                 summary = f"""
 🤖 AI 分析结果
 
@@ -144,7 +152,7 @@ async def trigger_ai_analysis(sender_id, client):
         print(f"❌ 触发 AI 分析异常: {e}")
 
 async def save_log(channel, channel_id, sender, message, keywords, message_id):
-    """保存日志到 MongoDB"""
+    """保存日志到 MongoDB，返回插入的文档 ID"""
     try:
         log = {
             "channel": channel,
@@ -158,10 +166,13 @@ async def save_log(channel, channel_id, sender, message, keywords, message_id):
             "ai_analyzed": False  # 新消息默认标记为未分析
         }
         
-        logs_collection.insert_one(log)
+        result = logs_collection.insert_one(log)
+        return str(result.inserted_id)
         print(f"💾 日志已保存: {channel}")
+        return None
     except Exception as e:
         print(f"❌ 保存日志失败: {e}")
+        return None
 
 async def message_handler(event, client):
     """消息处理器"""
@@ -221,7 +232,7 @@ async def message_handler(event, client):
         if not sender_id:
             sender_id = getattr(event, 'sender_id', None)
         
-        # 检查是否为固定用户，如果是则立刻触发 AI 分析
+        # 检查是否为固定用户触发 AI 分析
         ai_trigger_enabled = config.get("ai_analysis", {}).get("ai_trigger_enabled", False)
         ai_trigger_users = config.get("ai_analysis", {}).get("ai_trigger_users", [])
         
@@ -229,6 +240,7 @@ async def message_handler(event, client):
         if isinstance(ai_trigger_users, str):
             ai_trigger_users = [u.strip() for u in ai_trigger_users.split('\n') if u.strip()]
         
+        is_trigger_user = False
         if ai_trigger_enabled and ai_trigger_users and sender_id:
             # 获取发送者的完整名字
             full_name = None
@@ -253,10 +265,11 @@ async def message_handler(event, client):
             for trigger_user in ai_trigger_users:
                 trigger_user = trigger_user.strip()
                 if trigger_user in sender_triggers:
-                    print(f"✅ 固定用户 {sender} 匹配成功，触发 AI 分析（匹配值: {trigger_user}）")
-                    asyncio.create_task(trigger_ai_analysis(sender_id, client))
+                    print(f"✅ 固定用户 {sender} 匹配成功，将触发 AI 分析（匹配值: {trigger_user}）")
+                    is_trigger_user = True
                     break
-            else:
+            
+            if not is_trigger_user:
                 print(f"⏭️  发送者 {sender} 不在固定用户列表中")
         
         # 检查普通关键词
@@ -286,7 +299,7 @@ async def message_handler(event, client):
         
         # 如果关键词命中或开启全量记录，则保存日志
         if matched_keywords or log_all:
-            await save_log(
+            log_id = await save_log(
                 channel_name,
                 channel_id,
                 sender,
@@ -298,6 +311,10 @@ async def message_handler(event, client):
                 print(f"🎯 监控触发 | 频道: {channel_name} | 关键词: {matched_keywords}")
             elif log_all:
                 print(f"📝 已记录消息（全量）| 频道: {channel_name}")
+            
+            # 如果是固定用户，在保存日志后触发 AI 分析
+            if is_trigger_user and log_id:
+                asyncio.create_task(trigger_ai_analysis(sender_id, client, log_id))
             
             # 如果有告警关键词，发送告警
             if alert_keyword:

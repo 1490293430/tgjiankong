@@ -667,8 +667,9 @@ app.post('/api/ai/analyze-now', authMiddleware, async (req, res) => {
 // 内部 API：Telethon 服务调用的 AI 分析接口（不需要认证）
 app.post('/api/internal/ai/analyze-now', async (req, res) => {
   try {
-    console.log('📋 Telethon 内部 API 调用: AI 分析');
-    const result = await performAIAnalysis('user_message');
+    const { log_id } = req.body;
+    console.log('📋 Telethon 内部 API 调用: AI 分析', log_id ? `(单条消息 ID: ${log_id})` : '(全量分析)');
+    const result = await performAIAnalysis('user_message', log_id);
     res.json(result);
   } catch (error) {
     console.error('❌ 内部 AI 分析请求失败:', error.message);
@@ -738,7 +739,7 @@ let messageCounter = 0;
 let lastAnalysisTime = new Date();
 
 // 执行 AI 批量分析
-async function performAIAnalysis(triggerType = 'manual') {
+async function performAIAnalysis(triggerType = 'manual', logId = null) {
   const config = loadConfig();
   
   if (!config.ai_analysis?.enabled) {
@@ -755,9 +756,23 @@ async function performAIAnalysis(triggerType = 'manual') {
 
   try {
     // 查询未分析的消息
-    const unanalyzedMessages = await Log.find({ ai_analyzed: false })
-      .sort({ time: -1 })
-      .limit(100); // 最多分析最近 100 条
+    let unanalyzedMessages;
+    if (logId) {
+      // 如果指定了 logId，只分析这一条消息
+      const mongoose = require('mongoose');
+      const singleMessage = await Log.findById(new mongoose.Types.ObjectId(logId));
+      if (!singleMessage) {
+        console.log('❌ 指定的消息不存在');
+        return { success: false, error: '指定的消息不存在' };
+      }
+      unanalyzedMessages = [singleMessage];
+      console.log(`🎯 固定用户触发：只分析单条消息 ID: ${logId}`);
+    } else {
+      // 否则分析所有未分析的消息
+      unanalyzedMessages = await Log.find({ ai_analyzed: false })
+        .sort({ time: -1 })
+        .limit(100); // 最多分析最近 100 条
+    }
 
     if (unanalyzedMessages.length === 0) {
       console.log('📭 没有待分析的消息');
