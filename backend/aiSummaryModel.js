@@ -47,7 +47,7 @@ const aiSummarySchema = new mongoose.Schema({
   },
   trigger_type: {
     type: String,
-    enum: ['manual', 'time', 'count'],
+    enum: ['manual', 'time', 'count', 'user_message'],
     default: 'manual'
   }
 }, {
