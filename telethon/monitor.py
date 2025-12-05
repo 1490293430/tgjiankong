@@ -224,20 +224,39 @@ async def message_handler(event, client):
         ai_trigger_enabled = config.get("ai_analysis", {}).get("ai_trigger_enabled", False)
         ai_trigger_users = config.get("ai_analysis", {}).get("ai_trigger_users", [])
         
+        # 确保 ai_trigger_users 是列表
+        if isinstance(ai_trigger_users, str):
+            ai_trigger_users = [u.strip() for u in ai_trigger_users.split('\n') if u.strip()]
+        
         if ai_trigger_enabled and ai_trigger_users and sender_id:
+            # 获取发送者的完整名字
+            full_name = None
+            if sender_entity:
+                first_name = getattr(sender_entity, 'first_name', None)
+                last_name = getattr(sender_entity, 'last_name', None)
+                full_name = ' '.join([n for n in [first_name, last_name] if n]) if (first_name or last_name) else None
+            
             # 检查发送者是否在固定用户列表中（支持用户名、显示名、ID）
             sender_triggers = [
                 str(sender_id),  # 数字 ID
                 f"@{getattr(sender_entity, 'username', '')}" if sender_entity and getattr(sender_entity, 'username', None) else None,  # @username
-                full_name if 'full_name' in locals() else None,  # 真实名字
+                full_name,  # 真实名字
                 sender  # 完整的 sender 字符串
             ]
             
+            # 清理 None 值
+            sender_triggers = [str(s) for s in sender_triggers if s]
+            
+            print(f"🔍 固定用户检查: 触发用户列表={ai_trigger_users}, 当前发送者={sender}, 发送者ID={sender_id}, 候选匹配列表={sender_triggers}")
+            
             for trigger_user in ai_trigger_users:
-                if trigger_user.strip() in [str(s) for s in sender_triggers if s]:
-                    print(f"🤖 固定用户 {sender} 触发 AI 分析")
+                trigger_user = trigger_user.strip()
+                if trigger_user in sender_triggers:
+                    print(f"✅ 固定用户 {sender} 匹配成功，触发 AI 分析（匹配值: {trigger_user}）")
                     asyncio.create_task(trigger_ai_analysis(sender_id, client))
                     break
+            else:
+                print(f"⏭️  发送者 {sender} 不在固定用户列表中")
         
         # 检查普通关键词
         matched_keywords = []

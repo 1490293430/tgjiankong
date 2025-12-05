@@ -1036,7 +1036,7 @@
                     ai_send_email: document.getElementById('aiSendEmail').checked,
                     ai_send_webhook: document.getElementById('aiSendWebhook').checked,
                     ai_trigger_enabled: document.getElementById('enableAITrigger').checked,
-                    ai_trigger_users: document.getElementById('enableAITrigger').checked ? document.getElementById('aiTriggerUsers').value.split('\n').filter(u => u.trim()) : []
+                    ai_trigger_users: document.getElementById('aiTriggerUsers').value.split('\n').filter(u => u.trim())
                 }
             };
             
@@ -1435,21 +1435,23 @@
         document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
         document.getElementById(savedTab).classList.add('active');
         
-        // 根据标签页加载对应内容
-        if (savedTab === 'dashboard') {
-            loadStats();
-            loadRecentLogs();
-            startAutoRefresh('dashboard');
-        } else if (savedTab === 'config') {
-            loadConfig();
-        } else if (savedTab === 'ai') {
-            loadAIStats();
-            loadAISummaries();
-            startAutoRefresh('ai');
-        } else if (savedTab === 'logs') {
-            loadLogs();
-            startAutoRefresh('logs');
-        }
+        // 根据标签页加载对应内容（使用 setTimeout 避免影响初始化滚动）
+        setTimeout(() => {
+            if (savedTab === 'dashboard') {
+                loadStats();
+                loadRecentLogs();
+                startAutoRefresh('dashboard');
+            } else if (savedTab === 'config') {
+                loadConfig();
+            } else if (savedTab === 'ai') {
+                loadAIStats();
+                loadAISummaries();
+                startAutoRefresh('ai');
+            } else if (savedTab === 'logs') {
+                loadLogs();
+                startAutoRefresh('logs');
+            }
+        }, 100);
     </script>
 </body>
 </html>
