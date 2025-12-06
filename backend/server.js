@@ -273,12 +273,20 @@ app.post('/api/config', authMiddleware, (req, res) => {
       }
     }
     
-    // 校验并保留 AI 配置中的敏感信息
+    // 校验并保留 AI 配置中的敏感信息和完整配置
     if (incoming.ai_analysis) {
-      // ✅ 如果前端没有发送 API Key（因为我们不返回），则保留原有值
-      if (!incoming.ai_analysis.openai_api_key) {
-        incoming.ai_analysis.openai_api_key = currentConfig.ai_analysis?.openai_api_key || '';
-      }
+      // 合并原有配置，避免关闭时丢失配置
+      const existingAI = currentConfig.ai_analysis || {};
+      // 保留所有原有配置，只更新前端发送的字段
+      incoming.ai_analysis = {
+        ...existingAI,
+        ...incoming.ai_analysis,
+        // ✅ 如果前端没有发送 API Key（因为我们不返回），则保留原有值
+        openai_api_key: incoming.ai_analysis.openai_api_key || existingAI.openai_api_key || ''
+      };
+    } else if (currentConfig.ai_analysis) {
+      // 如果前端没有发送 ai_analysis，保留原有配置
+      incoming.ai_analysis = currentConfig.ai_analysis;
     }
     
     // 校验并保留邮箱密码
@@ -809,9 +817,26 @@ async function performAIAnalysis(triggerType = 'manual', logId = null) {
       console.log(`🎯 固定用户触发：只分析单条消息 ID: ${logId}`);
     } else {
       // 否则分析所有未分析的消息
-      unanalyzedMessages = await Log.find({ ai_analyzed: false })
-        .sort({ time: -1 })
-        .limit(100); // 最多分析最近 100 条
+      // 根据触发类型决定分析数量
+      let limit = null;
+      if (triggerType === 'count') {
+        // 计数触发：分析所有达到阈值的消息（不设上限，或设置一个很大的上限）
+        limit = 10000; // 设置一个合理的上限，避免一次性分析过多
+      } else if (triggerType === 'time') {
+        // 定时触发：分析所有未分析的消息
+        limit = 10000; // 设置一个合理的上限
+      } else {
+        // 手动触发：分析所有未分析的消息
+        limit = 10000;
+      }
+      
+      const query = Log.find({ ai_analyzed: false }).sort({ time: -1 });
+      if (limit) {
+        query.limit(limit);
+      }
+      unanalyzedMessages = await query;
+      
+      console.log(`📊 查询到 ${unanalyzedMessages.length} 条未分析消息 (触发方式: ${triggerType}, 限制: ${limit || '无'})`);
     }
 
     if (unanalyzedMessages.length === 0) {
