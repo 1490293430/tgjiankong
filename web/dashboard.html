@@ -508,6 +508,64 @@
                     </div>
                 </div>
             </div>
+            
+            <!-- Telegram 登录 -->
+            <div class="card">
+                <div class="card-header" onclick="toggleCard(this)" data-card-id="telegram-login">
+                    <h2>📱 Telegram 登录</h2>
+                    <span class="card-toggle collapsed">▼</span>
+                </div>
+                <div class="card-content collapsed">
+                    <div id="telegramLoginStatus" style="margin-bottom: 20px;">
+                        <p style="color: #666;">检查登录状态中...</p>
+                    </div>
+                    
+                    <!-- 已登录状态 -->
+                    <div id="telegramLoggedIn" style="display: none;">
+                        <div style="padding: 15px; background: #d4edda; border-radius: 8px; margin-bottom: 15px;">
+                            <p style="margin: 0; color: #155724; font-weight: 500;">
+                                ✅ 已登录 Telegram
+                            </p>
+                            <p id="telegramUserInfo" style="margin: 5px 0 0 0; color: #666; font-size: 14px;"></p>
+                        </div>
+                        <button class="btn btn-secondary" onclick="checkTelegramLoginStatus()">🔄 刷新状态</button>
+                    </div>
+                    
+                    <!-- 未登录状态 - 登录表单 -->
+                    <div id="telegramLoginForm" style="display: none;">
+                        <div style="padding: 15px; background: #fff3cd; border-radius: 8px; margin-bottom: 15px;">
+                            <p style="margin: 0; color: #856404;">
+                                ⚠️ 未登录 Telegram，请先登录才能开始监控消息
+                            </p>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>手机号</label>
+                            <input type="text" id="telegramPhone" placeholder="例如：+8613800138000">
+                            <div class="hint">请输入完整的手机号，包括国家代码（如 +86）</div>
+                        </div>
+                        
+                        <div id="telegramCodeGroup" class="form-group" style="display: none;">
+                            <label>验证码</label>
+                            <input type="text" id="telegramCode" placeholder="请输入收到的验证码">
+                            <div class="hint">验证码已发送到您的 Telegram 应用，请输入验证码</div>
+                        </div>
+                        
+                        <div id="telegramPasswordGroup" class="form-group" style="display: none;">
+                            <label>两步验证密码</label>
+                            <input type="password" id="telegramPassword" placeholder="请输入两步验证密码">
+                            <div class="hint">如果您的账号启用了两步验证，请输入密码</div>
+                        </div>
+                        
+                        <div style="margin-top: 15px;">
+                            <button id="telegramSendCodeBtn" class="btn btn-primary" onclick="sendTelegramCode()">📤 发送验证码</button>
+                            <button id="telegramVerifyBtn" class="btn btn-primary" onclick="verifyTelegramLogin()" style="display: none;">✅ 登录</button>
+                        </div>
+                        
+                        <div id="telegramLoginError" style="margin-top: 15px; display: none; padding: 10px; background: #f8d7da; border-radius: 6px; color: #721c24;"></div>
+                    </div>
+                </div>
+            </div>
 
             <div class="card">
                 <div class="card-header" onclick="toggleCard(this)" data-card-id="keywords">
@@ -1267,6 +1325,7 @@
                 loadRecentLogs();
             } else if (tabName === 'config') {
                 loadConfig();
+                checkTelegramLoginStatus(); // 切换到配置页面时检查登录状态
             } else if (tabName === 'ai') {
                 loadAIStats();
                 loadAISummaries();
@@ -1514,6 +1573,11 @@
                 if (result.requiresRestart) {
                     // 如果检测到 API_ID/API_HASH 变化，显示特殊提示
                     showToast('✅ 配置保存成功！⚠️ API_ID 或 API_HASH 已更改，需要重启 Telethon 服务才能生效。请执行：docker compose restart telethon', true);
+                    
+                    // 如果配置了 API_ID 和 API_HASH，自动检查登录状态
+                    setTimeout(() => {
+                        checkTelegramLoginStatus();
+                    }, 1000);
                 } else {
                     showToast('✅ 配置保存成功！', true);
                 }
@@ -2258,6 +2322,176 @@
         window.addEventListener('beforeunload', () => {
             disconnectSSE();
         });
+        
+        // ===== Telegram 登录相关功能 =====
+        let telegramPhoneCodeHash = null; // 存储验证码哈希
+        
+        // 检查 Telegram 登录状态
+        async function checkTelegramLoginStatus() {
+            const statusDiv = document.getElementById('telegramLoginStatus');
+            const loggedInDiv = document.getElementById('telegramLoggedIn');
+            const loginFormDiv = document.getElementById('telegramLoginForm');
+            
+            if (!statusDiv || !loggedInDiv || !loginFormDiv) return;
+            
+            try {
+                statusDiv.innerHTML = '<p style="color: #666;">检查登录状态中...</p>';
+                
+                const response = await apiRequest('/telegram/login/status');
+                
+                if (response.logged_in) {
+                    // 已登录
+                    loggedInDiv.style.display = 'block';
+                    loginFormDiv.style.display = 'none';
+                    statusDiv.style.display = 'none';
+                    
+                    if (response.user) {
+                        const userInfo = response.user;
+                        const userInfoText = `用户：${userInfo.first_name || '未知'}${userInfo.username ? ' (@' + userInfo.username + ')' : ''}`;
+                        document.getElementById('telegramUserInfo').textContent = userInfoText;
+                    }
+                } else {
+                    // 未登录
+                    loggedInDiv.style.display = 'none';
+                    loginFormDiv.style.display = 'block';
+                    statusDiv.style.display = 'none';
+                    
+                    // 重置表单
+                    document.getElementById('telegramPhone').value = '';
+                    document.getElementById('telegramCode').value = '';
+                    document.getElementById('telegramPassword').value = '';
+                    document.getElementById('telegramCodeGroup').style.display = 'none';
+                    document.getElementById('telegramPasswordGroup').style.display = 'none';
+                    document.getElementById('telegramSendCodeBtn').style.display = 'inline-block';
+                    document.getElementById('telegramVerifyBtn').style.display = 'none';
+                    document.getElementById('telegramLoginError').style.display = 'none';
+                    telegramPhoneCodeHash = null;
+                }
+            } catch (error) {
+                console.error('检查 Telegram 登录状态失败:', error);
+                statusDiv.innerHTML = `<p style="color: #e74c3c;">检查失败：${error.message || '未知错误'}</p>`;
+                loggedInDiv.style.display = 'none';
+                loginFormDiv.style.display = 'block';
+            }
+        }
+        
+        // 发送验证码
+        async function sendTelegramCode() {
+            const phone = document.getElementById('telegramPhone').value.trim();
+            const errorDiv = document.getElementById('telegramLoginError');
+            const sendCodeBtn = document.getElementById('telegramSendCodeBtn');
+            
+            if (!phone) {
+                errorDiv.textContent = '请输入手机号';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            try {
+                sendCodeBtn.disabled = true;
+                sendCodeBtn.textContent = '发送中...';
+                errorDiv.style.display = 'none';
+                
+                const response = await apiRequest('/telegram/login/send-code', {
+                    method: 'POST',
+                    body: JSON.stringify({ phone })
+                });
+                
+                if (response.success) {
+                    if (response.already_logged_in) {
+                        // 已经登录了
+                        await checkTelegramLoginStatus();
+                        return;
+                    }
+                    
+                    telegramPhoneCodeHash = response.phone_code_hash;
+                    document.getElementById('telegramCodeGroup').style.display = 'block';
+                    document.getElementById('telegramSendCodeBtn').style.display = 'none';
+                    document.getElementById('telegramVerifyBtn').style.display = 'inline-block';
+                    errorDiv.style.display = 'none';
+                    showToast('✅ 验证码已发送到您的 Telegram 应用', true);
+                } else {
+                    errorDiv.textContent = response.error || '发送验证码失败';
+                    errorDiv.style.display = 'block';
+                }
+            } catch (error) {
+                console.error('发送验证码失败:', error);
+                errorDiv.textContent = `发送验证码失败：${error.message || '未知错误'}`;
+                errorDiv.style.display = 'block';
+            } finally {
+                sendCodeBtn.disabled = false;
+                sendCodeBtn.textContent = '📤 发送验证码';
+            }
+        }
+        
+        // 验证登录
+        async function verifyTelegramLogin() {
+            const phone = document.getElementById('telegramPhone').value.trim();
+            const code = document.getElementById('telegramCode').value.trim();
+            const password = document.getElementById('telegramPassword').value.trim();
+            const errorDiv = document.getElementById('telegramLoginError');
+            const verifyBtn = document.getElementById('telegramVerifyBtn');
+            
+            if (!phone || !code) {
+                errorDiv.textContent = '请输入手机号和验证码';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            if (!telegramPhoneCodeHash) {
+                errorDiv.textContent = '请先发送验证码';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            try {
+                verifyBtn.disabled = true;
+                verifyBtn.textContent = '登录中...';
+                errorDiv.style.display = 'none';
+                
+                const response = await apiRequest('/telegram/login/verify', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        phone,
+                        code,
+                        phone_code_hash: telegramPhoneCodeHash,
+                        password: password || null
+                    })
+                });
+                
+                if (response.success) {
+                    showToast('✅ ' + (response.message || '登录成功！'), true);
+                    
+                    // 清空表单
+                    document.getElementById('telegramPhone').value = '';
+                    document.getElementById('telegramCode').value = '';
+                    document.getElementById('telegramPassword').value = '';
+                    telegramPhoneCodeHash = null;
+                    
+                    // 刷新登录状态
+                    setTimeout(() => {
+                        checkTelegramLoginStatus();
+                    }, 1000);
+                } else {
+                    if (response.password_required) {
+                        // 需要两步验证密码
+                        document.getElementById('telegramPasswordGroup').style.display = 'block';
+                        errorDiv.textContent = response.message || '需要两步验证密码';
+                        errorDiv.style.display = 'block';
+                    } else {
+                        errorDiv.textContent = response.error || '登录失败';
+                        errorDiv.style.display = 'block';
+                    }
+                }
+            } catch (error) {
+                console.error('验证登录失败:', error);
+                errorDiv.textContent = `登录失败：${error.message || '未知错误'}`;
+                errorDiv.style.display = 'block';
+            } finally {
+                verifyBtn.disabled = false;
+                verifyBtn.textContent = '✅ 登录';
+            }
+        }
     </script>
 </body>
 </html>

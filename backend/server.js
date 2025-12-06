@@ -504,6 +504,23 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
   }
 });
 
+// 获取当前用户信息
+app.get('/api/auth/me', authMiddleware, async (req, res) => {
+  try {
+    const user = req.user.userObj;
+    res.json({
+      userId: user._id.toString(),
+      username: user.username,
+      displayName: user.display_name || user.username,
+      isAdmin: user.username === 'admin',
+      isMainAccount: !user.parent_account_id
+    });
+  } catch (error) {
+    console.error('获取用户信息失败:', error);
+    res.status(500).json({ error: '获取用户信息失败：' + error.message });
+  }
+});
+
 // 修改密码
 app.post('/api/auth/change-password', authMiddleware, async (req, res) => {
   try {
@@ -600,7 +617,6 @@ app.get('/api/users', authMiddleware, async (req, res) => {
 app.post('/api/users', authMiddleware, async (req, res) => {
   try {
     const currentUser = req.user.userObj;
-    const accountId = await getAccountId(currentUser._id);
     
     // 只有主账号可以创建子账号
     if (currentUser.parent_account_id) {
@@ -628,7 +644,8 @@ app.post('/api/users', authMiddleware, async (req, res) => {
     }
     
     // 创建子账号（parent_account_id指向主账号）
-    const accountIdObj = new mongoose.Types.ObjectId(accountId);
+    // 主账号的ID就是当前用户的ID
+    const accountIdObj = currentUser._id;
     const passwordHash = await bcrypt.hash(password, 10);
     const user = new User({
       username,
@@ -641,6 +658,8 @@ app.post('/api/users', authMiddleware, async (req, res) => {
     
     // 创建子账号时自动创建默认配置（每个账号独立配置）
     await saveUserConfig(user._id.toString(), {});
+    
+    console.log(`✅ 子账号创建成功 (username: ${username}, parent: ${currentUser.username})`);
     
     res.json({ 
       status: 'ok', 
@@ -655,6 +674,7 @@ app.post('/api/users', authMiddleware, async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('❌ 创建子账号失败:', error);
     res.status(500).json({ error: '创建子账号失败：' + error.message });
   }
 });
@@ -1073,6 +1093,7 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
     const username = req.user.username;
+    const isAdmin = username === 'admin';
     const now = Date.now();
     
     // 检查用户缓存是否有效
