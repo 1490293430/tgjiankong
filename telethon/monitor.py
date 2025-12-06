@@ -179,12 +179,20 @@ async def config_reloader_task():
 # -----------------------
 # HTTP helpers (aiohttp)
 # -----------------------
-async def post_json(url: str, payload: dict, timeout: int = 10) -> Optional[dict]:
+async def post_json(url: str, payload: dict, timeout: int = 10, silent: bool = False) -> Optional[dict]:
+    """
+    发送 POST 请求
+    :param url: 请求 URL
+    :param payload: 请求数据
+    :param timeout: 超时时间（秒）
+    :param silent: 如果为 True，连接失败时不记录 ERROR（仅 DEBUG），用于可选的辅助功能
+    :return: 响应数据或 None
+    """
     global http_session
     if http_session is None:
         raise RuntimeError("HTTP session not initialized")
     try:
-        async with http_session.post(url, json=payload, timeout=timeout) as resp:
+        async with http_session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
             text = await resp.text()
             if resp.status == 200:
                 try:
@@ -192,12 +200,24 @@ async def post_json(url: str, payload: dict, timeout: int = 10) -> Optional[dict
                 except Exception:
                     return {"raw": text}
             else:
-                logger.warning("POST %s 返回 %s: %s", url, resp.status, text[:200])
+                if not silent:
+                    logger.warning("POST %s 返回 %s: %s", url, resp.status, text[:200])
                 return None
     except asyncio.CancelledError:
         raise
+    except (aiohttp.client_exceptions.ClientConnectorError, 
+            aiohttp.client_exceptions.ClientConnectorDNSError) as e:
+        # 连接错误（DNS解析失败、无法连接等）- 根据 silent 参数决定日志级别
+        if silent:
+            logger.debug("POST 请求失败（静默模式）: %s %s", url, str(e)[:100])
+        else:
+            logger.warning("POST 请求失败（连接错误）: %s %s", url, str(e)[:100])
+        return None
     except Exception as e:
-        logger.exception("POST 请求失败: %s %s", url, e)
+        if not silent:
+            logger.exception("POST 请求失败: %s %s", url, e)
+        else:
+            logger.debug("POST 请求失败（静默模式）: %s %s", url, str(e)[:100])
         return None
 
 
@@ -282,9 +302,10 @@ async def notify_new_message_async(log_id, channel, channel_id, sender, message,
             "alerted": alerted
         }
         # 使用内部API，不需要认证，超时时间短，失败不影响主流程
-        await post_json(f"{API_URL}/api/internal/message-notify", payload, timeout=3)
+        # silent=True: 连接失败时只记录 DEBUG，不记录 ERROR/WARNING
+        await post_json(f"{API_URL}/api/internal/message-notify", payload, timeout=3, silent=True)
     except Exception as e:
-        # 静默失败，不影响主流程
+        # 静默失败，不影响主流程（额外保护层）
         logger.debug("通知新消息失败（不影响功能）: %s", e)
 
 

@@ -37,6 +37,60 @@
             gap: 20px;
         }
         
+        .sse-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+        
+        .sse-status.connected {
+            background: rgba(76, 175, 80, 0.2);
+            border: 1px solid rgba(76, 175, 80, 0.5);
+        }
+        
+        .sse-status.disconnected {
+            background: rgba(244, 67, 54, 0.2);
+            border: 1px solid rgba(244, 67, 54, 0.5);
+        }
+        
+        .sse-status.connecting {
+            background: rgba(255, 193, 7, 0.2);
+            border: 1px solid rgba(255, 193, 7, 0.5);
+        }
+        
+        .sse-status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        .sse-status.connected .sse-status-indicator {
+            background: #4caf50;
+        }
+        
+        .sse-status.disconnected .sse-status-indicator {
+            background: #f44336;
+        }
+        
+        .sse-status.connecting .sse-status-indicator {
+            background: #ffc107;
+        }
+        
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+        
         .btn-logout {
             background: rgba(255, 255, 255, 0.2);
             color: white;
@@ -392,7 +446,11 @@
     <div class="header">
         <h1>📱 Telegram 监控系统</h1>
         <div class="user-info">
-            <span id="username"></span>
+            <div class="sse-status connecting" id="sseStatus">
+                <span class="sse-status-indicator"></span>
+                <span id="sseStatusText">连接中...</span>
+            </div>
+            <span>👤 <span id="username"></span></span>
             <button class="btn-logout" onclick="logout()">退出登录</button>
         </div>
     </div>
@@ -811,6 +869,9 @@
         let currentAIPage = 1;
         let config = {};
         let eventSource = null; // SSE 事件源连接
+        let sseConnected = false; // SSE 连接状态
+        let refreshIntervalTimer = null; // 定期刷新定时器
+        let refreshInterval = 30; // 默认刷新间隔（秒）
         
         // 显示浮动提示框
         function showToast(message, isSuccess = true) {
@@ -861,10 +922,27 @@
             }, duration);
         }
         
+        // 更新 SSE 连接状态显示
+        function updateSSEStatus(status, text) {
+            const statusEl = document.getElementById('sseStatus');
+            const textEl = document.getElementById('sseStatusText');
+            if (statusEl && textEl) {
+                statusEl.className = `sse-status ${status}`;
+                textEl.textContent = text;
+            }
+        }
+        
         // 连接 SSE 实时推送
         function connectSSE() {
             const token = localStorage.getItem('token');
-            if (!token) return;
+            if (!token) {
+                updateSSEStatus('disconnected', '未登录');
+                startFallbackRefresh(); // 无token时启用降级刷新
+                return;
+            }
+            
+            // 更新状态为连接中
+            updateSSEStatus('connecting', '连接中...');
             
             // 关闭现有连接
             if (eventSource && eventSource.controller) {
@@ -875,6 +953,7 @@
             // 保存连接引用以便后续管理
             const fetchController = new AbortController();
             eventSource = { controller: fetchController };
+            
             fetch(`${API_URL}/events`, {
                 signal: fetchController.signal,
                 headers: {
@@ -891,6 +970,12 @@
                     throw new Error('SSE连接失败: ' + response.status);
                 }
                 
+                // SSE连接成功
+                sseConnected = true;
+                updateSSEStatus('connected', '实时推送已连接');
+                stopFallbackRefresh(); // 停止降级刷新
+                console.log('✅ SSE实时推送已连接');
+                
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
@@ -898,7 +983,11 @@
                 function readStream() {
                     reader.read().then(({ done, value }) => {
                         if (done) {
-                            // 连接断开，5秒后重连
+                            // 连接断开
+                            sseConnected = false;
+                            updateSSEStatus('disconnected', '连接断开（定期刷新模式）');
+                            startFallbackRefresh(); // 启用降级刷新
+                            console.warn('⚠️ SSE连接断开，切换到定期刷新模式');
                             setTimeout(() => connectSSE(), 5000);
                             return;
                         }
@@ -921,6 +1010,9 @@
                         readStream();
                     }).catch(err => {
                         console.error('读取SSE流失败:', err);
+                        sseConnected = false;
+                        updateSSEStatus('disconnected', '读取失败（定期刷新模式）');
+                        startFallbackRefresh(); // 启用降级刷新
                         setTimeout(() => connectSSE(), 5000);
                     });
                 }
@@ -928,8 +1020,65 @@
                 readStream();
             }).catch(err => {
                 console.error('SSE连接失败:', err);
-                setTimeout(() => connectSSE(), 5000);
+                sseConnected = false;
+                updateSSEStatus('disconnected', '连接失败（定期刷新模式）');
+                startFallbackRefresh(); // 启用降级刷新
+                setTimeout(() => connectSSE(), 10000); // 10秒后重试
             });
+        }
+        
+        // 启动降级定期刷新（当SSE连接失败时）
+        function startFallbackRefresh() {
+            if (refreshIntervalTimer) return; // 已经在运行
+            
+            if (refreshInterval <= 0) {
+                updateSSEStatus('disconnected', '连接断开（未启用定期刷新）');
+                return; // 间隔为0时不刷新
+            }
+            
+            console.log(`🔄 启动定期刷新模式，间隔: ${refreshInterval}秒`);
+            const statusEl = document.getElementById('sseStatus');
+            if (statusEl && statusEl.className.includes('disconnected')) {
+                const textEl = document.getElementById('sseStatusText');
+                if (textEl) {
+                    textEl.textContent = `定期刷新模式（${refreshInterval}秒）`;
+                }
+            }
+            
+            refreshIntervalTimer = setInterval(() => {
+                const activeTab = document.querySelector('.tab-content.active')?.id;
+                if (activeTab === 'dashboard') {
+                    loadStats();
+                    loadRecentLogs();
+                } else if (activeTab === 'ai') {
+                    loadAIStats();
+                    loadAISummaries();
+                } else if (activeTab === 'logs') {
+                    loadLogs();
+                }
+            }, refreshInterval * 1000);
+        }
+        
+        // 停止降级定期刷新
+        function stopFallbackRefresh() {
+            if (refreshIntervalTimer) {
+                clearInterval(refreshIntervalTimer);
+                refreshIntervalTimer = null;
+                console.log('✅ 已停止定期刷新（SSE已连接）');
+            }
+        }
+        
+        // 加载前端刷新间隔设置
+        function loadRefreshInterval() {
+            const saved = localStorage.getItem('refreshInterval');
+            if (saved !== null) {
+                refreshInterval = parseInt(saved) || 30;
+            }
+            
+            // 如果SSE未连接，启动降级刷新
+            if (!sseConnected) {
+                startFallbackRefresh();
+            }
         }
         
         // 处理 SSE 事件
@@ -938,7 +1087,12 @@
             
             switch (event.type) {
                 case 'connected':
+                    sseConnected = true;
+                    stopFallbackRefresh(); // SSE连接成功，停止降级刷新
                     console.log('✅ 实时推送已连接');
+                    break;
+                case 'ping':
+                    // 心跳消息，保持连接活跃
                     break;
                 case 'new_message':
                     // 有新消息，更新相关页面
@@ -980,6 +1134,8 @@
                 eventSource.controller.abort();
             }
             eventSource = null;
+            sseConnected = false;
+            stopFallbackRefresh();
         }
         
         // 卡片折叠/展开函数
@@ -1664,6 +1820,19 @@
         
         // 连接 SSE 实时推送
         connectSSE();
+        
+        // 如果3秒后SSE仍未连接，启动降级刷新
+        setTimeout(() => {
+            if (!sseConnected && refreshInterval > 0) {
+                console.warn('⚠️ SSE连接超时，启用定期刷新模式');
+                if (!sseConnected) {
+                    updateSSEStatus('disconnected', '连接超时（定期刷新模式）');
+                }
+                startFallbackRefresh();
+            } else if (!sseConnected) {
+                updateSSEStatus('disconnected', '连接失败');
+            }
+        }, 3000);
         
         // 页面卸载时断开 SSE 连接
         window.addEventListener('beforeunload', () => {
