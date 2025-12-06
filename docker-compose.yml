@@ -10,12 +10,14 @@ services:
       - MONGO_INITDB_DATABASE=tglogs
     networks:
       - tg-network
-    healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/tglogs --quiet
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+    # 健康检查已注释，避免每30秒建立大量连接导致CPU峰值
+    # 如果需要健康检查，可以取消注释并调整间隔
+    # healthcheck:
+    #   test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok ? 0 : 1"]
+    #   interval: 60s
+    #   timeout: 3s
+    #   retries: 1
+    #   start_period: 10s
 
   # Node.js API 后端
   api:
@@ -24,7 +26,7 @@ services:
     restart: always
     depends_on:
       mongo:
-        condition: service_healthy
+        condition: service_started
     environment:
       - MONGO_URL=mongodb://mongo:27017/tglogs
       - JWT_SECRET=${JWT_SECRET:-change-this-secret-key-in-production}
@@ -36,11 +38,12 @@ services:
       - ./logs/api:/app/logs
     networks:
       - tg-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    # API健康检查已注释，减少不必要的检查
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
 
   # Telegram 监听服务
   telethon:
