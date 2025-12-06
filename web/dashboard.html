@@ -337,6 +337,43 @@
         
         .error-message {
             background: #f8d7da;
+        
+        /* 浮动提示框 - 固定在页面顶部，滚动时可见 */
+        .toast-notification {
+            position: fixed;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10000;
+            padding: 16px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            display: none;
+            min-width: 300px;
+            text-align: center;
+            font-weight: 500;
+            animation: slideDown 0.3s ease-out;
+        }
+        
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+        
+        .toast-notification.success {
+            background: #4caf50;
+            color: white;
+        }
+        
+        .toast-notification.error {
+            background: #f44336;
+            color: white;
             color: #721c24;
         }
         
@@ -743,6 +780,16 @@
             <div id="settingsMessage" class="success-message"></div>
             
             <div class="card">
+                <h2>界面设置</h2>
+                <div class="form-group">
+                    <label>无感刷新间隔（秒）</label>
+                    <input type="number" id="refreshInterval" value="30" min="0" max="300">
+                    <div class="hint">设置页面自动刷新的间隔时间，0表示禁用自动刷新，建议范围：10-60秒。当前设置：<span id="currentRefreshInterval">30</span>秒</div>
+                </div>
+                <button class="btn btn-primary" onclick="saveFrontendSettings()">💾 保存设置</button>
+            </div>
+            
+            <div class="card">
                 <h2>修改密码</h2>
                 <div class="form-group">
                     <label>原密码</label>
@@ -761,13 +808,91 @@
         </div>
     </div>
 
+    <!-- 浮动提示框 -->
+    <div id="toastNotification" class="toast-notification"></div>
+
     <script>
         const API_URL = '/api';
         let currentPage = 1;
         let currentAIPage = 1;
         let config = {};
         let autoRefreshInterval = null; // 自动刷新计时器
-        const REFRESH_INTERVAL = 5000; // 30秒刷新一次，减少MongoDB查询压力
+        let REFRESH_INTERVAL = 30000; // 默认30秒刷新一次，减少MongoDB查询压力
+        
+        // 显示浮动提示框
+        function showToast(message, isSuccess = true) {
+            const toast = document.getElementById('toastNotification');
+            toast.textContent = message;
+            toast.className = 'toast-notification ' + (isSuccess ? 'success' : 'error');
+            toast.style.display = 'block';
+            
+            // 自动隐藏
+            const duration = isSuccess ? 3000 : 5000;
+            setTimeout(() => {
+                toast.style.display = 'none';
+            }, duration);
+        }
+        
+        // 从localStorage加载刷新间隔设置
+        function loadRefreshInterval() {
+            const saved = localStorage.getItem('refreshInterval');
+            let intervalSeconds = 30; // 默认30秒
+            if (saved !== null) {
+                intervalSeconds = parseInt(saved);
+                if (isNaN(intervalSeconds) || intervalSeconds < 0) {
+                    intervalSeconds = 30;
+                }
+            }
+            REFRESH_INTERVAL = intervalSeconds * 1000; // 转换为毫秒
+            
+            // 更新设置页面显示
+            if (document.getElementById('refreshInterval')) {
+                document.getElementById('refreshInterval').value = intervalSeconds;
+                if (intervalSeconds === 0) {
+                    document.getElementById('currentRefreshInterval').textContent = '已禁用';
+                } else {
+                    document.getElementById('currentRefreshInterval').textContent = intervalSeconds + '秒';
+                }
+            }
+            return REFRESH_INTERVAL;
+        }
+        
+        // 保存前端设置
+        function saveFrontendSettings() {
+            const intervalSeconds = parseInt(document.getElementById('refreshInterval').value);
+            if (isNaN(intervalSeconds) || intervalSeconds < 0 || intervalSeconds > 300) {
+                alert('刷新间隔必须在0-300秒之间（0表示禁用自动刷新）');
+                return;
+            }
+            
+            // 保存到localStorage
+            localStorage.setItem('refreshInterval', intervalSeconds);
+            REFRESH_INTERVAL = intervalSeconds * 1000;
+            
+            // 更新显示
+            if (intervalSeconds === 0) {
+                document.getElementById('currentRefreshInterval').textContent = '已禁用';
+            } else {
+                document.getElementById('currentRefreshInterval').textContent = intervalSeconds + '秒';
+            }
+            
+            // 重启自动刷新以应用新设置
+            const activeTab = document.querySelector('.tab-content.active').id;
+            if (activeTab === 'dashboard' || activeTab === 'ai' || activeTab === 'logs') {
+                stopAutoRefresh();
+                // 如果设置为0，不启动自动刷新
+                if (intervalSeconds > 0) {
+                    startAutoRefresh(activeTab);
+                }
+            }
+            
+            // 显示成功消息 - 使用浮动提示框
+            const message = intervalSeconds === 0 ? '✅ 设置已保存！自动刷新已禁用' : '✅ 设置已保存！刷新间隔已更新为 ' + intervalSeconds + ' 秒';
+            showToast(message, true);
+        }
+        
+        // 初始化时加载设置
+        loadRefreshInterval();
         
         // 卡片折叠/展开函数
         function toggleCard(header) {
@@ -868,12 +993,22 @@
             } else if (tabName === 'logs') {
                 loadLogs();
                 startAutoRefresh('logs');
+            } else if (tabName === 'settings') {
+                // 切换到设置页面时，加载当前设置
+                loadRefreshInterval();
             }
         }
         
         // 启动自动刷新
         function startAutoRefresh(tabName) {
             stopAutoRefresh(); // 先清除之前的计时器
+            // 确保使用最新的刷新间隔设置
+            const currentInterval = loadRefreshInterval();
+            
+            // 如果间隔为0，不启动自动刷新
+            if (currentInterval === 0) {
+                return;
+            }
             
             autoRefreshInterval = setInterval(() => {
                 // const refreshStart = Date.now();
@@ -1065,17 +1200,8 @@
                 body: JSON.stringify(newConfig)
             });
             
-            const msg = document.getElementById('configMessage');
-            if (result && result.status === 'ok') {
-                msg.textContent = '✅ 配置保存成功！';
-                msg.className = 'success-message';
-                msg.style.display = 'block';
-                setTimeout(() => msg.style.display = 'none', 3000);
-            } else {
-                msg.textContent = '❌ 保存失败：' + (result?.error || '未知错误');
-                msg.className = 'error-message';
-                msg.style.display = 'block';
-            }
+            // 使用浮动提示框显示消息
+            showToast(result && result.status === 'ok' ? '✅ 配置保存成功！' : '❌ 保存失败：' + (result?.error || '未知错误'), result && result.status === 'ok');
         }
 
         // 发送测试告警
@@ -1172,21 +1298,15 @@
                 body: JSON.stringify({ oldPassword, newPassword })
             });
             
-            const msg = document.getElementById('settingsMessage');
+            // 使用浮动提示框显示消息
             if (result && result.status === 'ok') {
-                msg.textContent = '✅ 密码修改成功！';
-                msg.className = 'success-message';
-                msg.style.display = 'block';
+                showToast('✅ 密码修改成功！', true);
                 
                 document.getElementById('oldPassword').value = '';
                 document.getElementById('newPassword').value = '';
                 document.getElementById('confirmPassword').value = '';
-                
-                setTimeout(() => msg.style.display = 'none', 3000);
             } else {
-                msg.textContent = '❌ 修改失败：' + (result?.error || '未知错误');
-                msg.className = 'error-message';
-                msg.style.display = 'block';
+                showToast('❌ 修改失败：' + (result?.error || '未知错误'), false);
             }
         }
         
@@ -1442,6 +1562,9 @@
         checkAuth();
         document.getElementById('username').textContent = localStorage.getItem('username') || 'Admin';
         restoreCardStates(); // 恢复卡片折叠状态
+        
+        // 加载前端设置
+        loadRefreshInterval();
         
         // 恢复上次选中的标签页
         const savedTab = localStorage.getItem('currentTab') || 'dashboard';

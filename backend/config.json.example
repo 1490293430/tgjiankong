@@ -4,6 +4,7 @@
   "alert_keywords": [],
   "alert_regex": [],
   "alert_target": "",
+  "log_all_messages": false,
   "telegram": {
     "api_id": 0,
     "api_hash": ""
@@ -22,6 +23,23 @@
       "enable": false,
       "url": ""
     }
+  },
+  "ai_analysis": {
+    "enabled": false,
+    "openai_api_key": "",
+    "openai_model": "gpt-3.5-turbo",
+    "openai_base_url": "https://api.openai.com/v1",
+    "analysis_trigger_type": "time",
+    "time_interval_minutes": 30,
+    "message_count_threshold": 50,
+    "max_messages_per_analysis": 500,
+    "analysis_prompt": "请分析以下 Telegram 消息，提供：1) 整体情感倾向（积极/中性/消极）；2) 主要内容分类；3) 关键主题和摘要；4) 重要关键词",
+    "ai_send_telegram": true,
+    "ai_send_email": false,
+    "ai_send_webhook": false,
+    "ai_trigger_enabled": false,
+    "ai_trigger_users": [],
+    "ai_trigger_prompt": ""
   },
   "admin": {
     "username": "admin",

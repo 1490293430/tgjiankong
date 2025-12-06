@@ -3,13 +3,14 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-一个功能完整的 Telegram 消息监控系统，支持关键词监控、智能告警、日志记录等功能。使用 Docker 一键部署，开箱即用。
+一个功能完整的 Telegram 消息监控系统，支持关键词监控、智能告警、AI 分析、日志记录等功能。使用 Docker 一键部署，开箱即用。
 
 ## ✨ 功能特性
 
 - 🔍 **关键词监控** - 支持普通关键词、正则表达式匹配
+- 🤖 **AI 智能分析** - 基于 OpenAI API 的消息情感分析和摘要生成
 - 📱 **多渠道告警** - Telegram、邮件、Webhook 多种告警方式
-- 📊 **数据统计** - 实时统计消息数量、告警次数
+- 📊 **数据统计** - 实时统计消息数量、告警次数、AI 分析统计
 - 📝 **日志记录** - MongoDB 存储所有监控记录，支持搜索和分页
 - 🔐 **安全认证** - JWT token 认证，密码加密存储
 - 🎨 **现代界面** - 响应式设计，支持移动端访问
@@ -34,23 +35,45 @@
 
 ### 环境要求
 
+- Linux 服务器（Debian/Ubuntu 推荐）
+- 至少 1GB RAM
+- 至少 5GB 可用磁盘空间
+- 网络可访问 Telegram API
+
 ### 一键部署
 
-**方法一：源码包部署（推荐，无需 GitHub Token）**
+**无需 GitHub Token（公开仓库）：**
+
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
 ```
 
-**方法二：使用 GitHub Token（私有仓库适用）**
+**使用环境变量（推荐）：**
+
 ```bash
-GH_TOKEN=你的GitHubToken \
-bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
+API_ID=你的API_ID \
+API_HASH=你的API_HASH \
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
 ```
+
+**使用命令行参数：**
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh) \
+  -i 你的API_ID \
+  -s 你的API_HASH \
+  -d /opt/telegram-monitor
+```
+
+> 💡 **提示：** 脚本会自动安装 Docker（如未安装）、下载代码、构建镜像并启动所有服务。
 
 ### 首次启动
 
 1. **访问后台**
-   - ⚠️ 第一时间修改默认密码
+   - 部署完成后，访问 `http://你的服务器IP:5555`
+   - 默认用户名：`admin`
+   - 默认密码：`admin123`
+   - ⚠️ **第一时间修改默认密码！**
 
 2. **配置 Telegram API**
    - 进入 **⚙️ 配置** 标签
@@ -58,102 +81,88 @@ bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/i
    - 点击 **💾 保存配置**
 
 3. **首次登录 Telegram**
-   - 保存配置后，Telethon 容器会自动重新加载配置
-   - 访问服务器终端，执行交互式登录：
+   - 保存配置后，查看 Telethon 容器日志：
      ```bash
-     cd /path/to/tgjiankong
-     docker compose run --rm -it telethon python -u monitor.py
+     docker compose logs telethon -f
      ```
-   - 按提示输入你的 Telegram 账号（国内号码需加 +86）
-   - 输入收到的验证码，完成登录
-   - 登录成功后，session 会自动保存到 `data/session/`，无需每次都登录
-   - 按 `Ctrl+C` 停止容器，重启守护容器：
+   - 如果显示需要登录，执行交互式登录：
      ```bash
-     docker compose up -d telethon
+     cd /opt/telegram-monitor
+     docker compose exec telethon python -c "from telethon import TelegramClient; import os; c=TelegramClient('/app/session/telegram', int(os.getenv('API_ID')), os.getenv('API_HASH')); c.start(); print('登录成功'); c.disconnect()"
      ```
+   - 按提示输入你的 Telegram 账号和验证码
+   - 登录成功后，session 会自动保存，无需每次都登录
 
 4. **配置监控规则**
-     - 勾选 **记录所有消息**（可选，记录所有消息不分关键词）
-     - 添加 **监控频道**（频道 ID，留空则监控所有）
-   - 配置告警方式：
-     - **Telegram 告警**：设置告警目标（用户 ID 或 @username）
-     - **邮件告警**（可选）：配置 SMTP 参数
-     - **Webhook 告警**（可选）：提供接收 URL
+   - 添加 **监控频道**（频道 ID，留空则监控所有可访问的频道）
+   - 添加 **监控关键词**（每行一个）
+   - 添加 **告警关键词**（匹配到这些词会触发告警）
+   - 可选：添加 **正则表达式** 规则
+   - 可选：勾选 **记录所有消息**
    - 点击 **💾 保存配置**
 
-5. **启用监听服务**
-   - 所有配置完成后，服务会自动监听 Telegram 消息
-   - 进入 **📊 统计** 或 **📝 日志** 标签，检查消息是否正常记录
-   - 查看 Telethon 日志确认服务状态：
-     ```bash
-     docker compose logs telethon --tail 100
-     ```
+5. **配置告警方式**
+   - **Telegram 告警**：设置告警目标（你的用户 ID 或 @username）
+   - **邮件告警**（可选）：配置 SMTP 参数
+   - **Webhook 告警**（可选）：提供接收 URL
+   - 点击 **💾 保存配置**
 
-### 常用命令
+6. **配置 AI 分析（可选）**
+   - 在 **🤖 AI 分析** 标签中配置
+   - 填写 OpenAI API Key
+   - 选择分析触发方式（定时触发或消息数量触发）
+   - 配置分析提示词和发送方式
+   - 点击 **💾 保存配置**
+
+## 📖 使用指南
+
+### 获取频道 ID
+
+- 方法一：使用 [@userinfobot](https://t.me/userinfobot) 转发频道消息获取
+- 方法二：使用 [@getidsbot](https://t.me/getidsbot) 获取
+- 方法三：频道链接格式 `https://t.me/channelname`，ID 通常是 `@channelname` 或负数（如 `-1001234567890`）
+
+### 配置 AI 分析
+
+AI 分析功能支持以下触发方式：
+
+1. **定时触发**：每隔指定分钟数自动分析未分析的消息
+2. **消息数量触发**：当未分析消息达到指定数量时自动分析
+3. **固定用户触发**：当指定用户发送消息时立即分析
+
+每种触发方式都可以配置专用的提示词，实现不同的分析需求。
+
+### 查看日志和统计
+
+- **📊 仪表盘**：查看实时统计信息
+- **📝 日志**：查看所有监控记录，支持关键词搜索
+- **🤖 AI 分析**：查看 AI 分析摘要和统计
+
+## 🔧 常用命令
 
 ```bash
-cd /path/to/tgjiankong
+cd /opt/telegram-monitor
 
 # 查看服务状态
 docker compose ps
 
 # 查看实时日志
+docker compose logs -f api
 docker compose logs -f telethon
 
 # 重启服务
 docker compose restart
 
+# 重启特定服务
+docker compose restart api
+docker compose restart telethon
+
 # 停止服务
 docker compose down
 
-# 查看消息记录数量
-docker compose exec mongo mongosh --eval 'db = db.getSiblingDB("tglogs"); db.logs.countDocuments()'
+# 停止并删除数据（危险！）
+docker compose down -v
 ```
-
-## 📖 使用指南
-
-### 配置监控关键词
-
-1. 登录后进入 **"⚙️ 配置"** 标签
-2. 在 **"普通关键词"** 中添加要监控的词（每行一个）
-3. 在 **"告警关键词"** 中添加需要触发告警的词
-4. 可选：添加正则表达式规则实现更复杂的匹配
-5. 点击 **"💾 保存配置"**
-
-### 配置监控频道
-
-1. 获取频道 ID：
-   - 方法一：使用 [@userinfobot](https://t.me/userinfobot) 转发频道消息获取
-   - 方法二：使用 [@getidsbot](https://t.me/getidsbot) 获取
-2. 在配置页面的 **"监控频道"** 中添加频道 ID（每行一个）
-3. 留空则监控所有可访问的频道
-
-### 配置告警
-
-支持三种告警方式：
-
-#### 1. Telegram 告警（默认启用）
-- 填写 **"Telegram 告警目标"**（你的用户 ID 或 @username）
-- 触发告警时会自动发送到你的 Telegram
-
-#### 2. 邮件告警
-- 勾选 **"启用邮件告警"**
-- 配置 SMTP 服务器信息
-- 推荐使用 Gmail、Outlook 等支持 SMTP 的邮箱
-- 点击 **"📩 发送测试告警"** 按钮验证邮件配置是否成功
-
-#### 3. Webhook 告警
-- 勾选 **"启用 Webhook 告警"**
-- 填入你的 Webhook 接收地址
-- 系统会以 POST 方式发送 JSON 数据
-
-### 查看日志
-
-进入 **"📝 日志"** 标签：
-- 查看所有监控记录
-- 支持关键词搜索
-- 支持分页浏览
-- 显示触发关键词、来源频道、消息内容等
 
 ## 🔧 高级配置
 
@@ -165,11 +174,11 @@ docker compose exec mongo mongosh --eval 'db = db.getSiblingDB("tglogs"); db.log
 WEB_PORT=8080
 ```
 
-重启服务：
+然后重启服务：
 
 ```bash
-docker-compose down
-docker-compose up -d
+docker compose down
+docker compose up -d
 ```
 
 ### 数据持久化
@@ -177,7 +186,7 @@ docker-compose up -d
 所有数据都保存在以下目录：
 
 ```
-tgjiankong/
+/opt/telegram-monitor/
 ├── data/
 │   ├── mongo/          # MongoDB 数据库文件
 │   └── session/        # Telegram session 文件
@@ -185,46 +194,20 @@ tgjiankong/
 │   ├── api/
 │   └── telethon/
 └── backend/
-    └── config.json     # 配置文件
+    └── config.json     # 配置文件（包含所有配置）
 ```
 
 **备份数据：** 只需备份 `data/` 和 `backend/config.json`
 
-### 查看服务日志
+**恢复数据：** 将备份的文件恢复到对应目录即可
+
+### 升级到新版本
 
 ```bash
-# 查看所有服务日志
-docker-compose logs
-
-# 查看特定服务日志
-docker-compose logs api
-docker-compose logs telethon
-
-# 实时跟踪日志
-docker-compose logs -f telethon
-```
-
-### 重启服务
-
-```bash
-# 重启所有服务
-docker-compose restart
-
-# 重启特定服务
-docker-compose restart telethon
-```
-
-### 停止服务
-
-```bash
-# 停止服务（保留数据）
-docker-compose stop
-
-# 完全删除服务（保留数据）
-docker-compose down
-
-# 删除服务和数据（危险操作！）
-docker-compose down -v
+cd /opt/telegram-monitor
+git pull origin main
+docker compose build
+docker compose up -d
 ```
 
 ## 🛠️ 故障排查
@@ -238,9 +221,9 @@ docker-compose down -v
 2. 确认网络可以访问 Telegram 服务器
 3. 删除 session 文件重新登录：
    ```bash
-   docker-compose down
+   docker compose down
    rm -rf data/session/*
-   docker-compose up -d
+   docker compose up -d
    ```
 
 ### MongoDB 连接失败
@@ -250,13 +233,13 @@ docker-compose down -v
 **解决方案：**
 ```bash
 # 检查 MongoDB 服务状态
-docker-compose ps mongo
+docker compose ps mongo
 
 # 查看 MongoDB 日志
-docker-compose logs mongo
+docker compose logs mongo
 
 # 重启 MongoDB
-docker-compose restart mongo
+docker compose restart mongo
 ```
 
 ### Web 界面无法访问
@@ -266,75 +249,38 @@ docker-compose restart mongo
 **解决方案：**
 1. 检查服务是否正常运行：
    ```bash
-   docker-compose ps
+   docker compose ps
    ```
-2. 检查端口占用：
+2. 检查端口是否被占用：
    ```bash
-   # Windows
-   netstat -ano | findstr :80
+   netstat -tulpn | grep :5555
    ```
-3. 查看 Nginx 日志：
+3. 查看 Web 服务日志：
    ```bash
-   docker-compose logs web
+   docker compose logs web
    ```
 
-### 无法登录后台
+### AI 分析功能不工作
 
-**问题：** 输入用户名密码后提示错误
+**问题：** AI 分析未执行或失败
 
 **解决方案：**
-1. 使用默认凭证：`admin` / `admin123`
-2. 如果忘记密码，可以重置 `backend/config.json`：
+1. 检查 AI 分析配置是否已启用
+2. 检查 OpenAI API Key 是否正确
+3. 查看 API 日志中的错误信息：
    ```bash
-   docker-compose down
-   rm backend/config.json
-   docker-compose up -d
+   docker compose logs api | grep -i "ai\|openai"
    ```
-
-## 📊 系统监控
-
-### 健康检查
-
-所有服务都配置了健康检查：
-
-```bash
-# 查看服务健康状态
-docker-compose ps
-
-# 输出示例
-NAME          STATUS                    PORTS
-tg_api        Up (healthy)             
-tg_listener   Up
-tg_mongo      Up (healthy)
-tg_web        Up (healthy)             0.0.0.0:80->80/tcp
-```
-
-### 资源使用
-
-```bash
-# 查看容器资源使用情况
-docker stats
-```
+4. 检查是否达到了触发条件（定时或消息数量）
 
 ## 🔐 安全建议
 
 1. **修改默认密码** - 首次登录后立即修改
-2. **使用强密码** - JWT_SECRET 使用随机字符串
-3. **启用防火墙** - 仅开放必要端口
-4. **定期备份** - 备份 data 目录和配置文件
-5. **使用 HTTPS** - 生产环境建议配置 SSL 证书
-6. **限制访问** - 使用 Nginx 配置 IP 白名单
-
-### 配置 HTTPS（可选）
-
-使用 Let's Encrypt 免费证书：
-
-1. 安装 certbot
-2. 获取证书
-3. 修改 `nginx.conf` 添加 SSL 配置
-4. 重启服务
-
-详细教程：https://certbot.eff.org/
+2. **使用强 JWT_SECRET** - 安装脚本会自动生成，无需手动配置
+3. **启用防火墙** - 仅开放必要端口（如 5555）
+4. **定期备份** - 备份 `data/` 目录和 `backend/config.json`
+5. **使用 HTTPS** - 生产环境建议配置 SSL 证书（可使用 Nginx Proxy Manager）
+6. **限制访问** - 配置 IP 白名单或使用 VPN 访问
 
 ## 📝 环境变量说明
 
@@ -342,31 +288,40 @@ docker stats
 |--------|------|------|--------|
 | `API_ID` | Telegram API ID | ✅ | - |
 | `API_HASH` | Telegram API Hash | ✅ | - |
-| `JWT_SECRET` | JWT 签名密钥 | ✅ | - |
+| `JWT_SECRET` | JWT 签名密钥 | ✅ | 自动生成 |
 | `WEB_PORT` | Web 服务端口 | ❌ | 5555 |
 | `MONGO_URL` | MongoDB 连接地址 | ❌ | mongodb://mongo:27017/tglogs |
 | `PORT` | API 服务端口 | ❌ | 3000 |
 
 ## 🤝 常见问题 (FAQ)
 
-**Q: 如何获取频道 ID？**
-A: 转发频道消息给 @userinfobot 或 @getidsbot
+**Q: 如何获取 Telegram API_ID 和 API_HASH？**  
+A: 访问 https://my.telegram.org/apps 登录后创建应用即可获取
 
-**Q: 可以同时监控多个账号吗？**
+**Q: 如何获取频道 ID？**  
+A: 转发频道消息给 @userinfobot 或 @getidsbot，或使用频道链接
+
+**Q: 可以同时监控多个账号吗？**  
 A: 当前版本仅支持单账号，多账号支持将在后续版本提供
 
-**Q: 支持监控私聊消息吗？**
+**Q: 支持监控私聊消息吗？**  
 A: 支持，只要你的账号可以访问该对话
 
-**Q: 如何升级到新版本？**
-A: 拉取最新代码，执行 `docker-compose down` 和 `docker-compose up -d --build`
+**Q: AI 分析使用哪个模型？**  
+A: 默认使用 `gpt-3.5-turbo`，可在配置中修改为其他 OpenAI 兼容的模型
 
-**Q: 邮件告警怎么配置？**
+**Q: 邮件告警怎么配置？**  
 A: 
 - QQ 邮箱：SMTP 服务器 `smtp.qq.com`，端口 `465`，密码用授权码
 - 163 邮箱：SMTP 服务器 `smtp.163.com`，端口 `465`，密码用授权码
 - Gmail：SMTP 服务器 `smtp.gmail.com`，端口 `587`，密码用应用专用密码
 - 配置完成后点击"📩 发送测试告警"按钮验证
+
+**Q: 如何重置密码？**  
+A: 停止服务后删除 `backend/config.json`，重启服务后使用默认密码 `admin123` 登录
+
+**Q: 数据会丢失吗？**  
+A: 不会，所有数据都保存在 `data/` 目录中，只要不删除该目录，数据就不会丢失
 
 ## 📄 开源协议
 
@@ -379,9 +334,9 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 - [MongoDB](https://www.mongodb.com/) - NoSQL 数据库
 - [Docker](https://www.docker.com/) - 容器化平台
 
-## 📮 联系方式
+## 📮 贡献
 
-如有问题或建议，欢迎提交 Issue 或 Pull Request。
+欢迎提交 Issue 和 Pull Request！
 
 ---
 

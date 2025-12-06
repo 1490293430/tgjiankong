@@ -138,6 +138,22 @@ const defaultConfig = {
   }
 };
 
+// 深度合并配置对象（递归合并嵌套对象）
+function deepMergeConfig(target, source) {
+  const result = { ...target };
+  for (const key in source) {
+    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+      // 如果是对象（非数组），递归合并
+      result[key] = deepMergeConfig(result[key] || {}, source[key]);
+    } else if (!(key in result) || result[key] === null || result[key] === undefined) {
+      // 如果目标中没有这个key，或者是null/undefined，使用源值
+      result[key] = source[key];
+    }
+    // 如果目标中已有值且不是null/undefined，保留目标值（不覆盖）
+  }
+  return result;
+}
+
 // 安全读取配置文件（处理目录情况）
 function loadConfig() {
   try {
@@ -148,7 +164,19 @@ function loadConfig() {
       fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2));
       return defaultConfig;
     }
-    return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const existingConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    
+    // 深度合并现有配置和默认配置，确保所有新字段都存在
+    const mergedConfig = deepMergeConfig(existingConfig, defaultConfig);
+    
+    // 如果配置被更新（添加了新字段），保存回文件
+    const configChanged = JSON.stringify(mergedConfig) !== JSON.stringify(existingConfig);
+    if (configChanged) {
+      console.log('📝 检测到配置文件需要更新（添加缺失字段），正在保存...');
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(mergedConfig, null, 2));
+    }
+    
+    return mergedConfig;
   } catch (err) {
     if (err.code === 'ENOENT' || err.code === 'EISDIR') {
       console.log('⚠️  配置文件不存在或损坏，正在创建...');
@@ -157,6 +185,25 @@ function loadConfig() {
       }
       fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2));
       return defaultConfig;
+    }
+    // JSON解析错误，尝试修复
+    if (err instanceof SyntaxError) {
+      console.error('❌ 配置文件JSON格式错误，正在修复...');
+      try {
+        // 尝试备份损坏的配置
+        const backupPath = CONFIG_PATH + '.backup.' + Date.now();
+        if (fs.existsSync(CONFIG_PATH)) {
+          fs.copyFileSync(CONFIG_PATH, backupPath);
+          console.log(`💾 已备份损坏的配置文件到: ${backupPath}`);
+        }
+        // 使用默认配置
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2));
+        console.log('✅ 已使用默认配置重建配置文件');
+        return defaultConfig;
+      } catch (backupErr) {
+        console.error('❌ 修复配置文件失败:', backupErr);
+        throw err;
+      }
     }
     throw err;
   }
@@ -299,11 +346,12 @@ app.post('/api/config', authMiddleware, (req, res) => {
       }
     }
     
-    const newConfig = {
+    // 使用深度合并确保所有字段都被正确保留
+    const newConfig = deepMergeConfig({
       ...currentConfig,
       ...incoming,
       admin: currentConfig.admin // 保持管理员配置不变
-    };
+    }, defaultConfig); // 与默认配置合并，确保所有新字段都存在
     
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(newConfig, null, 2));
     
