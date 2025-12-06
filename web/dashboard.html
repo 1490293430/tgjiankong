@@ -1247,6 +1247,58 @@
             }
         }
         
+        // 解析频道/用户信息，统一处理
+        function parseChannelInfo(channel, channelId, sender) {
+            // 从 sender 中提取名字和用户名
+            let userName = '';  // 用户名，如 @zhangsan
+            let displayName = ''; // 显示名字，如 "张三"
+            
+            if (sender) {
+                // sender 格式可能是：
+                // - "张三 (@zhangsan)"
+                // - "@zhangsan"
+                // - "7675376057" (纯ID)
+                const usernameMatch = sender.match(/@([^\s)]+)/);
+                if (usernameMatch) {
+                    userName = '@' + usernameMatch[1];
+                    // 提取名字（去掉用户名部分）
+                    displayName = sender.replace(/\s*\(@[^\s)]+\)\s*/, '').trim();
+                    if (displayName === userName) {
+                        displayName = ''; // 如果只有用户名，没有名字
+                    }
+                } else {
+                    // 没有 @username，可能是纯数字ID或名字
+                    if (/^\d+$/.test(sender.trim())) {
+                        // 纯数字，使用channel作为显示名字（如果有）
+                        displayName = channel || sender;
+                    } else {
+                        displayName = sender;
+                    }
+                }
+            }
+            
+            // 如果没有提取到名字，使用channel或sender
+            if (!displayName) {
+                displayName = channel || sender || 'Unknown';
+            }
+            
+            // 如果没有用户名，尝试从channel提取
+            if (!userName && channel && channel.startsWith('@')) {
+                userName = channel;
+            }
+            
+            // 如果还是没有用户名，使用channelId作为用户名（格式化为@channelId）
+            if (!userName) {
+                userName = `@${channelId}`;
+            }
+            
+            return {
+                displayName: displayName,
+                userName: userName,
+                id: channelId || 'N/A'
+            };
+        }
+        
         // 加载最近日志
         async function loadRecentLogs() {
             const data = await apiRequest('/logs?page=1&pageSize=10');
@@ -1256,10 +1308,19 @@
                 let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>ID</th><th>关键词</th><th>消息</th></tr></thead><tbody>';
                 data.logs.forEach(log => {
                     const keywords = log.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('');
+                    const info = parseChannelInfo(log.channel, log.channelId, log.sender);
+                    
+                    // 统一处理：频道栏显示名字，ID栏显示用户名和ID（双排）
+                    const channelCell = info.displayName;
+                    const idCell = `<div style="line-height: 1.4;">
+                        <div style="font-size: 12px; color: #666;">${info.userName}</div>
+                        <div style="font-size: 11px; color: #999; margin-top: 2px;">${info.id}</div>
+                    </div>`;
+                    
                     html += `<tr>
                         <td style="white-space: nowrap;">${new Date(log.time).toLocaleString('zh-CN')}</td>
-                        <td>${log.channel}</td>
-                        <td style="font-size: 12px; color: #999;">${log.channelId || 'N/A'}</td>
+                        <td>${channelCell}</td>
+                        <td>${idCell}</td>
                         <td>${keywords}</td>
                         <td>${log.message.substring(0, 100)}${log.message.length > 100 ? '...' : ''}</td>
                     </tr>`;
@@ -1450,10 +1511,19 @@
                 let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>发送者</th><th>关键词</th><th>消息内容</th></tr></thead><tbody>';
                 data.logs.forEach(log => {
                     const keywords = log.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('');
+                    const info = parseChannelInfo(log.channel, log.channelId, log.sender);
+                    
+                    // 统一处理：频道栏显示名字，发送者栏显示用户名和ID（双排）
+                    const channelCell = info.displayName;
+                    const senderCell = `<div style="line-height: 1.4;">
+                        <div style="font-size: 13px; color: #666;">${info.userName}</div>
+                        <div style="font-size: 11px; color: #999; margin-top: 2px;">${info.id}</div>
+                    </div>`;
+                    
                     html += `<tr>
                         <td>${new Date(log.time).toLocaleString('zh-CN')}</td>
-                        <td>${log.channel}</td>
-                        <td>${log.sender}</td>
+                        <td>${channelCell}</td>
+                        <td>${senderCell}</td>
                         <td>${keywords}</td>
                         <td>${log.message.substring(0, 150)}${log.message.length > 150 ? '...' : ''}</td>
                     </tr>`;
