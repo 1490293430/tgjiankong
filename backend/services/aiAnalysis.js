@@ -16,9 +16,10 @@ class AIAnalysisService {
    * 批量分析消息（带重试机制）
    * @param {Array} messages - 消息数组，每个消息包含 {text, sender, channel, timestamp}
    * @param {Number} retryCount - 当前重试次数（内部使用）
+   * @param {String} customPrompt - 自定义提示词，如果提供则覆盖默认提示词
    * @returns {Promise<Object>} 分析结果
    */
-  async analyzeMessages(messages, retryCount = 0) {
+  async analyzeMessages(messages, retryCount = 0, customPrompt = null) {
     if (!this.apiKey) {
       throw new Error('OpenAI API Key 未配置');
     }
@@ -51,7 +52,20 @@ class AIAnalysisService {
         return `[${idx + 1}] 来自 ${msg.sender || '未知'} 在 ${msg.channel || '未知频道'}:\n${msg.text}`;
       }).join('\n\n');
 
-      console.log(`🔄 AI 分析请求 (消息数: ${messageCount}, 超时: ${timeout/1000}秒, 重试: ${retryCount}/${maxRetries})`);
+      // 使用自定义提示词或默认提示词
+      const promptToUse = customPrompt !== null ? customPrompt : this.prompt;
+      
+      console.log(`🔄 AI 分析请求 (消息数: ${messageCount}, 超时: ${timeout/1000}秒, 重试: ${retryCount}/${maxRetries}, 提示词: ${promptToUse ? `"${promptToUse.substring(0, 30)}..."` : '(空)'})`);
+
+      // 构建用户消息内容
+      let userContent = '';
+      if (promptToUse && promptToUse.trim()) {
+        // 如果有提示词，使用提示词格式
+        userContent = `${promptToUse}\n\n消息内容：\n${messageTexts}\n\n请返回 JSON 格式，包含以下字段：\n- sentiment: 整体情感（positive/neutral/negative）\n- sentiment_score: 情感分数（-1到1之间）\n- categories: 主要内容分类（数组）\n- summary: 消息摘要（不超过200字）\n- keywords: 关键词列表（数组，最多10个）\n- topics: 主要话题（数组）\n- risk_level: 风险等级（low/medium/high）`;
+      } else {
+        // 如果提示词为空，只发送消息内容和JSON格式要求
+        userContent = `消息内容：\n${messageTexts}\n\n请返回 JSON 格式，包含以下字段：\n- sentiment: 整体情感（positive/neutral/negative）\n- sentiment_score: 情感分数（-1到1之间）\n- categories: 主要内容分类（数组）\n- summary: 消息摘要（不超过200字）\n- keywords: 关键词列表（数组，最多10个）\n- topics: 主要话题（数组）\n- risk_level: 风险等级（low/medium/high）`;
+      }
 
       // 调用 OpenAI API
       const response = await axios.post(
@@ -65,7 +79,7 @@ class AIAnalysisService {
             },
             {
               role: 'user',
-              content: `${this.prompt}\n\n消息内容：\n${messageTexts}\n\n请返回 JSON 格式，包含以下字段：\n- sentiment: 整体情感（positive/neutral/negative）\n- sentiment_score: 情感分数（-1到1之间）\n- categories: 主要内容分类（数组）\n- summary: 消息摘要（不超过200字）\n- keywords: 关键词列表（数组，最多10个）\n- topics: 主要话题（数组）\n- risk_level: 风险等级（low/medium/high）`
+              content: userContent
             }
           ],
           temperature: 0.7,
@@ -145,8 +159,8 @@ class AIAnalysisService {
         // 等待后重试
         await new Promise(resolve => setTimeout(resolve, retryDelay));
         
-        // 递归重试
-        return await this.analyzeMessages(messages, retryCount + 1);
+        // 递归重试（保留自定义提示词）
+        return await this.analyzeMessages(messages, retryCount + 1, customPrompt);
       }
 
       // 不重试或已达到最大重试次数

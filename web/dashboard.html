@@ -597,6 +597,11 @@
                                 <textarea id="aiTriggerUsers" rows="3" placeholder="输入用户名或用户ID，每行一个&#10;例如：&#10;user123&#10;张三&#10;1234567890"></textarea>
                                 <div class="hint">当这些用户发送消息时，立刻触发 AI 分析，并将结果返回给该用户</div>
                             </div>
+                            <div class="form-group">
+                                <label>固定用户触发专用提示词（可选）</label>
+                                <textarea id="aiTriggerPrompt" rows="3" placeholder="为空时使用空提示词，不填写则使用默认提示词格式"></textarea>
+                                <div class="hint">为空时，AI 将只分析消息内容并返回 JSON 格式结果，不添加额外指令</div>
+                            </div>
                         </div>
                         
                         <div style="margin-top: 12px;">
@@ -1042,7 +1047,8 @@
                     ai_send_email: document.getElementById('aiSendEmail').checked,
                     ai_send_webhook: document.getElementById('aiSendWebhook').checked,
                     ai_trigger_enabled: document.getElementById('enableAITrigger').checked,
-                    ai_trigger_users: document.getElementById('aiTriggerUsers').value.split('\n').filter(u => u.trim())
+                    ai_trigger_users: document.getElementById('aiTriggerUsers').value.split('\n').filter(u => u.trim()),
+                    ai_trigger_prompt: document.getElementById('aiTriggerPrompt').value.trim()
                 }
             };
             

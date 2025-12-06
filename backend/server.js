@@ -128,7 +128,8 @@ const defaultConfig = {
     ai_send_email: false,
     ai_send_webhook: false,
     ai_trigger_enabled: false, // 是否启用固定用户触发
-    ai_trigger_users: [] // 固定用户列表，当这些用户发送消息时立刻分析
+    ai_trigger_users: [], // 固定用户列表，当这些用户发送消息时立刻分析
+    ai_trigger_prompt: '' // 固定用户触发的专用提示词，为空时使用空提示词
   },
   admin: {
     username: 'admin',
@@ -854,8 +855,16 @@ async function performAIAnalysis(triggerType = 'manual', logId = null) {
       timestamp: log.time
     }));
 
+    // 根据触发类型选择提示词
+    let customPrompt = null;
+    if (triggerType === 'user_message') {
+      // 固定用户触发：使用专用提示词，如果为空则使用空字符串
+      customPrompt = config.ai_analysis?.ai_trigger_prompt || '';
+      console.log(`📝 固定用户触发使用专用提示词: ${customPrompt ? `"${customPrompt.substring(0, 50)}..."` : '(空)'}`);
+    }
+    
     // 调用 AI 分析服务
-    const analysisResult = await aiService.analyzeMessages(messagesToAnalyze);
+    const analysisResult = await aiService.analyzeMessages(messagesToAnalyze, 0, customPrompt);
 
     if (!analysisResult.success) {
       console.error('❌ AI 分析失败:', analysisResult.error);
