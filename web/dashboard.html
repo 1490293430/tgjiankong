@@ -338,43 +338,47 @@
         .error-message {
             background: #f8d7da;
         
-        /* 浮动提示框 - 固定在页面顶部，滚动时可见 */
+        /* 浮动提示框 - 固定在右上角，大尺寸显示 */
         .toast-notification {
             position: fixed;
-            top: 80px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 10000;
-            padding: 16px 24px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            top: 20px;
+            right: 20px;
+            z-index: 99999;
+            padding: 20px 32px;
+            border-radius: 12px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
             display: none;
-            min-width: 300px;
-            text-align: center;
+            min-width: 350px;
+            max-width: 500px;
+            text-align: left;
             font-weight: 500;
-            animation: slideDown 0.3s ease-out;
+            font-size: 16px;
+            line-height: 1.5;
+            animation: slideInRight 0.4s ease-out;
+            word-wrap: break-word;
         }
         
-        @keyframes slideDown {
+        @keyframes slideInRight {
             from {
                 opacity: 0;
-                transform: translateX(-50%) translateY(-20px);
+                transform: translateX(100%);
             }
             to {
                 opacity: 1;
-                transform: translateX(-50%) translateY(0);
+                transform: translateX(0);
             }
         }
         
         .toast-notification.success {
             background: #4caf50;
             color: white;
+            border-left: 4px solid #2e7d32;
         }
         
         .toast-notification.error {
             background: #f44336;
             color: white;
-            color: #721c24;
+            border-left: 4px solid #c62828;
         }
         
         .loading {
@@ -780,16 +784,6 @@
             <div id="settingsMessage" class="success-message"></div>
             
             <div class="card">
-                <h2>界面设置</h2>
-                <div class="form-group">
-                    <label>无感刷新间隔（秒）</label>
-                    <input type="number" id="refreshInterval" value="30" min="0" max="300">
-                    <div class="hint">设置页面自动刷新的间隔时间，0表示禁用自动刷新，建议范围：10-60秒。当前设置：<span id="currentRefreshInterval">30</span>秒</div>
-                </div>
-                <button class="btn btn-primary" onclick="saveFrontendSettings()">💾 保存设置</button>
-            </div>
-            
-            <div class="card">
                 <h2>修改密码</h2>
                 <div class="form-group">
                     <label>原密码</label>
@@ -816,83 +810,177 @@
         let currentPage = 1;
         let currentAIPage = 1;
         let config = {};
-        let autoRefreshInterval = null; // 自动刷新计时器
-        let REFRESH_INTERVAL = 30000; // 默认30秒刷新一次，减少MongoDB查询压力
+        let eventSource = null; // SSE 事件源连接
         
         // 显示浮动提示框
         function showToast(message, isSuccess = true) {
             const toast = document.getElementById('toastNotification');
+            if (!toast) return;
+            
+            // 清除之前的定时器（如果有）
+            if (toast._hideTimer) {
+                clearTimeout(toast._hideTimer);
+                toast._hideTimer = null;
+            }
+            
+            // 先隐藏之前的提示（如果有）
+            toast.style.display = 'none';
+            
+            // 设置内容和样式
             toast.textContent = message;
             toast.className = 'toast-notification ' + (isSuccess ? 'success' : 'error');
+            
+            // 重置样式，确保动画能正常播放
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateX(0)';
+            toast.style.transition = '';
+            
+            // 强制重新计算样式，确保动画生效
+            void toast.offsetWidth;
+            
+            // 显示提示框
             toast.style.display = 'block';
             
-            // 自动隐藏
-            const duration = isSuccess ? 3000 : 5000;
-            setTimeout(() => {
-                toast.style.display = 'none';
+            // 自动隐藏（增加显示时间，让用户有足够时间看到）
+            const duration = isSuccess ? 4000 : 6000;
+            toast._hideTimer = setTimeout(() => {
+                if (toast) {
+                    // 淡出动画
+                    toast.style.transition = 'opacity 0.3s ease-out, transform 0.3s ease-out';
+                    toast.style.opacity = '0';
+                    toast.style.transform = 'translateX(100%)';
+                    setTimeout(() => {
+                        if (toast) {
+                            toast.style.display = 'none';
+                            toast.style.transition = '';
+                            toast.style.opacity = '';
+                            toast.style.transform = '';
+                        }
+                    }, 300);
+                }
             }, duration);
         }
         
-        // 从localStorage加载刷新间隔设置
-        function loadRefreshInterval() {
-            const saved = localStorage.getItem('refreshInterval');
-            let intervalSeconds = 30; // 默认30秒
-            if (saved !== null) {
-                intervalSeconds = parseInt(saved);
-                if (isNaN(intervalSeconds) || intervalSeconds < 0) {
-                    intervalSeconds = 30;
-                }
-            }
-            REFRESH_INTERVAL = intervalSeconds * 1000; // 转换为毫秒
+        // 连接 SSE 实时推送
+        function connectSSE() {
+            const token = localStorage.getItem('token');
+            if (!token) return;
             
-            // 更新设置页面显示
-            if (document.getElementById('refreshInterval')) {
-                document.getElementById('refreshInterval').value = intervalSeconds;
-                if (intervalSeconds === 0) {
-                    document.getElementById('currentRefreshInterval').textContent = '已禁用';
-                } else {
-                    document.getElementById('currentRefreshInterval').textContent = intervalSeconds + '秒';
-                }
+            // 关闭现有连接
+            if (eventSource && eventSource.controller) {
+                eventSource.controller.abort();
             }
-            return REFRESH_INTERVAL;
+            
+            // 注意：EventSource API 不支持自定义 headers，使用 fetch + ReadableStream 实现带认证的 SSE
+            // 保存连接引用以便后续管理
+            const fetchController = new AbortController();
+            eventSource = { controller: fetchController };
+            fetch(`${API_URL}/events`, {
+                signal: fetchController.signal,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'text/event-stream'
+                }
+            }).then(response => {
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        localStorage.removeItem('token');
+                        window.location.href = 'index.html';
+                        return;
+                    }
+                    throw new Error('SSE连接失败: ' + response.status);
+                }
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                
+                function readStream() {
+                    reader.read().then(({ done, value }) => {
+                        if (done) {
+                            // 连接断开，5秒后重连
+                            setTimeout(() => connectSSE(), 5000);
+                            return;
+                        }
+                        
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop() || ''; // 保留不完整的行
+                        
+                        for (const line of lines) {
+                            if (line.trim() && line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.substring(6));
+                                    handleSSEEvent(data);
+                                } catch (e) {
+                                    // 忽略解析错误（可能是心跳ping）
+                                }
+                            }
+                        }
+                        
+                        readStream();
+                    }).catch(err => {
+                        console.error('读取SSE流失败:', err);
+                        setTimeout(() => connectSSE(), 5000);
+                    });
+                }
+                
+                readStream();
+            }).catch(err => {
+                console.error('SSE连接失败:', err);
+                setTimeout(() => connectSSE(), 5000);
+            });
         }
         
-        // 保存前端设置
-        function saveFrontendSettings() {
-            const intervalSeconds = parseInt(document.getElementById('refreshInterval').value);
-            if (isNaN(intervalSeconds) || intervalSeconds < 0 || intervalSeconds > 300) {
-                alert('刷新间隔必须在0-300秒之间（0表示禁用自动刷新）');
-                return;
+        // 处理 SSE 事件
+        function handleSSEEvent(event) {
+            const activeTab = document.querySelector('.tab-content.active')?.id;
+            
+            switch (event.type) {
+                case 'connected':
+                    console.log('✅ 实时推送已连接');
+                    break;
+                case 'new_message':
+                    // 有新消息，更新相关页面
+                    if (activeTab === 'dashboard') {
+                        loadStats();
+                        loadRecentLogs();
+                    } else if (activeTab === 'logs') {
+                        loadLogs();
+                    }
+                    break;
+                case 'stats_updated':
+                    // 统计信息更新
+                    if (activeTab === 'dashboard') {
+                        loadStats();
+                    }
+                    break;
+                case 'ai_analysis_complete':
+                    // AI分析完成
+                    if (activeTab === 'ai') {
+                        loadAIStats();
+                        loadAISummaries(currentAIPage);
+                    }
+                    break;
+                case 'ai_stats_updated':
+                    // AI统计更新
+                    if (activeTab === 'ai') {
+                        loadAIStats();
+                    }
+                    break;
+                case 'ping':
+                    // 心跳，保持连接
+                    break;
             }
-            
-            // 保存到localStorage
-            localStorage.setItem('refreshInterval', intervalSeconds);
-            REFRESH_INTERVAL = intervalSeconds * 1000;
-            
-            // 更新显示
-            if (intervalSeconds === 0) {
-                document.getElementById('currentRefreshInterval').textContent = '已禁用';
-            } else {
-                document.getElementById('currentRefreshInterval').textContent = intervalSeconds + '秒';
-            }
-            
-            // 重启自动刷新以应用新设置
-            const activeTab = document.querySelector('.tab-content.active').id;
-            if (activeTab === 'dashboard' || activeTab === 'ai' || activeTab === 'logs') {
-                stopAutoRefresh();
-                // 如果设置为0，不启动自动刷新
-                if (intervalSeconds > 0) {
-                    startAutoRefresh(activeTab);
-                }
-            }
-            
-            // 显示成功消息 - 使用浮动提示框
-            const message = intervalSeconds === 0 ? '✅ 设置已保存！自动刷新已禁用' : '✅ 设置已保存！刷新间隔已更新为 ' + intervalSeconds + ' 秒';
-            showToast(message, true);
         }
         
-        // 初始化时加载设置
-        loadRefreshInterval();
+        // 断开 SSE 连接
+        function disconnectSSE() {
+            if (eventSource && eventSource.controller) {
+                eventSource.controller.abort();
+            }
+            eventSource = null;
+        }
         
         // 卡片折叠/展开函数
         function toggleCard(header) {
@@ -977,65 +1065,19 @@
             // 保存当前标签页
             localStorage.setItem('currentTab', tabName);
             
-            // 停止之前的自动刷新
-            stopAutoRefresh();
-            
             if (tabName === 'dashboard') {
                 loadStats();
                 loadRecentLogs();
-                startAutoRefresh('dashboard');
             } else if (tabName === 'config') {
                 loadConfig();
             } else if (tabName === 'ai') {
                 loadAIStats();
                 loadAISummaries();
-                startAutoRefresh('ai');
             } else if (tabName === 'logs') {
                 loadLogs();
-                startAutoRefresh('logs');
-            } else if (tabName === 'settings') {
-                // 切换到设置页面时，加载当前设置
-                loadRefreshInterval();
             }
         }
         
-        // 启动自动刷新
-        function startAutoRefresh(tabName) {
-            stopAutoRefresh(); // 先清除之前的计时器
-            // 确保使用最新的刷新间隔设置
-            const currentInterval = loadRefreshInterval();
-            
-            // 如果间隔为0，不启动自动刷新
-            if (currentInterval === 0) {
-                return;
-            }
-            
-            autoRefreshInterval = setInterval(() => {
-                // const refreshStart = Date.now();
-                // console.log(`[性能监控] Web界面自动刷新开始 (标签: ${tabName})`);
-                if (tabName === 'dashboard') {
-                    loadStats();
-                    loadRecentLogs();
-                } else if (tabName === 'ai') {
-                    loadAIStats();
-                    loadAISummaries(currentAIPage);
-                } else if (tabName === 'logs') {
-                    loadLogs();
-                }
-                // const refreshTime = Date.now() - refreshStart;
-                // if (refreshTime > 50) {
-                //     console.log(`[性能监控] Web界面自动刷新耗时: ${refreshTime}ms`);
-                // }
-            }, REFRESH_INTERVAL);
-        }
-        
-        // 停止自动刷新
-        function stopAutoRefresh() {
-            if (autoRefreshInterval) {
-                clearInterval(autoRefreshInterval);
-                autoRefreshInterval = null;
-            }
-        }
         
         // 加载统计信息
         async function loadStats() {
@@ -1426,65 +1468,92 @@
                         const riskColor = risk === 'low' ? '#27ae60' : risk === 'medium' ? '#f39c12' : '#e74c3c';
                         
                         const date = new Date(summary.analysis_time).toLocaleString('zh-CN');
-                        const keywords = (summary.analysis_result?.keywords || []).slice(0, 5).join(', ');
-                        const summary_text = summary.analysis_result?.summary || '无摘要';
+                        const keywords = (summary.analysis_result?.keywords || []).slice(0, 8);
+                        const summary_text = summary.analysis_result?.summary || '暂无摘要';
                         
-                        // 频道统计
-                        const channelStats = (summary.channel_stats || []).map(ch => 
-                            `<span style="background: #3498db; color: white; padding: 2px 8px; border-radius: 3px; margin-right: 5px; font-size: 11px;">
+                        // 频道统计（简化显示，只显示前3个）
+                        const topChannels = (summary.channel_stats || []).slice(0, 3);
+                        const channelStats = topChannels.length > 0 ? topChannels.map(ch => 
+                            `<span style="background: #3498db; color: white; padding: 2px 6px; border-radius: 3px; margin-right: 4px; font-size: 11px; display: inline-block; margin-bottom: 4px;">
                                 📢 ${ch.name} (${ch.count})
                             </span>`
-                        ).join('');
+                        ).join('') : '';
                         
-                        // 发送者统计（显示前5个）
-                        const senderStats = (summary.sender_stats || []).slice(0, 5).map(sender => 
-                            `<span style="background: #9b59b6; color: white; padding: 2px 8px; border-radius: 3px; margin-right: 5px; font-size: 11px;">
+                        // 发送者统计（简化显示，只显示前3个）
+                        const topSenders = (summary.sender_stats || []).slice(0, 3);
+                        const senderStats = topSenders.length > 0 ? topSenders.map(sender => 
+                            `<span style="background: #9b59b6; color: white; padding: 2px 6px; border-radius: 3px; margin-right: 4px; font-size: 11px; display: inline-block; margin-bottom: 4px;">
                                 👤 ${sender.name} (${sender.count})
                             </span>`
-                        ).join('');
+                        ).join('') : '';
                         
-                        // 消息预览
-                        const messagePreview = (summary.messages_preview || []).map(msg => {
+                        // 消息预览（简化）
+                        const messagePreview = (summary.messages_preview || []).slice(0, 3).map(msg => {
                             const msgDate = new Date(msg.timestamp).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
-                            const msgText = msg.text.length > 50 ? msg.text.substring(0, 50) + '...' : msg.text;
+                            const msgText = msg.text.length > 60 ? msg.text.substring(0, 60) + '...' : msg.text;
                             return `
-                                <div style="background: #f8f9fa; padding: 8px; margin-top: 5px; border-left: 3px solid #3498db; font-size: 12px;">
-                                    <div style="color: #666; margin-bottom: 3px;">
-                                        <strong>${msgDate}</strong> | 📢 ${msg.channel} | 👤 ${msg.sender}
-                                    </div>
-                                    <div style="color: #333;">${msgText}</div>
+                                <div style="background: #f8f9fa; padding: 6px 10px; margin-top: 4px; border-left: 3px solid #3498db; font-size: 12px; line-height: 1.4;">
+                                    <span style="color: #666; font-size: 11px;">${msgDate}</span> 
+                                    <span style="color: #333;">${msgText}</span>
                                 </div>
                             `;
                         }).join('');
                         
                         return `
-                            <div style="border: 1px solid #ddd; padding: 15px; margin-bottom: 15px; border-radius: 5px;">
-                                <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
-                                    <div>
-                                        <strong>${date}</strong> - ${summary.message_count} 条消息
+                            <div style="border: 1px solid #e0e0e0; padding: 16px; margin-bottom: 16px; border-radius: 8px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                                <!-- 标题行：时间和标签 -->
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+                                    <div style="font-size: 13px; color: #666;">
+                                        <strong style="color: #333;">${date}</strong> · ${summary.message_count} 条消息
                                     </div>
-                                    <div>
-                                        <span style="background: ${sentimentColor}; color: white; padding: 3px 10px; border-radius: 3px; margin-right: 5px;">
+                                    <div style="display: flex; gap: 6px;">
+                                        <span style="background: ${sentimentColor}; color: white; padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: 500;">
                                             ${sentimentEmoji} ${sentiment}
                                         </span>
-                                        <span style="background: ${riskColor}; color: white; padding: 3px 10px; border-radius: 3px;">
+                                        <span style="background: ${riskColor}; color: white; padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: 500;">
                                             ${riskEmoji} ${risk}
                                         </span>
                                     </div>
                                 </div>
                                 
-                                ${channelStats ? `<div style="margin-bottom: 8px;">${channelStats}</div>` : ''}
-                                ${senderStats ? `<div style="margin-bottom: 10px;">${senderStats}</div>` : ''}
-                                
-                                <div style="color: #666; margin-bottom: 8px;">
-                                    <strong>📝 AI 摘要:</strong> ${summary_text}
+                                <!-- AI摘要 - 最显眼的位置 -->
+                                <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; margin-bottom: 12px; border-left: 4px solid #3498db;">
+                                    <div style="font-size: 13px; color: #666; margin-bottom: 6px; font-weight: 600;">
+                                        📝 AI 分析摘要
+                                    </div>
+                                    <div style="font-size: 14px; color: #333; line-height: 1.6;">
+                                        ${summary_text}
+                                    </div>
                                 </div>
-                                ${keywords ? `<div style="color: #888; font-size: 12px; margin-bottom: 10px;"><strong>🔑 关键词:</strong> ${keywords}</div>` : ''}
                                 
+                                <!-- 关键词 -->
+                                ${keywords.length > 0 ? `
+                                    <div style="margin-bottom: 10px;">
+                                        <div style="font-size: 12px; color: #666; margin-bottom: 4px;">🔑 关键词</div>
+                                        <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+                                            ${keywords.map(k => `<span style="background: #e3f2fd; color: #1976d2; padding: 3px 8px; border-radius: 4px; font-size: 11px;">${k}</span>`).join('')}
+                                        </div>
+                                    </div>
+                                ` : ''}
+                                
+                                <!-- 频道和发送者统计（折叠显示） -->
+                                ${(channelStats || senderStats) ? `
+                                    <details style="margin-bottom: 10px;">
+                                        <summary style="cursor: pointer; color: #666; font-size: 12px; padding: 4px 0;">📊 查看统计信息</summary>
+                                        <div style="margin-top: 8px; padding-left: 8px;">
+                                            ${channelStats ? `<div style="margin-bottom: 6px;">${channelStats}</div>` : ''}
+                                            ${senderStats ? `<div>${senderStats}</div>` : ''}
+                                        </div>
+                                    </details>
+                                ` : ''}
+                                
+                                <!-- 消息预览（折叠显示） -->
                                 ${messagePreview ? `
-                                    <details style="margin-top: 10px;">
-                                        <summary style="cursor: pointer; color: #3498db; font-size: 12px;">📋 查看消息预览 (${summary.messages_preview?.length || 0}/${summary.message_count})</summary>
-                                        ${messagePreview}
+                                    <details>
+                                        <summary style="cursor: pointer; color: #3498db; font-size: 12px; padding: 4px 0;">📋 查看消息预览 (${summary.messages_preview?.length || 0}/${summary.message_count})</summary>
+                                        <div style="margin-top: 8px;">
+                                            ${messagePreview}
+                                        </div>
                                     </details>
                                 ` : ''}
                             </div>
@@ -1583,18 +1652,23 @@
             if (savedTab === 'dashboard') {
                 loadStats();
                 loadRecentLogs();
-                startAutoRefresh('dashboard');
             } else if (savedTab === 'config') {
                 loadConfig();
             } else if (savedTab === 'ai') {
                 loadAIStats();
                 loadAISummaries();
-                startAutoRefresh('ai');
             } else if (savedTab === 'logs') {
                 loadLogs();
-                startAutoRefresh('logs');
             }
         }, 100);
+        
+        // 连接 SSE 实时推送
+        connectSSE();
+        
+        // 页面卸载时断开 SSE 连接
+        window.addEventListener('beforeunload', () => {
+            disconnectSSE();
+        });
     </script>
 </body>
 </html>

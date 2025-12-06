@@ -103,13 +103,43 @@ class AIAnalysisService {
         // 清理可能的代码块标记
         const cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
         analysisResult = JSON.parse(cleanContent);
+        
+        // 确保 summary 字段有值
+        if (!analysisResult.summary || analysisResult.summary.trim() === '') {
+          // 如果 summary 为空，尝试从其他字段生成摘要
+          const topics = (analysisResult.topics || []).join('、');
+          const categories = (analysisResult.categories || []).join('、');
+          const keywords = (analysisResult.keywords || []).slice(0, 5).join('、');
+          
+          if (topics || categories) {
+            analysisResult.summary = `主要话题：${topics || categories}${keywords ? `；关键词：${keywords}` : ''}`;
+          } else if (content.length > 0) {
+            // 如果都没有，从原始响应中提取前200字作为摘要
+            analysisResult.summary = content.substring(0, 200).replace(/\n/g, ' ').trim();
+          } else {
+            analysisResult.summary = '暂无摘要（AI未返回有效内容）';
+          }
+        }
+        
+        // 确保其他必需字段有默认值
+        if (!analysisResult.sentiment) analysisResult.sentiment = 'neutral';
+        if (analysisResult.sentiment_score === undefined) analysisResult.sentiment_score = 0;
+        if (!analysisResult.categories || analysisResult.categories.length === 0) analysisResult.categories = ['未分类'];
+        if (!analysisResult.keywords) analysisResult.keywords = [];
+        if (!analysisResult.topics) analysisResult.topics = [];
+        if (!analysisResult.risk_level) analysisResult.risk_level = 'low';
+        
+        // 保存原始响应
+        analysisResult.raw_response = content;
       } catch (parseError) {
-        // 如果 JSON 解析失败，返回原始文本
+        // 如果 JSON 解析失败，尝试从原始文本中提取摘要
+        const extractedSummary = content.length > 0 ? content.substring(0, 200).replace(/\n/g, ' ').trim() : '无法解析AI返回内容';
+        
         analysisResult = {
           sentiment: 'neutral',
           sentiment_score: 0,
           categories: ['未分类'],
-          summary: content.substring(0, 200),
+          summary: extractedSummary,
           keywords: [],
           topics: [],
           risk_level: 'low',

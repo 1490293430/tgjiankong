@@ -18,6 +18,9 @@ const AIAnalysisService = require('./services/aiAnalysis');
 
 const app = express();
 
+// SSE 客户端连接池
+const sseClients = new Set();
+
 // 🔒 信任反向代理（用于 X-Forwarded-For 头部，在 Docker + Nginx 环境中必需）
 app.set('trust proxy', 1);
 
@@ -428,6 +431,77 @@ app.get('/api/logs', authMiddleware, async (req, res) => {
   }
 });
 
+// ===== SSE 实时推送 =====
+
+// SSE 客户端连接池
+const sseClients = new Set();
+
+// SSE 事件推送端点
+app.get('/api/events', authMiddleware, (req, res) => {
+  // 设置 SSE 响应头
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // 禁用 nginx 缓冲
+
+  // 发送初始连接消息
+  res.write('data: {"type":"connected","message":"实时推送已连接"}\n\n');
+
+  // 将客户端添加到连接池
+  sseClients.add(res);
+
+  // 客户端断开连接时清理
+  req.on('close', () => {
+    sseClients.delete(res);
+    res.end();
+  });
+
+  // 定期发送心跳，保持连接活跃
+  const heartbeatInterval = setInterval(() => {
+    if (sseClients.has(res)) {
+      try {
+        res.write('data: {"type":"ping"}\n\n');
+      } catch (err) {
+        clearInterval(heartbeatInterval);
+        sseClients.delete(res);
+        res.end();
+      }
+    } else {
+      clearInterval(heartbeatInterval);
+    }
+  }, 30000); // 30秒心跳
+
+  // 清理心跳定时器
+  req.on('close', () => {
+    clearInterval(heartbeatInterval);
+  });
+});
+
+// 推送事件给所有连接的客户端
+function broadcastEvent(eventType, data) {
+  const message = JSON.stringify({ type: eventType, data, timestamp: new Date().toISOString() });
+  const formattedMessage = `data: ${message}\n\n`;
+  
+  // 移除已断开的连接
+  const disconnectedClients = [];
+  
+  sseClients.forEach(client => {
+    try {
+      client.write(formattedMessage);
+    } catch (err) {
+      // 连接已断开，标记为待删除
+      disconnectedClients.push(client);
+    }
+  });
+  
+  // 清理断开的连接
+  disconnectedClients.forEach(client => {
+    sseClients.delete(client);
+  });
+}
+
+// ===== 统计相关 API =====
+
 // 统计信息缓存（减少MongoDB查询压力）
 let statsCache = null;
 let statsCacheTime = 0;
@@ -533,6 +607,21 @@ app.post('/api/alert/push', authMiddleware, async (req, res) => {
       alerted: true
     });
     await log.save();
+    
+    // 实时推送新消息事件给前端
+    broadcastEvent('new_message', {
+      id: log._id,
+      channel: cleanChannel,
+      channelId: channelId || '',
+      sender: cleanFrom,
+      message: cleanMessage,
+      keywords: [cleanKeyword],
+      time: log.time,
+      alerted: true
+    });
+    
+    // 推送统计更新事件
+    broadcastEvent('stats_updated', {});
     
     const config = loadConfig();
     const actions = config.alert_actions;
@@ -993,6 +1082,17 @@ async function performAIAnalysis(triggerType = 'manual', logId = null) {
     // 重置消息计数器
     messageCounter = 0;
     lastAnalysisTime = new Date();
+
+    // 实时推送AI分析完成事件
+    broadcastEvent('ai_analysis_complete', {
+      summary_id: summary._id,
+      message_count: unanalyzedMessages.length,
+      trigger_type: triggerType,
+      analysis: analysisResult.analysis
+    });
+    
+    // 推送AI统计更新事件
+    broadcastEvent('ai_stats_updated', {});
 
     return {
       success: true,
