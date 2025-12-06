@@ -370,40 +370,57 @@ app.get('/api/logs', authMiddleware, async (req, res) => {
   }
 });
 
-// 获取统计信息
+// 统计信息缓存（减少MongoDB查询压力）
+let statsCache = null;
+let statsCacheTime = 0;
+const STATS_CACHE_TTL = 10000; // 缓存10秒
+
+// 获取统计信息（带缓存）
 app.get('/api/stats', authMiddleware, async (req, res) => {
   try {
-    const total = await Log.countDocuments();
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const now = Date.now();
+    // 如果缓存有效，直接返回
+    if (statsCache && (now - statsCacheTime) < STATS_CACHE_TTL) {
+      return res.json(statsCache);
+    }
     
-    const todayCount = await Log.countDocuments({
-      time: { $gte: today }
-    });
-    
-    const alertedCount = await Log.countDocuments({ alerted: true });
-    
-    const channelStats = await Log.aggregate([
-      {
-        $group: {
-          _id: '$channel',
-          count: { $sum: 1 }
+    // 并行执行所有查询以提高效率
+    const [total, todayCount, alertedCount, channelStats] = await Promise.all([
+      Log.countDocuments(),
+      (() => {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        return Log.countDocuments({ time: { $gte: today } });
+      })(),
+      Log.countDocuments({ alerted: true }),
+      Log.aggregate([
+        {
+          $group: {
+            _id: '$channel',
+            count: { $sum: 1 }
+          }
+        },
+        {
+          $sort: { count: -1 }
+        },
+        {
+          $limit: 10
         }
-      },
-      {
-        $sort: { count: -1 }
-      },
-      {
-        $limit: 10
-      }
+      ])
     ]);
     
-    res.json({
+    const result = {
       total,
       todayCount,
       alertedCount,
       channelStats
-    });
+    };
+    
+    // 更新缓存
+    statsCache = result;
+    statsCacheTime = Date.now();
+    
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: '获取统计信息失败：' + error.message });
   }

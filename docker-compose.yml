@@ -12,9 +12,10 @@ services:
       - tg-network
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/tglogs --quiet
-      interval: 10s
+      interval: 30s
       timeout: 5s
-      retries: 5
+      retries: 3
+      start_period: 10s
 
   # Node.js API 后端
   api:

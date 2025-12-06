@@ -756,7 +756,7 @@
         let currentAIPage = 1;
         let config = {};
         let autoRefreshInterval = null; // 自动刷新计时器
-        const REFRESH_INTERVAL = 10000; // 10秒刷新一次
+        const REFRESH_INTERVAL = 30000; // 30秒刷新一次，减少MongoDB查询压力
         
         // 卡片折叠/展开函数
         function toggleCard(header) {
