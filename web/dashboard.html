@@ -1273,11 +1273,8 @@
             } else if (tabName === 'logs') {
                 loadLogs();
             } else if (tabName === 'settings') {
-                // 如果是admin用户，加载用户列表
-                const currentUsername = localStorage.getItem('username') || '';
-                if (currentUsername === 'admin') {
-                    loadUsers();
-                }
+                // 加载用户列表（只有主账号可以创建和管理子账号，权限由后端控制）
+                loadUsers();
             }
         }
         
@@ -1513,7 +1510,16 @@
             });
             
             // 使用浮动提示框显示消息
-            showToast(result && result.status === 'ok' ? '✅ 配置保存成功！' : '❌ 保存失败：' + (result?.error || '未知错误'), result && result.status === 'ok');
+            if (result && result.status === 'ok') {
+                if (result.requiresRestart) {
+                    // 如果检测到 API_ID/API_HASH 变化，显示特殊提示
+                    showToast('✅ 配置保存成功！⚠️ API_ID 或 API_HASH 已更改，需要重启 Telethon 服务才能生效。请执行：docker compose restart telethon', true);
+                } else {
+                    showToast('✅ 配置保存成功！', true);
+                }
+            } else {
+                showToast('❌ 保存失败：' + (result?.error || '未知错误'), false);
+            }
         }
 
         // 发送测试告警
@@ -1637,14 +1643,11 @@
             if (!token) return;
             
             const username = localStorage.getItem('username');
-            if (username !== 'admin') {
-                showToast('仅管理员可以切换用户', false);
-                return;
-            }
+            const isAdmin = username === 'admin';
             
             try {
-                // 获取用户列表
-                const users = await apiRequest('/users');
+                // 获取可切换的用户列表（后端会处理权限）
+                const users = await apiRequest('/users/switchable');
                 
                 if (!users || users.length === 0) {
                     showToast('没有可用用户', false);
@@ -1694,10 +1697,6 @@
             if (!token) return;
             
             const currentUsername = localStorage.getItem('username');
-            if (currentUsername !== 'admin') {
-                showToast('仅管理员可以切换用户', false);
-                return;
-            }
             
             // 如果切换到自己，无需操作
             if (currentUsername === username) {
@@ -1961,11 +1960,6 @@
             const token = checkAuth();
             if (!token) return;
             
-            const username = localStorage.getItem('username');
-            if (username !== 'admin') {
-                return; // 非管理员用户不能访问
-            }
-            
             try {
                 const data = await apiRequest('/users');
                 const userList = document.getElementById('userList');
@@ -1988,7 +1982,8 @@
                                     const createdDate = user.created_at ? new Date(user.created_at).toLocaleString('zh-CN') : '-';
                                     const lastLogin = user.last_login ? new Date(user.last_login).toLocaleString('zh-CN') : '从未登录';
                                     const status = user.is_active ? '<span style="color: #27ae60;">✓ 启用</span>' : '<span style="color: #e74c3c;">✗ 禁用</span>';
-                                    const canDelete = user.username !== 'admin'; // 不能删除admin用户
+                                    // 不能删除主账号（parent_account_id为null），只能删除子账号
+                                    const canDelete = user.parent_account_id !== null && user.parent_account_id !== undefined;
                                     
                                     return `
                                         <tr style="border-bottom: 1px solid #eee;">
@@ -2019,12 +2014,6 @@
         async function createUser() {
             const token = checkAuth();
             if (!token) return;
-            
-            const username = localStorage.getItem('username');
-            if (username !== 'admin') {
-                showToast('权限不足：仅管理员可创建用户', false);
-                return;
-            }
             
             const newUsername = document.getElementById('newUsername').value.trim();
             const newPassword = document.getElementById('newUserPassword').value;
@@ -2069,16 +2058,10 @@
             }
         }
         
-        // 删除用户
+        // 删除用户（只能删除子账号，权限由后端控制）
         async function deleteUser(userId, username) {
             const token = checkAuth();
             if (!token) return;
-            
-            const currentUsername = localStorage.getItem('username');
-            if (currentUsername !== 'admin') {
-                showToast('权限不足：仅管理员可删除用户', false);
-                return;
-            }
             
             if (!confirm(`确定要删除用户 "${username}" 吗？\n\n警告：删除用户将同时删除该用户的所有配置和数据，此操作不可恢复！`)) {
                 return;
@@ -2175,16 +2158,37 @@
         
         loadCurrentUser();
         
-        // 检查是否为admin用户，显示/隐藏用户管理部分
-        const currentUsername = localStorage.getItem('username') || '';
-        const userManagementSection = document.getElementById('userManagementSection');
-        if (userManagementSection) {
-            if (currentUsername === 'admin') {
-                userManagementSection.style.display = 'block';
-            } else {
+        // 检查是否为主账号（主账号可以管理子账号），显示/隐藏用户管理部分
+        // 注意：这里只能根据是否有子账号来判断，但实际权限由后端控制
+        // 简单实现：检查用户列表，如果有多个用户则可能是主账号
+        async function checkAndShowUserManagement() {
+            const userManagementSection = document.getElementById('userManagementSection');
+            if (!userManagementSection) return;
+            
+            try {
+                const users = await apiRequest('/users');
+                // 如果用户列表中有多个用户（包括自己和子账号），则显示用户管理
+                // 或者简单点：所有用户都可以看到，但只有主账号创建的用户才会真正显示
+                // 实际上，这里应该检查当前用户是否是主账号（parent_account_id为null）
+                // 但由于前端无法直接知道，我们让所有用户都能看到，权限由后端控制
+                if (users && users.length > 0) {
+                    // 检查当前用户是否是主账号（没有parent_account_id）
+                    const currentUser = users.find(u => u.username === localStorage.getItem('username'));
+                    if (currentUser && !currentUser.parent_account_id) {
+                        userManagementSection.style.display = 'block';
+                    } else {
+                        userManagementSection.style.display = 'none';
+                    }
+                } else {
+                    userManagementSection.style.display = 'none';
+                }
+            } catch (error) {
+                // 如果获取失败，默认隐藏
                 userManagementSection.style.display = 'none';
             }
         }
+        
+        checkAndShowUserManagement();
         
         restoreCardStates(); // 恢复卡片折叠状态
         

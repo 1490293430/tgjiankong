@@ -134,7 +134,7 @@
         
         <div id="errorMessage" class="error-message"></div>
         
-        <form id="loginForm">
+        <form id="loginForm" style="display: block;">
             <div class="form-group">
                 <label for="username">用户名</label>
                 <input type="text" id="username" name="username" placeholder="请输入用户名" required>
@@ -148,6 +148,30 @@
             <button type="submit" class="btn-login">登录</button>
         </form>
         
+        <form id="registerForm" style="display: none;">
+            <div class="form-group">
+                <label for="reg_username">用户名</label>
+                <input type="text" id="reg_username" name="username" placeholder="请输入用户名（3-50字符）" required minlength="3" maxlength="50">
+            </div>
+            
+            <div class="form-group">
+                <label for="reg_password">密码</label>
+                <input type="password" id="reg_password" name="password" placeholder="请输入密码（至少6位）" required minlength="6">
+            </div>
+            
+            <div class="form-group">
+                <label for="reg_display_name">显示名称（可选）</label>
+                <input type="text" id="reg_display_name" name="display_name" placeholder="请输入显示名称" maxlength="100">
+            </div>
+            
+            <button type="submit" class="btn-login">注册</button>
+        </form>
+        
+        <div style="text-align: center; margin-top: 20px;">
+            <a href="#" id="showRegister" style="color: #667eea; text-decoration: none; font-size: 14px;">还没有账号？立即注册</a>
+            <span id="showLoginLink" style="display: none; color: #667eea; text-decoration: none; font-size: 14px; margin-left: 10px;">已有账号？立即登录</span>
+        </div>
+        
         <div class="footer">
             <p>默认用户名: admin | 默认密码: admin123</p>
         </div>
@@ -156,6 +180,62 @@
     <script>
         const API_URL = '/api';
         
+        // 切换登录/注册表单
+        document.getElementById('showRegister').addEventListener('click', (e) => {
+            e.preventDefault();
+            document.getElementById('loginForm').style.display = 'none';
+            document.getElementById('registerForm').style.display = 'block';
+            document.getElementById('showRegister').style.display = 'none';
+            document.getElementById('showLoginLink').style.display = 'inline';
+        });
+        
+        document.getElementById('showLoginLink').addEventListener('click', (e) => {
+            e.preventDefault();
+            document.getElementById('loginForm').style.display = 'block';
+            document.getElementById('registerForm').style.display = 'none';
+            document.getElementById('showRegister').style.display = 'inline';
+            document.getElementById('showLoginLink').style.display = 'none';
+        });
+        
+        // 注册表单提交
+        document.getElementById('registerForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const username = document.getElementById('reg_username').value;
+            const password = document.getElementById('reg_password').value;
+            const display_name = document.getElementById('reg_display_name').value;
+            const errorMessage = document.getElementById('errorMessage');
+            
+            try {
+                const response = await fetch(`${API_URL}/auth/register`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ username, password, display_name })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    localStorage.setItem('token', data.token);
+                    localStorage.setItem('username', data.username);
+                    localStorage.setItem('userId', data.userId || '');
+                    showToast('注册成功！', true);
+                    setTimeout(() => {
+                        window.location.href = 'dashboard.html';
+                    }, 500);
+                } else {
+                    errorMessage.textContent = data.error || '注册失败';
+                    errorMessage.style.display = 'block';
+                }
+            } catch (error) {
+                errorMessage.textContent = '网络错误，请稍后重试';
+                errorMessage.style.display = 'block';
+            }
+        });
+        
+        // 登录表单提交
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
@@ -189,16 +269,108 @@
             }
         });
         
+        function showToast(message, isSuccess) {
+            const toast = document.createElement('div');
+            toast.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: ${isSuccess ? '#27ae60' : '#e74c3c'};
+                color: white;
+                padding: 15px 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                z-index: 10000;
+                animation: slideIn 0.3s ease-out;
+            `;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.animation = 'slideOut 0.3s ease-out';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+        
+        // 添加动画样式
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes slideIn {
+                from {
+                    transform: translateX(100%);
+                    opacity: 0;
+                }
+                to {
+                    transform: translateX(0);
+                    opacity: 1;
+                }
+            }
+            @keyframes slideOut {
+                from {
+                    transform: translateX(0);
+                    opacity: 1;
+                }
+                to {
+                    transform: translateX(100%);
+                    opacity: 0;
+                }
+            }
+        `;
+        document.head.appendChild(style);
+            } catch (error) {
+                errorMessage.textContent = '网络错误，请稍后重试';
+                errorMessage.style.display = 'block';
+            }
+        });
+        
         // 检查是否已登录
         if (localStorage.getItem('token')) {
             window.location.href = 'dashboard.html';
+            return;
         }
+        
+        // 检查系统是否有用户（首次进入显示注册页面）
+        async function checkSystemInit() {
+            try {
+                const response = await fetch(`${API_URL}/auth/check-init`);
+                const data = await response.json();
+                
+                if (data.initialized) {
+                    // 系统已初始化，有用户存在，显示登录表单
+                    document.getElementById('loginForm').style.display = 'block';
+                    document.getElementById('registerForm').style.display = 'none';
+                    document.getElementById('showRegister').style.display = 'inline';
+                    document.getElementById('showLoginLink').style.display = 'none';
+                } else {
+                    // 系统未初始化，没有用户，显示注册表单
+                    document.getElementById('loginForm').style.display = 'none';
+                    document.getElementById('registerForm').style.display = 'block';
+                    document.getElementById('showRegister').style.display = 'none';
+                    document.getElementById('showLoginLink').style.display = 'none';
+                    // 隐藏底部提示（因为是首次安装，没有默认账号）
+                    document.querySelector('.footer').style.display = 'none';
+                }
+            } catch (error) {
+                // 网络错误或服务未启动，默认显示登录表单
+                console.error('检查系统初始化状态失败:', error);
+                document.getElementById('loginForm').style.display = 'block';
+                document.getElementById('registerForm').style.display = 'none';
+            }
+        }
+        
+        // 页面加载时检查系统状态
+        checkSystemInit();
         
         // 从URL参数读取用户名（用于切换用户）
         const urlParams = new URLSearchParams(window.location.search);
         const username = urlParams.get('username');
         if (username) {
             document.getElementById('username').value = username;
+            // 如果URL中有用户名，显示登录表单
+            document.getElementById('loginForm').style.display = 'block';
+            document.getElementById('registerForm').style.display = 'none';
+            document.getElementById('showRegister').style.display = 'inline';
+            document.getElementById('showLoginLink').style.display = 'none';
         }
     </script>
 </body>

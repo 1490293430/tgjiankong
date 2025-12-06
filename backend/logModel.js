@@ -44,6 +44,13 @@ const logSchema = new mongoose.Schema({
     ref: 'User',
     required: false, // 允许为空，兼容旧数据或未设置USER_ID的情况
     index: true
+  },
+  // 主账号ID：用于数据隔离（同一个主账号下的所有子账号共享数据）
+  account_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false,
+    index: true
   }
 }, {
   timestamps: true

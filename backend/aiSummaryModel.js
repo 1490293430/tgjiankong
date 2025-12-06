@@ -55,6 +55,13 @@ const aiSummarySchema = new mongoose.Schema({
     ref: 'User',
     required: true,
     index: true
+  },
+  // 主账号ID：用于数据隔离（同一个主账号下的所有子账号共享数据）
+  account_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false,
+    index: true
   }
 }, {
   timestamps: true

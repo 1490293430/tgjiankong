@@ -60,6 +60,7 @@ services:
       - SESSION_PATH=/app/session/telegram
       - API_ID=${API_ID}
       - API_HASH=${API_HASH}
+      - USER_ID=${USER_ID:-}
     volumes:
       - ./backend/config.json:/app/config.json:ro
       - ./data/session:/app/session

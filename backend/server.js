@@ -219,7 +219,30 @@ loadConfig();
 
 // ===== 用户配置辅助函数 =====
 
-// 加载用户配置
+// 获取主账号ID（用于切换账号功能，如果用户是子账号，返回父账号ID；如果是主账号，返回自己的ID）
+async function getAccountId(userId) {
+  try {
+    const userIdObj = mongoose.Types.ObjectId.isValid(userId) 
+      ? (userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId))
+      : userId;
+    
+    const user = await User.findById(userIdObj);
+    if (!user) {
+      return userIdObj; // 如果用户不存在，返回原ID
+    }
+    
+    // 如果有parent_account_id，返回父账号ID；否则返回自己的ID（主账号）
+    return user.parent_account_id || user._id;
+  } catch (error) {
+    console.error('获取主账号ID失败:', error);
+    // 出错时返回原ID
+    return mongoose.Types.ObjectId.isValid(userId) 
+      ? (userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId))
+      : userId;
+  }
+}
+
+// 加载用户配置（每个用户独立配置，不共享）
 async function loadUserConfig(userId) {
   try {
     // 确保userId是ObjectId类型
@@ -271,7 +294,7 @@ async function loadUserConfig(userId) {
   }
 }
 
-// 保存用户配置
+// 保存用户配置（每个用户独立配置，不共享）
 async function saveUserConfig(userId, configData) {
   try {
     // 确保userId是ObjectId类型
@@ -291,27 +314,26 @@ async function saveUserConfig(userId, configData) {
   }
 }
 
-// 初始化默认管理员用户
+// 初始化默认管理员用户（向后兼容：如果系统已有用户，不再创建；如果没有用户，也不自动创建，让用户注册）
 async function initDefaultAdmin() {
   try {
-    // 检查是否已存在admin用户
+    // 检查系统中是否有任何用户
+    const userCount = await User.countDocuments();
+    if (userCount === 0) {
+      // 系统没有任何用户，但新架构下不再自动创建，让用户通过注册页面创建
+      console.log('ℹ️  系统未初始化，请通过注册页面创建第一个账号');
+      return;
+    }
+    
+    // 系统已有用户，检查是否已存在admin用户（向后兼容）
     const adminUser = await User.findOne({ username: 'admin' });
     if (!adminUser) {
-      // 创建默认管理员用户
-      const passwordHash = await bcrypt.hash('admin123', 10);
-      const admin = new User({
-        username: 'admin',
-        password_hash: passwordHash,
-        display_name: 'Administrator',
-        is_active: true
-      });
-      await admin.save();
-      console.log('✅ 默认管理员用户已创建 (username: admin, password: admin123)');
+      console.log('ℹ️  系统已有用户，但admin用户不存在（这在新架构下是正常的）');
     } else {
-      console.log('ℹ️  管理员用户已存在');
+      console.log('ℹ️  admin用户已存在（向后兼容）');
     }
   } catch (error) {
-    console.error('❌ 初始化默认管理员失败:', error);
+    console.error('❌ 检查系统用户状态失败:', error);
   }
 }
 
@@ -356,8 +378,81 @@ const authMiddleware = async (req, res, next) => {
 
 // ===== 认证相关 API =====
 
+// 检查系统是否已初始化（是否有用户）- 公开接口，不需要认证
+app.get('/api/auth/check-init', async (req, res) => {
+  try {
+    // 检查MongoDB连接状态
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ initialized: false, error: '数据库未连接' });
+    }
+    
+    // 检查是否有任何用户
+    const userCount = await User.countDocuments();
+    res.json({ initialized: userCount > 0, userCount });
+  } catch (error) {
+    console.error('检查系统初始化状态失败:', error);
+    res.status(500).json({ initialized: false, error: '检查失败：' + error.message });
+  }
+});
+
+// 注册账号（创建主账号）
+app.post('/api/auth/register', loginLimiter, async (req, res) => {
+  try {
+    const { username, password, display_name } = req.body;
+    
+    if (!username || !password) {
+      return res.status(400).json({ error: '用户名和密码不能为空' });
+    }
+    
+    if (username.length < 3 || username.length > 50) {
+      return res.status(400).json({ error: '用户名长度必须在3-50字符之间' });
+    }
+    
+    if (password.length < 6) {
+      return res.status(400).json({ error: '密码长度至少为6位' });
+    }
+    
+    // 检查用户名是否已存在
+    const existingUser = await User.findOne({ username });
+    if (existingUser) {
+      return res.status(400).json({ error: '用户名已存在' });
+    }
+    
+    // 创建主账号（parent_account_id为null）
+    const passwordHash = await bcrypt.hash(password, 10);
+    const user = new User({
+      username,
+      password_hash: passwordHash,
+      display_name: display_name || username,
+      is_active: true,
+      parent_account_id: null // 主账号
+    });
+    await user.save();
+    
+    // 创建用户时自动创建默认配置
+    await saveUserConfig(user._id.toString(), {});
+    
+    // 生成 JWT token
+    const token = jwt.sign({ 
+      userId: user._id.toString(), 
+      username: user.username 
+    }, JWT_SECRET, { expiresIn: '24h' });
+    
+    console.log(`✅ 新账号注册成功 (username: ${username}, userId: ${user._id})`);
+    
+    res.json({ 
+      token, 
+      username: user.username,
+      displayName: user.display_name || user.username,
+      userId: user._id.toString()
+    });
+  } catch (error) {
+    console.error('❌ 注册失败:', error);
+    res.status(500).json({ error: '注册失败：' + error.message });
+  }
+});
+
 // 登录（添加速率限制）
-// 多用户登录
 app.post('/api/auth/login', loginLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -480,19 +575,38 @@ const adminMiddleware = async (req, res, next) => {
 
 // ===== 用户管理 API（仅管理员） =====
 
-// 获取用户列表（仅管理员）
-app.get('/api/users', adminMiddleware, async (req, res) => {
+// 获取用户列表（主账号可以看到该账号下的所有子账号）
+app.get('/api/users', authMiddleware, async (req, res) => {
   try {
-    const users = await User.find({}).select('-password_hash').sort({ created_at: -1 });
+    const currentUser = req.user.userObj;
+    const accountId = await getAccountId(currentUser._id);
+    const accountIdObj = new mongoose.Types.ObjectId(accountId);
+    
+    // 查询该主账号下的所有账号（包括主账号和子账号）
+    const users = await User.find({
+      $or: [
+        { _id: accountIdObj }, // 主账号
+        { parent_account_id: accountIdObj } // 子账号
+      ]
+    }).select('-password_hash').sort({ created_at: -1 });
+    
     res.json(users);
   } catch (error) {
     res.status(500).json({ error: '获取用户列表失败：' + error.message });
   }
 });
 
-// 创建用户（仅管理员）
-app.post('/api/users', adminMiddleware, async (req, res) => {
+// 创建子账号（主账号可以创建子账号）
+app.post('/api/users', authMiddleware, async (req, res) => {
   try {
+    const currentUser = req.user.userObj;
+    const accountId = await getAccountId(currentUser._id);
+    
+    // 只有主账号可以创建子账号
+    if (currentUser.parent_account_id) {
+      return res.status(403).json({ error: '权限不足：只有主账号可以创建子账号' });
+    }
+    
     const { username, password, display_name } = req.body;
     
     if (!username || !password) {
@@ -513,42 +627,47 @@ app.post('/api/users', adminMiddleware, async (req, res) => {
       return res.status(400).json({ error: '用户名已存在' });
     }
     
+    // 创建子账号（parent_account_id指向主账号）
+    const accountIdObj = new mongoose.Types.ObjectId(accountId);
     const passwordHash = await bcrypt.hash(password, 10);
     const user = new User({
       username,
       password_hash: passwordHash,
       display_name: display_name || username,
-      is_active: true
+      is_active: true,
+      parent_account_id: accountIdObj // 设置为当前主账号的子账号
     });
     await user.save();
     
-    // 创建用户时自动创建默认配置
+    // 创建子账号时自动创建默认配置（每个账号独立配置）
     await saveUserConfig(user._id.toString(), {});
     
     res.json({ 
       status: 'ok', 
-      message: '用户创建成功',
+      message: '子账号创建成功',
       user: {
         _id: user._id,
         username: user.username,
         display_name: user.display_name,
         is_active: user.is_active,
+        parent_account_id: user.parent_account_id,
         created_at: user.created_at
       }
     });
   } catch (error) {
-    res.status(500).json({ error: '创建用户失败：' + error.message });
+    res.status(500).json({ error: '创建子账号失败：' + error.message });
   }
 });
 
-// 删除用户（仅管理员）
-app.delete('/api/users/:userId', adminMiddleware, async (req, res) => {
+// 删除子账号（主账号可以删除该账号下的子账号）
+app.delete('/api/users/:userId', authMiddleware, async (req, res) => {
   try {
     const { userId } = req.params;
-    const currentUserId = req.user.userId;
+    const currentUser = req.user.userObj;
+    const currentAccountId = await getAccountId(currentUser._id);
     
     // 不允许删除自己
-    if (userId === currentUserId) {
+    if (userId === currentUser._id.toString()) {
       return res.status(400).json({ error: '不能删除自己的账号' });
     }
     
@@ -557,29 +676,67 @@ app.delete('/api/users/:userId', adminMiddleware, async (req, res) => {
       return res.status(404).json({ error: '用户不存在' });
     }
     
-    // 不允许删除 admin 用户
-    if (user.username === 'admin') {
-      return res.status(400).json({ error: '不能删除管理员账号' });
+    // 不允许删除主账号
+    if (!user.parent_account_id) {
+      return res.status(400).json({ error: '不能删除主账号' });
     }
     
-    // 删除用户及其配置
+    // 权限检查：只能删除同一主账号下的子账号
+    const targetAccountId = user.parent_account_id;
+    if (currentAccountId.toString() !== targetAccountId.toString()) {
+      return res.status(403).json({ error: '权限不足：只能删除同一账号下的子账号' });
+    }
+    
+    // 删除子账号及其配置（每个账号独立配置）
     await User.findByIdAndDelete(userId);
     await UserConfig.deleteOne({ userId });
     
-    res.json({ status: 'ok', message: '用户删除成功' });
+    res.json({ status: 'ok', message: '子账号删除成功' });
   } catch (error) {
-    res.status(500).json({ error: '删除用户失败：' + error.message });
+    res.status(500).json({ error: '删除子账号失败：' + error.message });
   }
 });
 
-// 管理员切换用户（仅管理员，生成目标用户的token）
-app.post('/api/users/:userId/switch', adminMiddleware, async (req, res) => {
+// 获取可切换的用户列表（同一主账号下的所有账号）
+app.get('/api/users/switchable', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = req.user.userObj;
+    const accountId = await getAccountId(currentUser._id);
+    const accountIdObj = new mongoose.Types.ObjectId(accountId);
+    
+    // 查询该主账号下的所有账号（包括主账号和子账号）
+    const users = await User.find({
+      $or: [
+        { _id: accountIdObj }, // 主账号
+        { parent_account_id: accountIdObj } // 子账号
+      ],
+      is_active: true
+    }).select('-password_hash').sort({ created_at: -1 });
+    
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: '获取用户列表失败：' + error.message });
+  }
+});
+
+// 切换账号（同一主账号下的所有账号可以随意切换）
+app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
   try {
     const { userId } = req.params;
+    const currentUser = req.user.userObj;
+    const currentAccountId = await getAccountId(currentUser._id);
     
     const targetUser = await User.findById(userId);
     if (!targetUser || !targetUser.is_active) {
       return res.status(404).json({ error: '用户不存在或已被禁用' });
+    }
+    
+    // 获取目标账号的主账号ID
+    const targetAccountId = targetUser.parent_account_id || targetUser._id;
+    
+    // 权限检查：只能切换到同一主账号下的账号
+    if (currentAccountId.toString() !== targetAccountId.toString()) {
+      return res.status(403).json({ error: '权限不足：只能切换到同一账号下的其他用户' });
     }
     
     // 生成目标用户的 JWT token
@@ -592,7 +749,7 @@ app.post('/api/users/:userId/switch', adminMiddleware, async (req, res) => {
     targetUser.last_login = new Date();
     await targetUser.save();
     
-    console.log(`✅ 管理员切换到用户: ${targetUser.username} (userId: ${targetUser._id})`);
+    console.log(`✅ 用户 ${currentUser.username} 切换到用户: ${targetUser.username} (userId: ${targetUser._id})`);
     
     res.json({ 
       token, 
@@ -606,6 +763,25 @@ app.post('/api/users/:userId/switch', adminMiddleware, async (req, res) => {
 });
 
 // ===== 配置相关 API =====
+
+// 内部 API：Telethon 服务获取用户配置（不需要认证，但需要 USER_ID）
+app.get('/api/internal/user-config/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ error: '无效的用户ID' });
+    }
+    
+    const userConfig = await loadUserConfig(userId);
+    const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+    
+    // 返回完整配置（包括敏感信息，因为这是内部 API）
+    res.json(config);
+  } catch (error) {
+    console.error('获取用户配置失败:', error);
+    res.status(500).json({ error: '获取配置失败：' + error.message });
+  }
+});
 
 // 获取配置（不包含敏感信息）
 app.get('/api/config', authMiddleware, async (req, res) => {
@@ -680,6 +856,20 @@ app.post('/api/config', authMiddleware, async (req, res) => {
       }
     }
     
+    // 检测 API_ID/API_HASH 是否变化（需要重启 Telethon 服务）
+    let telegramConfigChanged = false;
+    if (incoming.telegram) {
+      const oldApiId = currentConfig.telegram?.api_id || 0;
+      const oldApiHash = currentConfig.telegram?.api_hash || '';
+      const newApiId = incoming.telegram.api_id || 0;
+      const newApiHash = incoming.telegram.api_hash || '';
+      
+      if (oldApiId !== newApiId || oldApiHash !== newApiHash) {
+        telegramConfigChanged = true;
+        console.log(`⚠️  检测到 Telegram API 配置变化 (用户ID: ${userId})`);
+      }
+    }
+    
     // 准备更新数据
     const updateData = {
       ...incoming
@@ -696,7 +886,17 @@ app.post('/api/config', authMiddleware, async (req, res) => {
       }, 1000);
     }
     
-    res.json({ status: 'ok', message: '配置保存成功' });
+    // 构建响应消息
+    let message = '配置保存成功';
+    if (telegramConfigChanged) {
+      message += '。⚠️ 检测到 API_ID 或 API_HASH 已更改，需要重启 Telethon 服务才能生效。请执行：docker compose restart telethon';
+    }
+    
+    res.json({ 
+      status: 'ok', 
+      message: message,
+      requiresRestart: telegramConfigChanged
+    });
   } catch (error) {
     // 详细错误日志
     const fileExists = fs.existsSync(CONFIG_PATH);
@@ -752,7 +952,7 @@ app.get('/api/logs', authMiddleware, async (req, res) => {
     
     const { page, pageSize, keyword, channelId } = value;
     
-    // 构建查询条件：兼容旧数据（没有userId的），admin用户可以查看所有旧数据
+    // 构建查询条件：按用户ID过滤，每个用户数据独立
     const userIdObj = new mongoose.Types.ObjectId(req.user.userId);
     const isAdmin = req.user.username === 'admin';
     
@@ -884,15 +1084,13 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
     // console.log(`[性能监控] /api/stats 开始执行数据库查询...`);
     // const queryStartTime = Date.now();
     
-    // 并行执行所有查询以提高效率
+    // 构建查询条件：按用户ID过滤，每个用户数据独立
     const userIdObj = new mongoose.Types.ObjectId(userId);
-    const isAdmin = username === 'admin';
-    
-    // 构建查询条件：兼容旧数据（没有userId的），admin用户可以查看所有旧数据
     const userQuery = isAdmin 
       ? { $or: [{ userId: userIdObj }, { userId: { $exists: false } }, { userId: null }] }
       : { userId: userIdObj };
     
+    // 并行执行所有查询以提高效率
     const [total, todayCount, alertedCount, channelStats] = await Promise.all([
       Log.countDocuments(userQuery),
       (() => {
@@ -969,8 +1167,10 @@ app.post('/api/alert/push', authMiddleware, async (req, res) => {
     
     // 保存日志到数据库
     const userId = req.user.userId;
+    const userIdObj = new mongoose.Types.ObjectId(userId);
+    
     const log = new Log({
-      userId: new mongoose.Types.ObjectId(userId),
+      userId: userIdObj,
       channel: cleanChannel,
       channelId: channelId || '',
       sender: cleanFrom,
@@ -1278,6 +1478,336 @@ app.post('/api/internal/message-notify', async (req, res) => {
   } catch (error) {
     console.error('❌ 消息通知推送失败:', error.message);
     res.status(500).json({ error: '推送消息通知失败：' + error.message });
+  }
+});
+
+// ===== Telegram 登录 API =====
+
+// ===== Telegram 登录辅助函数 =====
+
+// 安全的输入验证函数
+function validateInput(input, type = 'string') {
+  if (input === null || input === undefined) return null;
+  
+  const str = String(input).trim();
+  
+  // 移除所有可能的命令注入字符
+  const dangerousChars = /[;&|`$(){}[\]<>'"]/g;
+  if (dangerousChars.test(str)) {
+    throw new Error('输入包含非法字符');
+  }
+  
+  if (type === 'number') {
+    const num = parseInt(str, 10);
+    if (isNaN(num) || num <= 0) {
+      throw new Error('无效的数字');
+    }
+    return num;
+  }
+  
+  if (type === 'phone') {
+    // 验证手机号格式（只允许数字和+号）
+    if (!/^\+?[1-9]\d{1,14}$/.test(str)) {
+      throw new Error('无效的手机号格式');
+    }
+    return str;
+  }
+  
+  if (type === 'code') {
+    // 验证码只能是数字
+    if (!/^\d{1,10}$/.test(str)) {
+      throw new Error('验证码只能是数字');
+    }
+    return str;
+  }
+  
+  return str;
+}
+
+// 安全执行 Docker 命令调用登录脚本
+async function execTelethonLoginScript(command, args = []) {
+  const { spawn } = require('child_process');
+  
+  return new Promise((resolve, reject) => {
+    const dockerArgs = [
+      'exec',
+      '-i',
+      'tg_listener',
+      'python3',
+      '/app/login_helper.py',
+      command,
+      ...args
+    ];
+    
+    const child = spawn('docker', dockerArgs, {
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    
+    let stdout = '';
+    let stderr = '';
+    
+    child.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    
+    child.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    child.on('close', (code) => {
+      if (code === 0) {
+        try {
+          const result = JSON.parse(stdout.trim());
+          resolve(result);
+        } catch (e) {
+          resolve({ success: false, error: `解析结果失败: ${stdout.trim()}` });
+        }
+      } else {
+        reject(new Error(`脚本执行失败 (code: ${code}): ${stderr || stdout}`));
+      }
+    });
+    
+    child.on('error', (error) => {
+      reject(new Error(`无法执行 Docker 命令: ${error.message}`));
+    });
+  });
+}
+
+// 检查 Telegram 登录状态
+app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const userConfig = await loadUserConfig(userId);
+    const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+    
+    const apiId = config.telegram?.api_id || 0;
+    const apiHash = config.telegram?.api_hash || '';
+    
+    if (!apiId || !apiHash) {
+      return res.json({
+        logged_in: false,
+        message: '请先配置 API_ID 和 API_HASH'
+      });
+    }
+    
+    // 验证输入
+    const validatedApiId = validateInput(apiId, 'number');
+    const validatedApiHash = validateInput(apiHash);
+    
+    const sessionPath = userId 
+      ? `/app/session/telegram_${userId}`
+      : '/app/session/telegram';
+    
+    try {
+      // 使用安全的脚本调用方式
+      const result = await execTelethonLoginScript('check', [
+        sessionPath,
+        validatedApiId.toString(),
+        validatedApiHash
+      ]);
+      
+      if (result.success) {
+        res.json({
+          logged_in: result.logged_in || false,
+          message: result.logged_in ? '已登录' : '未登录',
+          user: result.user || null
+        });
+      } else {
+        res.json({
+          logged_in: false,
+          message: result.error || '无法检查登录状态'
+        });
+      }
+    } catch (error) {
+      console.error('检查登录状态失败:', error);
+      res.json({
+        logged_in: false,
+        message: '无法检查登录状态：' + error.message
+      });
+    }
+  } catch (error) {
+    console.error('检查登录状态失败:', error);
+    res.status(500).json({ error: '检查登录状态失败：' + error.message });
+  }
+});
+
+// 发送验证码请求
+app.post('/api/telegram/login/send-code', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { phone } = req.body;
+    
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({ error: '手机号不能为空' });
+    }
+    
+    // 验证手机号格式
+    let validatedPhone;
+    try {
+      validatedPhone = validateInput(phone, 'phone');
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+    
+    const userConfig = await loadUserConfig(userId);
+    const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+    
+    const apiId = config.telegram?.api_id || 0;
+    const apiHash = config.telegram?.api_hash || '';
+    
+    if (!apiId || !apiHash) {
+      return res.status(400).json({ error: '请先配置 API_ID 和 API_HASH' });
+    }
+    
+    // 验证 API 凭证
+    let validatedApiId, validatedApiHash;
+    try {
+      validatedApiId = validateInput(apiId, 'number');
+      validatedApiHash = validateInput(apiHash);
+    } catch (e) {
+      return res.status(400).json({ error: 'API 凭证格式无效' });
+    }
+    
+    const sessionPath = userId 
+      ? `/app/session/telegram_${userId}`
+      : '/app/session/telegram';
+    
+    try {
+      // 使用安全的脚本调用方式
+      const result = await execTelethonLoginScript('send_code', [
+        validatedPhone,
+        sessionPath,
+        validatedApiId.toString(),
+        validatedApiHash
+      ]);
+      
+      if (result.success) {
+        if (result.already_logged_in) {
+          return res.json({
+            success: true,
+            already_logged_in: true,
+            message: `已登录为: ${result.user?.first_name || '未知用户'}`,
+            user: result.user
+          });
+        }
+        
+        res.json({
+          success: true,
+          message: `验证码已发送到 ${validatedPhone}`,
+          phone_code_hash: result.phone_code_hash,
+          session_id: `${userId}_${validatedPhone}_${Date.now()}`
+        });
+      } else {
+        // 处理 FloodWait 错误
+        if (result.flood_wait) {
+          return res.status(429).json({ 
+            error: result.error || `请求过于频繁，请等待 ${result.flood_wait} 秒后重试`,
+            flood_wait: result.flood_wait
+          });
+        }
+        
+        res.status(500).json({ error: result.error || '发送验证码失败' });
+      }
+    } catch (error) {
+      console.error('发送验证码失败:', error);
+      res.status(500).json({ 
+        error: '发送验证码失败：' + error.message 
+      });
+    }
+  } catch (error) {
+    console.error('发送验证码请求失败:', error);
+    res.status(500).json({ error: '发送验证码失败：' + error.message });
+  }
+});
+
+// 使用验证码登录
+app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { phone, code, password, phone_code_hash } = req.body;
+    
+    if (!phone || !code) {
+      return res.status(400).json({ error: '手机号和验证码不能为空' });
+    }
+    
+    if (!phone_code_hash) {
+      return res.status(400).json({ error: '请先发送验证码请求' });
+    }
+    
+    // 验证输入
+    let validatedPhone, validatedCode, validatedPassword, validatedHash;
+    try {
+      validatedPhone = validateInput(phone, 'phone');
+      validatedCode = validateInput(code, 'code');
+      validatedHash = validateInput(phone_code_hash);
+      validatedPassword = password ? validateInput(password) : null;
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+    
+    const userConfig = await loadUserConfig(userId);
+    const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+    
+    const apiId = config.telegram?.api_id || 0;
+    const apiHash = config.telegram?.api_hash || '';
+    
+    if (!apiId || !apiHash) {
+      return res.status(400).json({ error: '请先配置 API_ID 和 API_HASH' });
+    }
+    
+    // 验证 API 凭证
+    let validatedApiId, validatedApiHash;
+    try {
+      validatedApiId = validateInput(apiId, 'number');
+      validatedApiHash = validateInput(apiHash);
+    } catch (e) {
+      return res.status(400).json({ error: 'API 凭证格式无效' });
+    }
+    
+    const sessionPath = userId 
+      ? `/app/session/telegram_${userId}`
+      : '/app/session/telegram';
+    
+    try {
+      // 使用安全的脚本调用方式
+      const result = await execTelethonLoginScript('sign_in', [
+        validatedPhone,
+        validatedCode,
+        validatedHash,
+        validatedPassword || 'None',
+        sessionPath,
+        validatedApiId.toString(),
+        validatedApiHash
+      ]);
+      
+      if (result.success) {
+        res.json({
+          success: true,
+          message: result.message || '登录成功！',
+          user: result.user
+        });
+      } else {
+        if (result.password_required) {
+          return res.json({
+            success: false,
+            password_required: true,
+            message: '需要两步验证密码'
+          });
+        }
+        
+        res.status(500).json({ 
+          error: result.error || '登录失败' 
+        });
+      }
+    } catch (error) {
+      console.error('验证登录失败:', error);
+      res.status(500).json({ 
+        error: '验证失败：' + error.message 
+      });
+    }
+  } catch (error) {
+    console.error('验证登录请求失败:', error);
+    res.status(500).json({ error: '验证失败：' + error.message });
   }
 });
 

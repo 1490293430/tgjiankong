@@ -1,12 +1,19 @@
 const mongoose = require('mongoose');
 
-// 用户配置模型 - 每个用户独立的配置
+// 用户配置模型 - 每个主账号独立的配置（同一主账号下的所有子账号共享配置）
 const userConfigSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
     unique: true,
+    index: true
+  },
+  // 主账号ID：用于数据隔离
+  account_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false,
     index: true
   },
   keywords: {

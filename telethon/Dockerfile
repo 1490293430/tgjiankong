@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制应用代码
 COPY monitor.py .
 COPY mongo_index_init.py .
+COPY login_helper.py .
 
 # 创建 session 目录
 RUN mkdir -p /app/session

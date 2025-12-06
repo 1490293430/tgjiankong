@@ -181,6 +181,86 @@ async def config_reloader_task():
 # -----------------------
 # HTTP helpers (aiohttp)
 # -----------------------
+async def get_json(url: str, timeout: int = 10, silent: bool = False) -> Optional[dict]:
+    """
+    发送 GET 请求
+    :param url: 请求 URL
+    :param timeout: 超时时间（秒）
+    :param silent: 如果为 True，连接失败时不记录 ERROR（仅 DEBUG），用于可选的辅助功能
+    :return: 响应数据或 None
+    """
+    global http_session
+    if http_session is None:
+        raise RuntimeError("HTTP session not initialized")
+    try:
+        async with http_session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+            text = await resp.text()
+            if resp.status == 200:
+                try:
+                    return await resp.json()
+                except Exception:
+                    return {"raw": text}
+            else:
+                if not silent:
+                    logger.warning("GET %s 返回 %s: %s", url, resp.status, text[:200])
+                return None
+    except asyncio.CancelledError:
+        raise
+    except (aiohttp.client_exceptions.ClientConnectorError, 
+            aiohttp.client_exceptions.ClientConnectorDNSError) as e:
+        if silent:
+            logger.debug("GET 请求失败（静默模式）: %s %s", url, str(e)[:100])
+        else:
+            logger.warning("GET 请求失败（连接错误）: %s %s", url, str(e)[:100])
+        return None
+    except Exception as e:
+        if not silent:
+            logger.exception("GET 请求失败: %s %s", url, e)
+        else:
+            logger.debug("GET 请求失败（静默模式）: %s %s", url, str(e)[:100])
+        return None
+
+
+async def get_json(url: str, timeout: int = 10, silent: bool = False) -> Optional[dict]:
+    """
+    发送 GET 请求
+    :param url: 请求 URL
+    :param timeout: 超时时间（秒）
+    :param silent: 如果为 True，连接失败时不记录 ERROR（仅 DEBUG），用于可选的辅助功能
+    :return: 响应数据或 None
+    """
+    global http_session
+    if http_session is None:
+        raise RuntimeError("HTTP session not initialized")
+    try:
+        async with http_session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+            text = await resp.text()
+            if resp.status == 200:
+                try:
+                    return await resp.json()
+                except Exception:
+                    return {"raw": text}
+            else:
+                if not silent:
+                    logger.warning("GET %s 返回 %s: %s", url, resp.status, text[:200])
+                return None
+    except asyncio.CancelledError:
+        raise
+    except (aiohttp.client_exceptions.ClientConnectorError, 
+            aiohttp.client_exceptions.ClientConnectorDNSError) as e:
+        if silent:
+            logger.debug("GET 请求失败（静默模式）: %s %s", url, str(e)[:100])
+        else:
+            logger.warning("GET 请求失败（连接错误）: %s %s", url, str(e)[:100])
+        return None
+    except Exception as e:
+        if not silent:
+            logger.exception("GET 请求失败: %s %s", url, e)
+        else:
+            logger.debug("GET 请求失败（静默模式）: %s %s", url, str(e)[:100])
+        return None
+
+
 async def post_json(url: str, payload: dict, timeout: int = 10, silent: bool = False) -> Optional[dict]:
     """
     发送 POST 请求
@@ -518,25 +598,66 @@ async def main():
     # 自动建立 Mongo 索引（如果不存在）
     ensure_indexes()
 
-    # initial config load (sync call on startup)
-    await asyncio.get_event_loop().run_in_executor(None, load_config_sync)
+    # create aiohttp session (需要先创建，才能获取用户配置)
+    http_session = aiohttp.ClientSession()
 
-    cfg = CONFIG_CACHE or default_config()
-    cfg_api_id = int(str(cfg.get("telegram", {}).get("api_id", ENV_API_ID or 0)) or 0)
-    cfg_api_hash = str(cfg.get("telegram", {}).get("api_hash", ENV_API_HASH or ""))
+    # 尝试从用户配置中获取 API_ID 和 API_HASH
+    cfg_api_id = ENV_API_ID or 0
+    cfg_api_hash = ENV_API_HASH or ""
+    
+    # 如果设置了 USER_ID，尝试从后端 API 获取用户配置
+    if USER_ID:
+        try:
+            logger.info("从后端 API 获取用户配置 (USER_ID: %s)", USER_ID)
+            user_config_url = f"{API_URL}/api/internal/user-config/{USER_ID}"
+            user_config = await get_json(user_config_url, timeout=5)
+            
+            if user_config and user_config.get("telegram"):
+                user_api_id = user_config.get("telegram", {}).get("api_id", 0)
+                user_api_hash = user_config.get("telegram", {}).get("api_hash", "")
+                
+                if user_api_id and user_api_hash:
+                    cfg_api_id = int(str(user_api_id) or "0") or cfg_api_id
+                    cfg_api_hash = str(user_api_hash or "") or cfg_api_hash
+                    logger.info("✅ 已从用户配置中获取 API_ID 和 API_HASH (USER_ID: %s)", USER_ID)
+                else:
+                    logger.warning("⚠️  用户配置中没有设置 API_ID/API_HASH，使用环境变量或全局配置 (USER_ID: %s)", USER_ID)
+            else:
+                logger.warning("⚠️  无法获取用户配置，使用环境变量或全局配置 (USER_ID: %s)", USER_ID)
+        except Exception as e:
+            logger.warning("⚠️  获取用户配置失败，使用环境变量或全局配置: %s", str(e))
+    
+    # 如果还没有获取到，尝试从全局配置文件读取
+    if cfg_api_id == 0 or not cfg_api_hash:
+        # initial config load (sync call on startup)
+        await asyncio.get_event_loop().run_in_executor(None, load_config_sync)
+        
+        cfg = CONFIG_CACHE or default_config()
+        if cfg_api_id == 0:
+            cfg_api_id = int(str(cfg.get("telegram", {}).get("api_id", 0)) or "0") or ENV_API_ID or 0
+        if not cfg_api_hash:
+            cfg_api_hash = str(cfg.get("telegram", {}).get("api_hash", "") or "") or ENV_API_HASH or ""
 
     if cfg_api_id == 0 or not cfg_api_hash:
-        logger.error("未配置 API_ID/API_HASH，请在配置文件或环境变量中填写")
+        logger.error("❌ 未配置 API_ID/API_HASH，请在以下位置之一设置：")
+        logger.error("   1. 环境变量 API_ID 和 API_HASH")
+        logger.error("   2. 用户配置中（如果设置了 USER_ID）")
+        logger.error("   3. 全局配置文件 %s", CONFIG_PATH)
         return
 
-    # create aiohttp session
-    http_session = aiohttp.ClientSession()
+    logger.info("📱 使用 API_ID: %s", cfg_api_id)
 
     # create telethon client
     if SESSION_STRING:
         client = TelegramClient(StringSession(SESSION_STRING), cfg_api_id, cfg_api_hash)
     else:
-        client = TelegramClient(SESSION_PATH, cfg_api_id, cfg_api_hash)
+        # 如果设置了 USER_ID，使用用户特定的 session 文件
+        if USER_ID:
+            session_file = f"{SESSION_PATH}_{USER_ID}"
+            logger.info("使用用户专属 Session 文件: %s", session_file)
+            client = TelegramClient(session_file, cfg_api_id, cfg_api_hash)
+        else:
+            client = TelegramClient(SESSION_PATH, cfg_api_id, cfg_api_hash)
 
     await client.start()
     client.add_event_handler(lambda e: message_handler(e, client), events.NewMessage())
