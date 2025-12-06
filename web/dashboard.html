@@ -395,44 +395,40 @@
         /* 浮动提示框 - 固定在右上角，大尺寸显示 */
         .toast-notification {
             position: fixed;
-            top: 20px;
-            right: 20px;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            width: 100%;
             z-index: 99999;
             padding: 20px 32px;
-            border-radius: 12px;
-            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
-            display: none;
-            min-width: 350px;
-            max-width: 500px;
-            text-align: left;
+            text-align: center;
             font-weight: 500;
             font-size: 16px;
             line-height: 1.5;
-            animation: slideInRight 0.4s ease-out;
+            display: none;
+            box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15);
             word-wrap: break-word;
         }
         
-        @keyframes slideInRight {
+        @keyframes slideInBottom {
             from {
                 opacity: 0;
-                transform: translateX(100%);
+                transform: translateY(100%);
             }
             to {
                 opacity: 1;
-                transform: translateX(0);
+                transform: translateY(0);
             }
         }
         
         .toast-notification.success {
             background: #4caf50;
             color: white;
-            border-left: 4px solid #2e7d32;
         }
         
         .toast-notification.error {
             background: #f44336;
             color: white;
-            border-left: 4px solid #c62828;
         }
         
         .loading {
@@ -873,7 +869,7 @@
         let refreshIntervalTimer = null; // 定期刷新定时器
         let refreshInterval = 30; // 默认刷新间隔（秒）
         
-        // 显示浮动提示框
+        // 显示底部全宽提示条
         function showToast(message, isSuccess = true) {
             const toast = document.getElementById('toastNotification');
             if (!toast) return;
@@ -893,29 +889,32 @@
             
             // 重置样式，确保动画能正常播放
             toast.style.opacity = '1';
-            toast.style.transform = 'translateX(0)';
+            toast.style.transform = 'translateY(0)';
             toast.style.transition = '';
+            toast.style.animation = 'none';
             
             // 强制重新计算样式，确保动画生效
             void toast.offsetWidth;
             
-            // 显示提示框
+            // 显示提示框，从底部滑入
             toast.style.display = 'block';
+            toast.style.animation = 'slideInBottom 0.4s ease-out';
             
             // 自动隐藏（增加显示时间，让用户有足够时间看到）
             const duration = isSuccess ? 4000 : 6000;
             toast._hideTimer = setTimeout(() => {
                 if (toast) {
-                    // 淡出动画
+                    // 淡出并下滑动画
                     toast.style.transition = 'opacity 0.3s ease-out, transform 0.3s ease-out';
                     toast.style.opacity = '0';
-                    toast.style.transform = 'translateX(100%)';
+                    toast.style.transform = 'translateY(100%)';
                     setTimeout(() => {
                         if (toast) {
                             toast.style.display = 'none';
                             toast.style.transition = '';
                             toast.style.opacity = '';
                             toast.style.transform = '';
+                            toast.style.animation = '';
                         }
                     }, 300);
                 }
