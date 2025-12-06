@@ -1247,11 +1247,11 @@
             }
         }
         
-        // 解析频道/用户信息，统一处理
+        // 解析频道/用户信息
         function parseChannelInfo(channel, channelId, sender) {
-            // 从 sender 中提取名字和用户名
+            // 从 sender 中提取用户名
             let userName = '';  // 用户名，如 @zhangsan
-            let displayName = ''; // 显示名字，如 "张三"
+            let userDisplayName = ''; // 用户名字，如 "张三"
             
             if (sender) {
                 // sender 格式可能是：
@@ -1262,34 +1262,40 @@
                 if (usernameMatch) {
                     userName = '@' + usernameMatch[1];
                     // 提取名字（去掉用户名部分）
-                    displayName = sender.replace(/\s*\(@[^\s)]+\)\s*/, '').trim();
-                    if (displayName === userName) {
-                        displayName = ''; // 如果只有用户名，没有名字
+                    userDisplayName = sender.replace(/\s*\(@[^\s)]+\)\s*/, '').trim();
+                    if (userDisplayName === userName) {
+                        userDisplayName = ''; // 如果只有用户名，没有名字
                     }
                 } else {
                     // 没有 @username，可能是纯数字ID或名字
                     if (/^\d+$/.test(sender.trim())) {
-                        // 纯数字，使用channel作为显示名字（如果有）
-                        displayName = channel || sender;
+                        userDisplayName = ''; // 纯数字ID，不显示名字
                     } else {
-                        displayName = sender;
+                        userDisplayName = sender; // 有名字
                     }
                 }
             }
             
-            // 如果没有提取到名字，使用channel或sender
-            if (!displayName) {
-                displayName = channel || sender || 'Unknown';
-            }
-            
-            // 如果没有用户名，尝试从channel提取
-            if (!userName && channel && channel.startsWith('@')) {
-                userName = channel;
-            }
-            
-            // 如果还是没有用户名，使用channelId作为用户名（格式化为@channelId）
+            // 如果没有用户名，尝试从channel提取或使用channelId
             if (!userName) {
-                userName = `@${channelId}`;
+                if (channel && channel.startsWith('@')) {
+                    userName = channel;
+                } else {
+                    userName = `@${channelId}`;
+                }
+            }
+            
+            // 判断是频道消息还是私聊消息
+            // 如果channel看起来是频道名称（不是@开头，不是纯数字），则是频道消息
+            const isChannelMessage = channel && !channel.startsWith('@') && !/^\d+$/.test(channel.trim());
+            
+            let displayName;
+            if (isChannelMessage) {
+                // 频道消息：频道栏显示频道名
+                displayName = channel || 'Unknown';
+            } else {
+                // 私聊消息：频道栏显示用户名字（如果有），否则显示channel
+                displayName = userDisplayName || channel || sender || 'Unknown';
             }
             
             return {
