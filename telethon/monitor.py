@@ -266,6 +266,29 @@ async def trigger_ai_analysis_async(sender_id, client, log_id=None):
 
 
 # -----------------------
+# 消息通知（异步，触发前端SSE推送）
+# -----------------------
+async def notify_new_message_async(log_id, channel, channel_id, sender, message, keywords, alerted):
+    """通知后端有新消息，触发SSE推送（非阻塞，不等待结果）"""
+    try:
+        payload = {
+            "log_id": log_id,
+            "channel": channel,
+            "channelId": str(channel_id),
+            "sender": sender,
+            "message": message,
+            "keywords": keywords if isinstance(keywords, list) else [keywords] if keywords else [],
+            "time": datetime.utcnow().isoformat(),
+            "alerted": alerted
+        }
+        # 使用内部API，不需要认证，超时时间短，失败不影响主流程
+        await post_json(f"{API_URL}/api/internal/message-notify", payload, timeout=3)
+    except Exception as e:
+        # 静默失败，不影响主流程
+        logger.debug("通知新消息失败（不影响功能）: %s", e)
+
+
+# -----------------------
 # 告警发送（异步）
 # -----------------------
 async def send_alert_async(keyword, message, sender, channel, channel_id, message_id):
@@ -391,6 +414,13 @@ async def message_handler(event, client):
                 logger.info("监控触发 | %s | %s", channel_name, matched_keywords)
             elif log_all:
                 logger.info("已记录消息（全量）| %s", channel_name)
+
+            # 通知后端有新消息（触发SSE推送）
+            if log_id:
+                asyncio.create_task(notify_new_message_async(
+                    log_id, channel_name, channel_id, sender, text, 
+                    matched_keywords or [], bool(matched_keywords)
+                ))
 
             # trigger AI analysis (async, limited)
             if is_trigger_user and log_id:

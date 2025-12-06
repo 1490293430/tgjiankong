@@ -896,6 +896,38 @@ app.post('/api/ai/analyze-now', authMiddleware, async (req, res) => {
   }
 });
 
+// 内部 API：Telethon 服务调用的消息通知接口（不需要认证）
+// 用于在 Telethon 直接保存消息到 MongoDB 后，通知前端有新消息
+app.post('/api/internal/message-notify', async (req, res) => {
+  try {
+    const { log_id, channel, channelId, sender, message, keywords, time, alerted } = req.body;
+    
+    // 推送新消息事件给前端
+    broadcastEvent('new_message', {
+      id: log_id,
+      channel: channel || 'Unknown',
+      channelId: channelId || '',
+      sender: sender || 'Unknown',
+      message: message || '',
+      keywords: keywords || [],
+      time: time || new Date().toISOString(),
+      alerted: alerted || false
+    });
+    
+    // 推送统计更新事件
+    broadcastEvent('stats_updated', {});
+    
+    // 清除统计缓存，强制下次查询时重新计算
+    statsCache = null;
+    statsCacheTime = 0;
+    
+    res.json({ status: 'ok', message: '消息通知已推送' });
+  } catch (error) {
+    console.error('❌ 消息通知推送失败:', error.message);
+    res.status(500).json({ error: '推送消息通知失败：' + error.message });
+  }
+});
+
 // 内部 API：Telethon 服务调用的 AI 分析接口（不需要认证）
 app.post('/api/internal/ai/analyze-now', async (req, res) => {
   try {
