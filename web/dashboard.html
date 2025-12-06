@@ -450,6 +450,7 @@
                 <span id="sseStatusText">连接中...</span>
             </div>
             <span>👤 <span id="username"></span></span>
+            <button class="btn-switch-user" onclick="showUserMenu()" style="margin-right: 10px; padding: 6px 12px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">切换用户</button>
             <button class="btn-logout" onclick="logout()">退出登录</button>
         </div>
     </div>
@@ -461,6 +462,7 @@
             <button class="nav-tab" onclick="switchTab('logs')">📝 日志</button>
             <button class="nav-tab" onclick="switchTab('config')">⚙️ 配置</button>
             <button class="nav-tab" onclick="switchTab('settings')">🔐 设置</button>
+            <button class="nav-tab" onclick="switchTab('users')">👥 用户管理</button>
         </div>
         
         <!-- 仪表盘 -->
@@ -857,6 +859,33 @@
                 <button class="btn btn-primary" onclick="changePassword()">🔐 修改密码</button>
             </div>
         </div>
+        
+        <!-- 用户管理 -->
+        <div id="users" class="tab-content">
+            <div class="card" style="margin-bottom: 20px;">
+                <h2>创建新用户</h2>
+                <div class="form-group">
+                    <label>用户名</label>
+                    <input type="text" id="newUsername" placeholder="用户名（3-50个字符）">
+                </div>
+                <div class="form-group">
+                    <label>密码</label>
+                    <input type="password" id="newUserPassword" placeholder="密码（至少6位）">
+                </div>
+                <div class="form-group">
+                    <label>显示名称（可选）</label>
+                    <input type="text" id="newUserDisplayName" placeholder="显示名称">
+                </div>
+                <button class="btn btn-primary" onclick="createUser()">➕ 创建用户</button>
+            </div>
+            
+            <div class="card">
+                <h2>用户列表</h2>
+                <div id="userList" style="margin-top: 20px;">
+                    <p style="text-align: center; color: #999;">加载中...</p>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- 浮动提示框 -->
@@ -1085,6 +1114,16 @@
         
         // 处理 SSE 事件
         function handleSSEEvent(event) {
+            if (!event || !event.type) return;
+            
+            // 获取当前用户的userId
+            const currentUserId = localStorage.getItem('userId');
+            
+            // 如果事件包含userId，且不是当前用户的事件，则忽略
+            if (event.data && event.data.userId && event.data.userId !== currentUserId) {
+                return;
+            }
+            
             const activeTab = document.querySelector('.tab-content.active')?.id;
             
             switch (event.type) {
@@ -1097,7 +1136,7 @@
                     // 心跳消息，保持连接活跃
                     break;
                 case 'new_message':
-                    // 有新消息，更新相关页面
+                    // 有新消息，更新相关页面（已过滤userId）
                     if (activeTab === 'dashboard') {
                         loadStats();
                         loadRecentLogs();
@@ -1106,26 +1145,23 @@
                     }
                     break;
                 case 'stats_updated':
-                    // 统计信息更新
+                    // 统计信息更新（已过滤userId）
                     if (activeTab === 'dashboard') {
                         loadStats();
                     }
                     break;
                 case 'ai_analysis_complete':
-                    // AI分析完成
+                    // AI分析完成（已过滤userId）
                     if (activeTab === 'ai') {
                         loadAIStats();
                         loadAISummaries(currentAIPage);
                     }
                     break;
                 case 'ai_stats_updated':
-                    // AI统计更新
+                    // AI统计更新（已过滤userId）
                     if (activeTab === 'ai') {
                         loadAIStats();
                     }
-                    break;
-                case 'ping':
-                    // 心跳，保持连接
                     break;
             }
         }
@@ -1233,6 +1269,8 @@
                 loadAISummaries();
             } else if (tabName === 'logs') {
                 loadLogs();
+            } else if (tabName === 'users') {
+                loadUsers();
             }
         }
         
@@ -1766,7 +1804,7 @@
                                         <div style="font-size: 12px; color: #666; margin-bottom: 4px;">🔑 关键词</div>
                                         <div style="display: flex; flex-wrap: wrap; gap: 4px;">
                                             ${keywords.map(k => `<span style="background: #e3f2fd; color: #1976d2; padding: 3px 8px; border-radius: 4px; font-size: 11px;">${k}</span>`).join('')}
-                                        </div>
+                                </div>
                                     </div>
                                 ` : ''}
                                 
@@ -1786,7 +1824,7 @@
                                     <details>
                                         <summary style="cursor: pointer; color: #3498db; font-size: 12px; padding: 4px 0;">📋 查看消息预览 (${summary.messages_preview?.length || 0}/${summary.message_count})</summary>
                                         <div style="margin-top: 8px;">
-                                            ${messagePreview}
+                                        ${messagePreview}
                                         </div>
                                     </details>
                                 ` : ''}
@@ -1863,7 +1901,22 @@
         
         // 初始化
         checkAuth();
-        document.getElementById('username').textContent = localStorage.getItem('username') || 'Admin';
+        // 获取当前用户信息
+        async function loadCurrentUser() {
+            try {
+                const userInfo = await apiRequest('/auth/me');
+                if (userInfo) {
+                    localStorage.setItem('userId', userInfo.userId || '');
+                    document.getElementById('username').textContent = userInfo.displayName || userInfo.username || 'Admin';
+                } else {
+                    document.getElementById('username').textContent = localStorage.getItem('username') || 'Admin';
+                }
+            } catch (error) {
+                document.getElementById('username').textContent = localStorage.getItem('username') || 'Admin';
+            }
+        }
+        
+        loadCurrentUser();
         restoreCardStates(); // 恢复卡片折叠状态
         
         // 加载前端设置
@@ -1873,7 +1926,7 @@
         const savedTab = localStorage.getItem('currentTab') || 'dashboard';
         document.querySelectorAll('.nav-tab').forEach((tab, index) => {
             tab.classList.remove('active');
-            const tabNames = ['dashboard', 'ai', 'logs', 'config', 'settings'];
+            const tabNames = ['dashboard', 'ai', 'logs', 'config', 'settings', 'users'];
             if (tabNames[index] === savedTab) {
                 tab.classList.add('active');
             }
@@ -1893,6 +1946,8 @@
                 loadAISummaries();
             } else if (savedTab === 'logs') {
                 loadLogs();
+            } else if (savedTab === 'users') {
+                loadUsers();
             }
         }, 100);
         

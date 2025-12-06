@@ -38,6 +38,12 @@ const logSchema = new mongoose.Schema({
   ai_summary_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'AISummary'
+  },
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true
   }
 }, {
   timestamps: true

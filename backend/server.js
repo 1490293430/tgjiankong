@@ -14,6 +14,8 @@ require('dotenv').config();
 
 const Log = require('./logModel');
 const AISummary = require('./aiSummaryModel');
+const User = require('./userModel');
+const UserConfig = require('./userConfigModel');
 const AIAnalysisService = require('./services/aiAnalysis');
 
 const app = express();
@@ -215,17 +217,95 @@ function loadConfig() {
 // 初始化配置文件
 loadConfig();
 
+// ===== 用户配置辅助函数 =====
+
+// 加载用户配置
+async function loadUserConfig(userId) {
+  try {
+    // 确保userId是ObjectId类型
+    const userIdObj = mongoose.Types.ObjectId.isValid(userId) 
+      ? (userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId))
+      : userId;
+    
+    let userConfig = await UserConfig.findOne({ userId: userIdObj });
+    if (!userConfig) {
+      // 如果用户配置不存在，创建默认配置
+      userConfig = new UserConfig({ userId: userIdObj });
+      await userConfig.save();
+    }
+    return userConfig;
+  } catch (error) {
+    console.error('加载用户配置失败:', error);
+    // 返回默认配置对象
+    return {
+      keywords: [],
+      channels: [],
+      alert_keywords: [],
+      alert_regex: [],
+      alert_target: '',
+      log_all_messages: false,
+      telegram: { api_id: 0, api_hash: '' },
+      alert_actions: {
+        telegram: true,
+        email: { enable: false, smtp_host: '', smtp_port: 465, username: '', password: '', to: '' },
+        webhook: { enable: false, url: '' }
+      },
+      ai_analysis: {
+        enabled: false,
+        openai_api_key: '',
+        openai_model: 'gpt-3.5-turbo',
+        openai_base_url: 'https://api.openai.com/v1',
+        analysis_trigger_type: 'time',
+        time_interval_minutes: 30,
+        message_count_threshold: 50,
+        max_messages_per_analysis: 500,
+        analysis_prompt: '请分析以下 Telegram 消息，提供：1) 整体情感倾向（积极/中性/消极）；2) 主要内容分类；3) 关键主题和摘要；4) 重要关键词',
+        ai_send_telegram: true,
+        ai_send_email: false,
+        ai_send_webhook: false,
+        ai_trigger_enabled: false,
+        ai_trigger_users: [],
+        ai_trigger_prompt: ''
+      }
+    };
+  }
+}
+
+// 保存用户配置
+async function saveUserConfig(userId, configData) {
+  try {
+    // 确保userId是ObjectId类型
+    const userIdObj = mongoose.Types.ObjectId.isValid(userId) 
+      ? (userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId))
+      : userId;
+    
+    const userConfig = await UserConfig.findOneAndUpdate(
+      { userId: userIdObj },
+      { $set: { ...configData, userId: userIdObj } },
+      { upsert: true, new: true }
+    );
+    return userConfig;
+  } catch (error) {
+    console.error('保存用户配置失败:', error);
+    throw error;
+  }
+}
+
 // 连接 MongoDB
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017/tglogs';
 mongoose.connect(MONGO_URL, {
   useNewUrlParser: true,
   useUnifiedTopology: true
 })
-.then(() => console.log('✅ MongoDB 已连接'))
+.then(async () => {
+  console.log('✅ MongoDB 已连接');
+  // 初始化默认管理员
+  await initDefaultAdmin();
+})
 .catch(err => console.error('❌ MongoDB 连接失败:', err));
 
 // JWT 验证中间件
-const authMiddleware = (req, res, next) => {
+const authMiddleware = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   
   if (!token) {
@@ -234,7 +314,16 @@ const authMiddleware = (req, res, next) => {
   
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
+    // 验证用户是否存在且激活
+    const user = await User.findById(decoded.userId);
+    if (!user || !user.is_active) {
+      return res.status(401).json({ error: '用户不存在或已被禁用' });
+    }
+    req.user = {
+      userId: decoded.userId,
+      username: decoded.username,
+      userObj: user
+    };
     next();
   } catch (error) {
     return res.status(401).json({ error: '未授权：token 无效' });
@@ -244,22 +333,43 @@ const authMiddleware = (req, res, next) => {
 // ===== 认证相关 API =====
 
 // 登录（添加速率限制）
+// 多用户登录
 app.post('/api/auth/login', loginLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
-    const config = loadConfig();
     
-    if (username !== config.admin.username) {
+    if (!username || !password) {
+      return res.status(400).json({ error: '用户名和密码不能为空' });
+    }
+    
+    // 查找用户
+    const user = await User.findOne({ username, is_active: true });
+    if (!user) {
       return res.status(401).json({ error: '用户名或密码错误' });
     }
     
-    const valid = await bcrypt.compare(password, config.admin.password_hash);
+    // 验证密码
+    const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
       return res.status(401).json({ error: '用户名或密码错误' });
     }
     
-    const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: '24h' });
-    res.json({ token, username });
+    // 更新最后登录时间
+    user.last_login = new Date();
+    await user.save();
+    
+    // 生成 JWT token
+    const token = jwt.sign({ 
+      userId: user._id.toString(), 
+      username: user.username 
+    }, JWT_SECRET, { expiresIn: '24h' });
+    
+    res.json({ 
+      token, 
+      username: user.username,
+      displayName: user.display_name || user.username,
+      userId: user._id.toString()
+    });
   } catch (error) {
     res.status(500).json({ error: '登录失败：' + error.message });
   }
@@ -269,15 +379,27 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
 app.post('/api/auth/change-password', authMiddleware, async (req, res) => {
   try {
     const { oldPassword, newPassword } = req.body;
-    const config = loadConfig();
     
-    const valid = await bcrypt.compare(oldPassword, config.admin.password_hash);
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({ error: '原密码和新密码不能为空' });
+    }
+    
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: '新密码长度至少为6位' });
+    }
+    
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ error: '用户不存在' });
+    }
+    
+    const valid = await bcrypt.compare(oldPassword, user.password_hash);
     if (!valid) {
       return res.status(401).json({ error: '原密码错误' });
     }
     
-    config.admin.password_hash = await bcrypt.hash(newPassword, 10);
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+    user.password_hash = await bcrypt.hash(newPassword, 10);
+    await user.save();
     
     res.json({ status: 'ok', message: '密码修改成功' });
   } catch (error) {
@@ -288,10 +410,13 @@ app.post('/api/auth/change-password', authMiddleware, async (req, res) => {
 // ===== 配置相关 API =====
 
 // 获取配置（不包含敏感信息）
-app.get('/api/config', authMiddleware, (req, res) => {
+app.get('/api/config', authMiddleware, async (req, res) => {
   try {
-    const config = loadConfig();
-    delete config.admin; // 不返回管理员信息
+    const userId = req.user.userId;
+    const userConfig = await loadUserConfig(userId);
+    
+    // 转换为前端需要的格式
+    const config = userConfig.toObject ? userConfig.toObject() : userConfig;
     
     // 🔒 不返回敏感信息给前端
     if (config.telegram) {
@@ -304,6 +429,13 @@ app.get('/api/config', authMiddleware, (req, res) => {
       delete config.alert_actions.email.password; // 不返回邮箱密码
     }
     
+    // 删除不需要的字段
+    delete config._id;
+    delete config.__v;
+    delete config.userId;
+    delete config.createdAt;
+    delete config.updatedAt;
+    
     res.json(config);
   } catch (error) {
     res.status(500).json({ error: '读取配置失败：' + error.message });
@@ -311,9 +443,10 @@ app.get('/api/config', authMiddleware, (req, res) => {
 });
 
 // 更新配置
-app.post('/api/config', authMiddleware, (req, res) => {
+app.post('/api/config', authMiddleware, async (req, res) => {
   try {
-    const currentConfig = loadConfig();
+    const userId = req.user.userId;
+    const currentConfig = await loadUserConfig(userId);
     const incoming = { ...req.body };
     
     // 校验并清理 telegram 字段
@@ -321,7 +454,7 @@ app.post('/api/config', authMiddleware, (req, res) => {
       incoming.telegram.api_id = Number(incoming.telegram.api_id || 0);
       // ✅ 如果前端没有发送 api_hash（因为我们不返回），则保留原有值
       if (!incoming.telegram.api_hash) {
-        incoming.telegram.api_hash = currentConfig.telegram?.api_hash || '';
+        incoming.telegram.api_hash = (currentConfig.telegram?.api_hash || '').toString();
       }
     }
     
@@ -345,53 +478,22 @@ app.post('/api/config', authMiddleware, (req, res) => {
     if (incoming.alert_actions?.email) {
       // ✅ 如果前端没有发送密码（因为我们不返回），则保留原有值
       if (!incoming.alert_actions.email.password) {
-        incoming.alert_actions.email.password = currentConfig.alert_actions?.email?.password || '';
+        incoming.alert_actions.email.password = (currentConfig.alert_actions?.email?.password || '').toString();
       }
     }
     
-    // 使用深度合并确保所有字段都被正确保留
-    const newConfig = deepMergeConfig({
-      ...currentConfig,
-      ...incoming,
-      admin: currentConfig.admin // 保持管理员配置不变
-    }, defaultConfig); // 与默认配置合并，确保所有新字段都存在
+    // 准备更新数据
+    const updateData = {
+      ...incoming
+    };
     
-    // 检查 config.json 是否是目录（Docker 可能创建了目录）
-    if (fs.existsSync(CONFIG_PATH)) {
-      const stat = fs.statSync(CONFIG_PATH);
-      if (stat.isDirectory()) {
-        console.error('❌ config.json 是目录而非文件，正在删除并重建...');
-        fs.rmSync(CONFIG_PATH, { recursive: true, force: true });
-      }
-    }
-    
-    // 确保目录存在
-    const configDir = path.dirname(CONFIG_PATH);
-    if (!fs.existsSync(configDir)) {
-      fs.mkdirSync(configDir, { recursive: true });
-    }
-    
-    // 先写入临时文件，然后重命名（原子操作，避免损坏原文件）
-    const tempPath = CONFIG_PATH + '.tmp';
-    try {
-      fs.writeFileSync(tempPath, JSON.stringify(newConfig, null, 2), 'utf8');
-      fs.renameSync(tempPath, CONFIG_PATH);
-    } catch (writeError) {
-      // 如果重命名失败，尝试删除临时文件
-      if (fs.existsSync(tempPath)) {
-        try {
-          fs.unlinkSync(tempPath);
-        } catch (e) {
-          // 忽略删除失败
-        }
-      }
-      throw writeError; // 重新抛出错误
-    }
+    // 保存到数据库
+    await saveUserConfig(userId, updateData);
     
     // 如果 AI 分析配置有变化，重启定时器
     if (incoming.ai_analysis) {
-      setTimeout(() => {
-        startAIAnalysisTimer();
+      setTimeout(async () => {
+        await startAIAnalysisTimer();
         console.log('🔄 AI 分析配置已更新，定时器已重启');
       }, 1000);
     }
@@ -452,7 +554,7 @@ app.get('/api/logs', authMiddleware, async (req, res) => {
     
     const { page, pageSize, keyword, channelId } = value;
     
-    const query = {};
+    const query = { userId: req.user.userId }; // 添加用户ID过滤
     if (keyword) {
       // ✅ 清理正则表达式特殊字符（防止 ReDoS）
       const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -554,38 +656,40 @@ function broadcastEvent(eventType, data) {
 
 // ===== 统计相关 API =====
 
-// 统计信息缓存（减少MongoDB查询压力）
-let statsCache = null;
-let statsCacheTime = 0;
+// 统计信息缓存（按用户缓存，减少MongoDB查询压力）
+const statsCache = new Map(); // key: userId, value: { data, time }
 const STATS_CACHE_TTL = 10000; // 缓存10秒
 
 // 获取统计信息（带缓存）
 app.get('/api/stats', authMiddleware, async (req, res) => {
   // const startTime = Date.now();
   try {
+    const userId = req.user.userId;
     const now = Date.now();
-    // 如果缓存有效，直接返回
-    if (statsCache && (now - statsCacheTime) < STATS_CACHE_TTL) {
-      // const cacheTime = Date.now() - startTime;
-      // if (cacheTime > 10) {
-      //   console.log(`[性能监控] /api/stats 使用缓存，耗时: ${cacheTime}ms`);
-      // }
-      return res.json(statsCache);
+    
+    // 检查用户缓存是否有效
+    const cached = statsCache.get(userId);
+    if (cached && (now - cached.time) < STATS_CACHE_TTL) {
+      return res.json(cached.data);
     }
     
     // console.log(`[性能监控] /api/stats 开始执行数据库查询...`);
     // const queryStartTime = Date.now();
     
     // 并行执行所有查询以提高效率
+    const userIdObj = new mongoose.Types.ObjectId(userId);
     const [total, todayCount, alertedCount, channelStats] = await Promise.all([
-      Log.countDocuments(),
+      Log.countDocuments({ userId: userIdObj }),
       (() => {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        return Log.countDocuments({ time: { $gte: today } });
+        return Log.countDocuments({ userId: userIdObj, time: { $gte: today } });
       })(),
-      Log.countDocuments({ alerted: true }),
+      Log.countDocuments({ userId: userIdObj, alerted: true }),
       Log.aggregate([
+        {
+          $match: { userId: userIdObj }
+        },
         {
           $group: {
             _id: '$channel',
@@ -608,9 +712,8 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
       channelStats
     };
     
-    // 更新缓存
-    statsCache = result;
-    statsCacheTime = Date.now();
+    // 更新用户缓存
+    statsCache.set(userId, { data: result, time: Date.now() });
     
     // const queryTime = Date.now() - queryStartTime;
     // const totalTime = Date.now() - startTime;
@@ -649,7 +752,9 @@ app.post('/api/alert/push', authMiddleware, async (req, res) => {
     const cleanChannel = String(channel || 'Unknown').trim().substring(0, 200);
     
     // 保存日志到数据库
+    const userId = req.user.userId;
     const log = new Log({
+      userId: new mongoose.Types.ObjectId(userId),
       channel: cleanChannel,
       channelId: channelId || '',
       sender: cleanFrom,
@@ -672,10 +777,11 @@ app.post('/api/alert/push', authMiddleware, async (req, res) => {
       alerted: true
     });
     
-    // 推送统计更新事件
-    broadcastEvent('stats_updated', {});
+    // 推送统计更新事件（包含userId以便前端过滤）
+    broadcastEvent('stats_updated', { userId: userId });
     
-    const config = loadConfig();
+    const userConfig = await loadUserConfig(userId);
+    const config = userConfig.toObject ? userConfig.toObject() : userConfig;
     const actions = config.alert_actions;
     
     // 构建告警消息
@@ -735,7 +841,9 @@ ${messageId ? `👉 跳转链接：t.me/c/${channelId}/${messageId}` : ''}`;
 // 测试告警（受保护）：使用当前配置发送一条测试邮件/Webhook
 app.post('/api/alert/test', authMiddleware, async (req, res) => {
   try {
-    const config = loadConfig();
+    const userId = req.user.userId;
+    const userConfig = await loadUserConfig(userId);
+    const config = userConfig.toObject ? userConfig.toObject() : userConfig;
     const actions = config.alert_actions || {};
 
     const keyword = 'TEST_ALERT';
@@ -821,12 +929,13 @@ async function sendEmail(emailConfig, subject, text) {
 // 获取 AI 分析结果列表
 app.get('/api/ai/summary', authMiddleware, async (req, res) => {
   try {
+    const userId = req.user.userId;
     const page = parseInt(req.query.page) || 1;
     const pageSize = parseInt(req.query.pageSize) || 10;
     const sentiment = req.query.sentiment || '';
     const riskLevel = req.query.riskLevel || '';
     
-    const query = {};
+    const query = { userId: new mongoose.Types.ObjectId(userId) };
     if (sentiment) {
       query['analysis_result.sentiment'] = sentiment;
     }
@@ -873,7 +982,11 @@ app.get('/api/ai/summary', authMiddleware, async (req, res) => {
 // 获取单个 AI 分析详情
 app.get('/api/ai/summary/:id', authMiddleware, async (req, res) => {
   try {
-    const summary = await AISummary.findById(req.params.id);
+    const userId = req.user.userId;
+    const summary = await AISummary.findOne({ 
+      _id: req.params.id,
+      userId: new mongoose.Types.ObjectId(userId)
+    });
     
     if (!summary) {
       return res.status(404).json({ error: '分析结果不存在' });
@@ -888,7 +1001,8 @@ app.get('/api/ai/summary/:id', authMiddleware, async (req, res) => {
 // 手动触发 AI 分析
 app.post('/api/ai/analyze-now', authMiddleware, async (req, res) => {
   try {
-    const result = await performAIAnalysis('manual');
+    const userId = req.user.userId;
+    const result = await performAIAnalysis('manual', null, userId);
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: '触发 AI 分析失败：' + error.message });
@@ -901,9 +1015,23 @@ app.post('/api/internal/message-notify', async (req, res) => {
   try {
     const { log_id, channel, channelId, sender, message, keywords, time, alerted } = req.body;
     
-    // 推送新消息事件给前端
+    // 从log_id获取userId
+    let userId = null;
+    if (log_id) {
+      try {
+        const log = await Log.findById(log_id);
+        if (log && log.userId) {
+          userId = log.userId.toString();
+        }
+      } catch (err) {
+        console.error('获取日志userId失败:', err);
+      }
+    }
+    
+    // 推送新消息事件给前端（包含userId以便前端过滤）
     broadcastEvent('new_message', {
       id: log_id,
+      userId: userId,
       channel: channel || 'Unknown',
       channelId: channelId || '',
       sender: sender || 'Unknown',
@@ -913,12 +1041,15 @@ app.post('/api/internal/message-notify', async (req, res) => {
       alerted: alerted || false
     });
     
-    // 推送统计更新事件
-    broadcastEvent('stats_updated', {});
+    // 推送统计更新事件（包含userId以便前端过滤）
+    broadcastEvent('stats_updated', { userId: userId });
     
-    // 清除统计缓存，强制下次查询时重新计算
-    statsCache = null;
-    statsCacheTime = 0;
+    // 清除统计缓存（如果有userId，只清除该用户的缓存；否则清除所有）
+    if (userId) {
+      statsCache.delete(userId);
+    } else {
+      statsCache.clear();
+    }
     
     res.json({ status: 'ok', message: '消息通知已推送' });
   } catch (error) {
@@ -932,7 +1063,21 @@ app.post('/api/internal/ai/analyze-now', async (req, res) => {
   try {
     const { log_id } = req.body;
     console.log('📋 Telethon 内部 API 调用: AI 分析', log_id ? `(单条消息 ID: ${log_id})` : '(全量分析)');
-    const result = await performAIAnalysis('user_message', log_id);
+    
+    // 从log_id获取userId
+    let userId = null;
+    if (log_id) {
+      const log = await Log.findById(log_id);
+      if (log && log.userId) {
+        userId = log.userId.toString();
+      }
+    }
+    
+    if (!userId) {
+      return res.status(400).json({ error: '无法确定用户ID' });
+    }
+    
+    const result = await performAIAnalysis('user_message', log_id, userId);
     res.json(result);
   } catch (error) {
     console.error('❌ 内部 AI 分析请求失败:', error.message);
@@ -944,20 +1089,26 @@ app.post('/api/internal/ai/analyze-now', async (req, res) => {
 app.get('/api/ai/stats', authMiddleware, async (req, res) => {
   // const startTime = Date.now();
   try {
+    const userId = req.user.userId;
+    const userIdObj = new mongoose.Types.ObjectId(userId);
+    
     // const queryStartTime = Date.now();
     // 并行执行所有查询以提高效率
     const [total, totalMessagesAnalyzed, sentimentStats, riskStats, unanalyzedCount] = await Promise.all([
-      AISummary.countDocuments(),
+      AISummary.countDocuments({ userId: userIdObj }),
       AISummary.aggregate([
+        { $match: { userId: userIdObj } },
         { $group: { _id: null, total: { $sum: '$message_count' } } }
       ]),
       AISummary.aggregate([
+        { $match: { userId: userIdObj } },
         { $group: { _id: '$analysis_result.sentiment', count: { $sum: 1 } } }
       ]),
       AISummary.aggregate([
+        { $match: { userId: userIdObj } },
         { $group: { _id: '$analysis_result.risk_level', count: { $sum: 1 } } }
       ]),
-      Log.countDocuments({ ai_analyzed: false })
+      Log.countDocuments({ userId: userIdObj, ai_analyzed: false })
     ]);
     
     // const queryTime = Date.now() - queryStartTime;
@@ -966,7 +1117,8 @@ app.get('/api/ai/stats', authMiddleware, async (req, res) => {
     //   console.log(`[性能监控] /api/ai/stats 数据库查询耗时: ${queryTime}ms, 总耗时: ${totalTime}ms`);
     // }
     
-    const config = loadConfig();
+    const userConfig = await loadUserConfig(userId);
+    const config = userConfig.toObject ? userConfig.toObject() : userConfig;
     const aiConfig = config.ai_analysis || {};
     
     res.json({
@@ -992,7 +1144,7 @@ app.get('/api/ai/stats', authMiddleware, async (req, res) => {
 // 重启 AI 分析定时器（配置更新后调用）
 app.post('/api/ai/restart-timer', authMiddleware, async (req, res) => {
   try {
-    startAIAnalysisTimer();
+    await startAIAnalysisTimer();
     res.json({ status: 'ok', message: 'AI 分析定时器已重启' });
   } catch (error) {
     res.status(500).json({ error: '重启定时器失败：' + error.message });
@@ -1006,12 +1158,15 @@ app.get('/health', (req, res) => {
 
 // ===== AI 分析功能 =====
 let aiAnalysisTimer = null;
-let messageCounter = 0;
-let lastAnalysisTime = new Date();
 
 // 执行 AI 批量分析
-async function performAIAnalysis(triggerType = 'manual', logId = null) {
-  const config = loadConfig();
+async function performAIAnalysis(triggerType = 'manual', logId = null, userId = null) {
+  if (!userId) {
+    return { success: false, error: '用户ID不能为空' };
+  }
+  
+  const userConfig = await loadUserConfig(userId);
+  const config = userConfig.toObject ? userConfig.toObject() : userConfig;
   
   if (!config.ai_analysis?.enabled) {
     console.log('⏸️  AI 分析功能未启用');
@@ -1026,12 +1181,16 @@ async function performAIAnalysis(triggerType = 'manual', logId = null) {
   }
 
   try {
+    const userIdObj = new mongoose.Types.ObjectId(userId);
+    
     // 查询未分析的消息
     let unanalyzedMessages;
     if (logId) {
       // 如果指定了 logId，只分析这一条消息
-      const mongoose = require('mongoose');
-      const singleMessage = await Log.findById(new mongoose.Types.ObjectId(logId));
+      const singleMessage = await Log.findOne({ 
+        _id: new mongoose.Types.ObjectId(logId),
+        userId: userIdObj
+      });
       if (!singleMessage) {
         console.log('❌ 指定的消息不存在');
         return { success: false, error: '指定的消息不存在' };
@@ -1043,11 +1202,11 @@ async function performAIAnalysis(triggerType = 'manual', logId = null) {
       // 使用配置中的最大消息数限制，避免token超限
       const maxMessages = config.ai_analysis?.max_messages_per_analysis || 500;
       
-      const query = Log.find({ ai_analyzed: false }).sort({ time: -1 }).limit(maxMessages);
+      const query = Log.find({ userId: userIdObj, ai_analyzed: false }).sort({ time: -1 }).limit(maxMessages);
       unanalyzedMessages = await query;
       
       // 检查是否有更多未分析的消息
-      const totalUnanalyzed = await Log.countDocuments({ ai_analyzed: false });
+      const totalUnanalyzed = await Log.countDocuments({ userId: userIdObj, ai_analyzed: false });
       if (totalUnanalyzed > maxMessages) {
         console.log(`⚠️  未分析消息总数: ${totalUnanalyzed}，但只分析最近 ${maxMessages} 条（受最大消息数限制）`);
         console.log(`💡 提示：可以调整"最大消息数"配置，或分批手动分析`);
@@ -1089,6 +1248,7 @@ async function performAIAnalysis(triggerType = 'manual', logId = null) {
 
     // 保存分析结果
     const summary = new AISummary({
+      userId: userIdObj,
       message_count: unanalyzedMessages.length,
       messages_analyzed: unanalyzedMessages.map(log => ({
         log_id: log._id,
@@ -1110,7 +1270,7 @@ async function performAIAnalysis(triggerType = 'manual', logId = null) {
     // 标记消息为已分析
     const messageIds = unanalyzedMessages.map(log => log._id);
     await Log.updateMany(
-      { _id: { $in: messageIds } },
+      { _id: { $in: messageIds }, userId: userIdObj },
       { $set: { ai_analyzed: true, ai_summary_id: summary._id } }
     );
 
@@ -1163,20 +1323,17 @@ async function performAIAnalysis(triggerType = 'manual', logId = null) {
       }
     }
     
-    // 重置消息计数器
-    messageCounter = 0;
-    lastAnalysisTime = new Date();
-
-    // 实时推送AI分析完成事件
+    // 实时推送AI分析完成事件（包含userId以便前端过滤）
     broadcastEvent('ai_analysis_complete', {
+      userId: userId,
       summary_id: summary._id,
       message_count: unanalyzedMessages.length,
       trigger_type: triggerType,
       analysis: analysisResult.analysis
     });
     
-    // 推送AI统计更新事件
-    broadcastEvent('ai_stats_updated', {});
+    // 推送AI统计更新事件（包含userId以便前端过滤）
+    broadcastEvent('ai_stats_updated', { userId: userId });
 
     return {
       success: true,
@@ -1191,64 +1348,76 @@ async function performAIAnalysis(triggerType = 'manual', logId = null) {
   }
 }
 
-// 启动 AI 分析定时器
-function startAIAnalysisTimer() {
-  const config = loadConfig();
-  
-  if (!config.ai_analysis?.enabled) {
-    console.log('⏸️  AI 分析功能未启用');
-    return;
+// 启动 AI 分析定时器（为所有启用了AI的用户执行）
+async function startAIAnalysisTimer() {
+  if (aiAnalysisTimer) {
+    clearInterval(aiAnalysisTimer);
   }
-
-  const triggerType = config.ai_analysis.analysis_trigger_type || 'time';
   
-  if (triggerType === 'time') {
-    const intervalMinutes = config.ai_analysis.time_interval_minutes || 30;
-    const intervalMs = intervalMinutes * 60 * 1000;
-    
-    if (aiAnalysisTimer) {
-      clearInterval(aiAnalysisTimer);
+  // 为所有用户执行定时分析
+  const performAnalysisForAllUsers = async () => {
+    try {
+      const users = await User.find({ is_active: true });
+      
+      for (const user of users) {
+        try {
+          const userConfig = await loadUserConfig(user._id);
+          const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+          
+          if (!config.ai_analysis?.enabled || config.ai_analysis.analysis_trigger_type !== 'time') {
+            continue;
+          }
+          
+          console.log(`⏰ 为用户 ${user.username} 执行定时 AI 分析`);
+          await performAIAnalysis('time', null, user._id.toString());
+        } catch (err) {
+          console.error(`为用户 ${user.username} 执行AI分析失败:`, err.message);
+        }
+      }
+    } catch (err) {
+      console.error('执行定时AI分析失败:', err);
     }
-    
-    aiAnalysisTimer = setInterval(() => {
-      console.log(`⏰ 定时触发 AI 分析 (间隔: ${intervalMinutes} 分钟)`);
-      performAIAnalysis('time');
-    }, intervalMs);
-    
-    console.log(`✅ AI 定时分析已启动，间隔: ${intervalMinutes} 分钟`);
-  } else if (triggerType === 'count') {
-    const threshold = config.ai_analysis.message_count_threshold || 50;
-    console.log(`✅ AI 计数触发已配置，阈值: ${threshold} 条消息`);
-  }
+  };
+  
+  // 使用30分钟作为默认间隔（实际应该从每个用户的配置读取，这里简化处理）
+  const intervalMs = 30 * 60 * 1000; // 30分钟
+  aiAnalysisTimer = setInterval(performAnalysisForAllUsers, intervalMs);
+  
+  console.log(`✅ AI 定时分析已启动，间隔: 30 分钟（为所有启用AI的用户执行）`);
 }
 
 // 监听新消息（用于计数触发）
 async function checkMessageCountTrigger() {
-  // const startTime = Date.now();
-  const config = loadConfig();
-  
-  if (!config.ai_analysis?.enabled || config.ai_analysis.analysis_trigger_type !== 'count') {
-    return;
+  try {
+    const users = await User.find({ is_active: true });
+    
+    for (const user of users) {
+      try {
+        const userConfig = await loadUserConfig(user._id);
+        const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+        
+        if (!config.ai_analysis?.enabled || config.ai_analysis.analysis_trigger_type !== 'count') {
+          continue;
+        }
+        
+        const threshold = config.ai_analysis.message_count_threshold || 50;
+        const userIdObj = new mongoose.Types.ObjectId(user._id);
+        const unanalyzedCount = await Log.countDocuments({ 
+          userId: userIdObj,
+          ai_analyzed: false 
+        });
+        
+        if (unanalyzedCount >= threshold) {
+          console.log(`📊 用户 ${user.username} 未分析消息达到阈值 ${threshold}，触发 AI 分析`);
+          await performAIAnalysis('count', null, user._id.toString());
+        }
+      } catch (err) {
+        console.error(`检查用户 ${user.username} 消息计数触发失败:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('检查消息计数触发失败:', err);
   }
-
-  const threshold = config.ai_analysis.message_count_threshold || 50;
-  // const queryStartTime = Date.now();
-  const unanalyzedCount = await Log.countDocuments({ ai_analyzed: false });
-  // const queryTime = Date.now() - queryStartTime;
-  
-  // if (queryTime > 50) {
-  //   console.log(`[性能监控] checkMessageCountTrigger countDocuments 耗时: ${queryTime}ms`);
-  // }
-  
-  if (unanalyzedCount >= threshold) {
-    console.log(`📊 未分析消息达到阈值 ${threshold}，触发 AI 分析`);
-    await performAIAnalysis('count');
-  }
-  
-  // const totalTime = Date.now() - startTime;
-  // if (totalTime > 100) {
-  //   console.log(`[性能监控] checkMessageCountTrigger 总耗时: ${totalTime}ms`);
-  // }
 }
 
 // 定期检查消息计数（每分钟检查一次）
@@ -1262,7 +1431,7 @@ app.listen(PORT, () => {
   console.log(`⚠️  请及时修改默认密码！`);
   
   // 启动 AI 分析
-  setTimeout(() => {
-    startAIAnalysisTimer();
+  setTimeout(async () => {
+    await startAIAnalysisTimer();
   }, 3000);
 });

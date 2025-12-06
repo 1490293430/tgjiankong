@@ -177,6 +177,7 @@
                 if (response.ok) {
                     localStorage.setItem('token', data.token);
                     localStorage.setItem('username', data.username);
+                    localStorage.setItem('userId', data.userId || '');
                     window.location.href = 'dashboard.html';
                 } else {
                     errorMessage.textContent = data.error || '登录失败';
@@ -191,6 +192,13 @@
         // 检查是否已登录
         if (localStorage.getItem('token')) {
             window.location.href = 'dashboard.html';
+        }
+        
+        // 从URL参数读取用户名（用于切换用户）
+        const urlParams = new URLSearchParams(window.location.search);
+        const username = urlParams.get('username');
+        if (username) {
+            document.getElementById('username').value = username;
         }
     </script>
 </body>

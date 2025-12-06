@@ -27,6 +27,8 @@ ENV_API_ID = int(os.getenv("API_ID", "0"))
 ENV_API_HASH = os.getenv("API_HASH", "")
 SESSION_PATH = os.getenv("SESSION_PATH", "/app/session/telegram")
 SESSION_STRING = os.getenv("SESSION_STRING", "").strip()
+# 用户ID - 用于数据隔离，从环境变量读取
+USER_ID = os.getenv("USER_ID", "").strip()
 
 # 并发限制（可调）
 AI_CONCURRENCY = int(os.getenv("AI_CONCURRENCY", "2"))
@@ -226,6 +228,30 @@ async def post_json(url: str, payload: dict, timeout: int = 10, silent: bool = F
 # -----------------------
 async def save_log_async(channel, channel_id, sender, message, keywords, message_id):
     try:
+        from bson import ObjectId
+        
+        # 获取userId，如果没有设置则尝试从配置中获取或使用默认值
+        userId = None
+        if USER_ID:
+            try:
+                userId = ObjectId(USER_ID)
+            except Exception:
+                logger.warning("无效的USER_ID环境变量: %s，将尝试从配置获取", USER_ID)
+        
+        # 如果环境变量中没有，尝试从配置中获取
+        if not userId:
+            config = CONFIG_CACHE or default_config()
+            config_user_id = config.get("user_id")
+            if config_user_id:
+                try:
+                    userId = ObjectId(config_user_id)
+                except Exception:
+                    pass
+        
+        # 如果还是没有，记录警告（但继续保存，后端会处理）
+        if not userId:
+            logger.warning("未设置USER_ID，日志将无法关联到用户。请在环境变量中设置USER_ID或在配置文件中设置user_id")
+        
         doc = {
             "channel": channel,
             "channelId": str(channel_id),
@@ -237,6 +263,11 @@ async def save_log_async(channel, channel_id, sender, message, keywords, message
             "alerted": bool(keywords),
             "ai_analyzed": False
         }
+        
+        # 如果有userId，添加到文档中
+        if userId:
+            doc["userId"] = userId
+        
         res = await logs_collection.insert_one(doc)
         return str(res.inserted_id)
     except Exception as e:

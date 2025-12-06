@@ -49,6 +49,12 @@ const aiSummarySchema = new mongoose.Schema({
     type: String,
     enum: ['manual', 'time', 'count', 'user_message'],
     default: 'manual'
+  },
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true
   }
 }, {
   timestamps: true
