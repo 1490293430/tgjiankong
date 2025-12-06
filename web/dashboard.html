@@ -450,6 +450,7 @@
                 <span id="sseStatusText">连接中...</span>
             </div>
             <span>👤 <span id="username"></span></span>
+            <button class="btn-switch-user" onclick="showUserMenu()" style="margin-right: 10px; padding: 6px 12px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">切换用户</button>
             <button class="btn-logout" onclick="logout()">退出登录</button>
         </div>
     </div>
@@ -1689,18 +1690,45 @@
         
         // 切换到指定用户
         async function switchUser(userId, username) {
+            const token = checkAuth();
+            if (!token) return;
+            
+            const currentUsername = localStorage.getItem('username');
+            if (currentUsername !== 'admin') {
+                showToast('仅管理员可以切换用户', false);
+                return;
+            }
+            
+            // 如果切换到自己，无需操作
+            if (currentUsername === username) {
+                showToast('您已经是当前用户', false);
+                // 关闭菜单
+                const menu = document.querySelector('div[style*="z-index: 10000"]');
+                if (menu) menu.remove();
+                return;
+            }
+            
+            if (!confirm(`确定要切换到用户 "${username}" 吗？`)) {
+                return;
+            }
+            
             try {
-                // 这里需要调用一个API来获取该用户的token
-                // 但由于安全原因，我们不能直接切换，需要重新登录
-                // 所以跳转到登录页面，并提示用户登录
-                if (confirm(`确定要切换到用户 "${username}" 吗？\n\n将跳转到登录页面，请使用该用户的账号密码登录。`)) {
-                    // 清除当前token
-                    localStorage.removeItem('token');
-                    localStorage.removeItem('username');
-                    localStorage.removeItem('userId');
-                    // 跳转到登录页面，可以预先填充用户名
-                    window.location.href = `index.html?username=${encodeURIComponent(username)}`;
-                }
+                // 调用后端API切换到目标用户
+                const data = await apiRequest(`/users/${userId}/switch`, {
+                    method: 'POST'
+                });
+                
+                // 保存新的token和用户信息
+                localStorage.setItem('token', data.token);
+                localStorage.setItem('username', data.username);
+                localStorage.setItem('userId', data.userId);
+                
+                showToast(`已切换到用户: ${data.displayName || data.username}`, true);
+                
+                // 刷新页面以加载新用户的数据
+                setTimeout(() => {
+                    window.location.reload();
+                }, 500);
             } catch (error) {
                 showToast('切换用户失败: ' + (error.message || '未知错误'), false);
             }

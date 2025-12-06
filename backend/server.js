@@ -572,6 +572,39 @@ app.delete('/api/users/:userId', adminMiddleware, async (req, res) => {
   }
 });
 
+// 管理员切换用户（仅管理员，生成目标用户的token）
+app.post('/api/users/:userId/switch', adminMiddleware, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const targetUser = await User.findById(userId);
+    if (!targetUser || !targetUser.is_active) {
+      return res.status(404).json({ error: '用户不存在或已被禁用' });
+    }
+    
+    // 生成目标用户的 JWT token
+    const token = jwt.sign({ 
+      userId: targetUser._id.toString(), 
+      username: targetUser.username 
+    }, JWT_SECRET, { expiresIn: '24h' });
+    
+    // 更新最后登录时间
+    targetUser.last_login = new Date();
+    await targetUser.save();
+    
+    console.log(`✅ 管理员切换到用户: ${targetUser.username} (userId: ${targetUser._id})`);
+    
+    res.json({ 
+      token, 
+      username: targetUser.username,
+      displayName: targetUser.display_name || targetUser.username,
+      userId: targetUser._id.toString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: '切换用户失败：' + error.message });
+  }
+});
+
 // ===== 配置相关 API =====
 
 // 获取配置（不包含敏感信息）
