@@ -562,6 +562,12 @@
                         </div>
                         
                         <div class="form-group">
+                            <label>最大消息数（每次分析）</label>
+                            <input type="number" id="maxMessagesPerAnalysis" value="500" min="1" max="10000">
+                            <div class="hint">每次分析的最大消息数，避免token超限。建议：100-500条（根据消息长度调整）</div>
+                        </div>
+                        
+                        <div class="form-group">
                             <label>分析提示词</label>
                             <textarea id="analysisPrompt" rows="3" placeholder="自定义 AI 分析提示词..."></textarea>
                         </div>
@@ -761,7 +767,7 @@
         let currentAIPage = 1;
         let config = {};
         let autoRefreshInterval = null; // 自动刷新计时器
-        const REFRESH_INTERVAL = 30000; // 30秒刷新一次，减少MongoDB查询压力
+        const REFRESH_INTERVAL = 5000; // 30秒刷新一次，减少MongoDB查询压力
         
         // 卡片折叠/展开函数
         function toggleCard(header) {
@@ -870,8 +876,8 @@
             stopAutoRefresh(); // 先清除之前的计时器
             
             autoRefreshInterval = setInterval(() => {
-                const refreshStart = Date.now();
-                console.log(`[性能监控] Web界面自动刷新开始 (标签: ${tabName})`);
+                // const refreshStart = Date.now();
+                // console.log(`[性能监控] Web界面自动刷新开始 (标签: ${tabName})`);
                 if (tabName === 'dashboard') {
                     loadStats();
                     loadRecentLogs();
@@ -881,10 +887,10 @@
                 } else if (tabName === 'logs') {
                     loadLogs();
                 }
-                const refreshTime = Date.now() - refreshStart;
-                if (refreshTime > 50) {
-                    console.log(`[性能监控] Web界面自动刷新耗时: ${refreshTime}ms`);
-                }
+                // const refreshTime = Date.now() - refreshStart;
+                // if (refreshTime > 50) {
+                //     console.log(`[性能监控] Web界面自动刷新耗时: ${refreshTime}ms`);
+                // }
             }, REFRESH_INTERVAL);
         }
         
@@ -984,6 +990,7 @@
                     document.getElementById('analysisTriggerType').value = config.ai_analysis.analysis_trigger_type || 'time';
                     document.getElementById('timeIntervalMinutes').value = config.ai_analysis.time_interval_minutes || 30;
                     document.getElementById('messageCountThreshold').value = config.ai_analysis.message_count_threshold || 50;
+                    document.getElementById('maxMessagesPerAnalysis').value = config.ai_analysis.max_messages_per_analysis || 500;
                     document.getElementById('analysisPrompt').value = config.ai_analysis.analysis_prompt || '请分析以下 Telegram 消息，提供：1) 整体情感倾向（积极/中性/消极）；2) 主要内容分类；3) 关键主题和摘要；4) 重要关键词';
                     document.getElementById('aiSendTelegram').checked = config.ai_analysis.ai_send_telegram !== false; // 默认开启
                     document.getElementById('aiSendEmail').checked = config.ai_analysis.ai_send_email || false;
@@ -1042,6 +1049,7 @@
                     analysis_trigger_type: document.getElementById('analysisTriggerType').value,
                     time_interval_minutes: parseInt(document.getElementById('timeIntervalMinutes').value) || 30,
                     message_count_threshold: parseInt(document.getElementById('messageCountThreshold').value) || 50,
+                    max_messages_per_analysis: parseInt(document.getElementById('maxMessagesPerAnalysis').value) || 500,
                     analysis_prompt: document.getElementById('analysisPrompt').value,
                     ai_send_telegram: document.getElementById('aiSendTelegram').checked,
                     ai_send_email: document.getElementById('aiSendEmail').checked,

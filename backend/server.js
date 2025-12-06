@@ -123,6 +123,7 @@ const defaultConfig = {
     analysis_trigger_type: 'time', // 'time' 或 'count'
     time_interval_minutes: 30,
     message_count_threshold: 50,
+    max_messages_per_analysis: 500, // 每次分析的最大消息数，避免token超限
     analysis_prompt: '请分析以下 Telegram 消息，提供：1) 整体情感倾向（积极/中性/消极）；2) 主要内容分类；3) 关键主题和摘要；4) 重要关键词',
     ai_send_telegram: true,
     ai_send_email: false,
@@ -386,20 +387,20 @@ const STATS_CACHE_TTL = 10000; // 缓存10秒
 
 // 获取统计信息（带缓存）
 app.get('/api/stats', authMiddleware, async (req, res) => {
-  const startTime = Date.now();
+  // const startTime = Date.now();
   try {
     const now = Date.now();
     // 如果缓存有效，直接返回
     if (statsCache && (now - statsCacheTime) < STATS_CACHE_TTL) {
-      const cacheTime = Date.now() - startTime;
-      if (cacheTime > 10) {
-        console.log(`[性能监控] /api/stats 使用缓存，耗时: ${cacheTime}ms`);
-      }
+      // const cacheTime = Date.now() - startTime;
+      // if (cacheTime > 10) {
+      //   console.log(`[性能监控] /api/stats 使用缓存，耗时: ${cacheTime}ms`);
+      // }
       return res.json(statsCache);
     }
     
-    console.log(`[性能监控] /api/stats 开始执行数据库查询...`);
-    const queryStartTime = Date.now();
+    // console.log(`[性能监控] /api/stats 开始执行数据库查询...`);
+    // const queryStartTime = Date.now();
     
     // 并行执行所有查询以提高效率
     const [total, todayCount, alertedCount, channelStats] = await Promise.all([
@@ -437,12 +438,12 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
     statsCache = result;
     statsCacheTime = Date.now();
     
-    const queryTime = Date.now() - queryStartTime;
-    const totalTime = Date.now() - startTime;
-    console.log(`[性能监控] /api/stats 数据库查询耗时: ${queryTime}ms, 总耗时: ${totalTime}ms`);
-    if (queryTime > 100) {
-      console.warn(`[性能警告] /api/stats 查询耗时过长: ${queryTime}ms，可能影响性能`);
-    }
+    // const queryTime = Date.now() - queryStartTime;
+    // const totalTime = Date.now() - startTime;
+    // console.log(`[性能监控] /api/stats 数据库查询耗时: ${queryTime}ms, 总耗时: ${totalTime}ms`);
+    // if (queryTime > 100) {
+    //   console.warn(`[性能警告] /api/stats 查询耗时过长: ${queryTime}ms，可能影响性能`);
+    // }
     
     res.json(result);
   } catch (error) {
@@ -720,9 +721,9 @@ app.post('/api/internal/ai/analyze-now', async (req, res) => {
 
 // 获取 AI 分析统计信息
 app.get('/api/ai/stats', authMiddleware, async (req, res) => {
-  const startTime = Date.now();
+  // const startTime = Date.now();
   try {
-    const queryStartTime = Date.now();
+    // const queryStartTime = Date.now();
     // 并行执行所有查询以提高效率
     const [total, totalMessagesAnalyzed, sentimentStats, riskStats, unanalyzedCount] = await Promise.all([
       AISummary.countDocuments(),
@@ -738,11 +739,11 @@ app.get('/api/ai/stats', authMiddleware, async (req, res) => {
       Log.countDocuments({ ai_analyzed: false })
     ]);
     
-    const queryTime = Date.now() - queryStartTime;
-    const totalTime = Date.now() - startTime;
-    if (queryTime > 100) {
-      console.log(`[性能监控] /api/ai/stats 数据库查询耗时: ${queryTime}ms, 总耗时: ${totalTime}ms`);
-    }
+    // const queryTime = Date.now() - queryStartTime;
+    // const totalTime = Date.now() - startTime;
+    // if (queryTime > 100) {
+    //   console.log(`[性能监控] /api/ai/stats 数据库查询耗时: ${queryTime}ms, 总耗时: ${totalTime}ms`);
+    // }
     
     const config = loadConfig();
     const aiConfig = config.ai_analysis || {};
@@ -818,26 +819,20 @@ async function performAIAnalysis(triggerType = 'manual', logId = null) {
       console.log(`🎯 固定用户触发：只分析单条消息 ID: ${logId}`);
     } else {
       // 否则分析所有未分析的消息
-      // 根据触发类型决定分析数量
-      let limit = null;
-      if (triggerType === 'count') {
-        // 计数触发：分析所有达到阈值的消息（不设上限，或设置一个很大的上限）
-        limit = 10000; // 设置一个合理的上限，避免一次性分析过多
-      } else if (triggerType === 'time') {
-        // 定时触发：分析所有未分析的消息
-        limit = 10000; // 设置一个合理的上限
-      } else {
-        // 手动触发：分析所有未分析的消息
-        limit = 10000;
-      }
+      // 使用配置中的最大消息数限制，避免token超限
+      const maxMessages = config.ai_analysis?.max_messages_per_analysis || 500;
       
-      const query = Log.find({ ai_analyzed: false }).sort({ time: -1 });
-      if (limit) {
-        query.limit(limit);
-      }
+      const query = Log.find({ ai_analyzed: false }).sort({ time: -1 }).limit(maxMessages);
       unanalyzedMessages = await query;
       
-      console.log(`📊 查询到 ${unanalyzedMessages.length} 条未分析消息 (触发方式: ${triggerType}, 限制: ${limit || '无'})`);
+      // 检查是否有更多未分析的消息
+      const totalUnanalyzed = await Log.countDocuments({ ai_analyzed: false });
+      if (totalUnanalyzed > maxMessages) {
+        console.log(`⚠️  未分析消息总数: ${totalUnanalyzed}，但只分析最近 ${maxMessages} 条（受最大消息数限制）`);
+        console.log(`💡 提示：可以调整"最大消息数"配置，或分批手动分析`);
+      }
+      
+      console.log(`📊 查询到 ${unanalyzedMessages.length} 条未分析消息 (触发方式: ${triggerType}, 最大限制: ${maxMessages})`);
     }
 
     if (unanalyzedMessages.length === 0) {
@@ -997,7 +992,7 @@ function startAIAnalysisTimer() {
 
 // 监听新消息（用于计数触发）
 async function checkMessageCountTrigger() {
-  const startTime = Date.now();
+  // const startTime = Date.now();
   const config = loadConfig();
   
   if (!config.ai_analysis?.enabled || config.ai_analysis.analysis_trigger_type !== 'count') {
@@ -1005,23 +1000,23 @@ async function checkMessageCountTrigger() {
   }
 
   const threshold = config.ai_analysis.message_count_threshold || 50;
-  const queryStartTime = Date.now();
+  // const queryStartTime = Date.now();
   const unanalyzedCount = await Log.countDocuments({ ai_analyzed: false });
-  const queryTime = Date.now() - queryStartTime;
+  // const queryTime = Date.now() - queryStartTime;
   
-  if (queryTime > 50) {
-    console.log(`[性能监控] checkMessageCountTrigger countDocuments 耗时: ${queryTime}ms`);
-  }
+  // if (queryTime > 50) {
+  //   console.log(`[性能监控] checkMessageCountTrigger countDocuments 耗时: ${queryTime}ms`);
+  // }
   
   if (unanalyzedCount >= threshold) {
     console.log(`📊 未分析消息达到阈值 ${threshold}，触发 AI 分析`);
     await performAIAnalysis('count');
   }
   
-  const totalTime = Date.now() - startTime;
-  if (totalTime > 100) {
-    console.log(`[性能监控] checkMessageCountTrigger 总耗时: ${totalTime}ms`);
-  }
+  // const totalTime = Date.now() - startTime;
+  // if (totalTime > 100) {
+  //   console.log(`[性能监控] checkMessageCountTrigger 总耗时: ${totalTime}ms`);
+  // }
 }
 
 // 定期检查消息计数（每分钟检查一次）
