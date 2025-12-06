@@ -2,6 +2,9 @@
 data/
 logs/
 
+# 备份目录（可选择是否备份到git）
+# backups/
+
 # Node.js
 node_modules/
 npm-debug.log*

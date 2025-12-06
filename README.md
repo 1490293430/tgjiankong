@@ -197,9 +197,23 @@ docker compose up -d
     └── config.json     # 配置文件（包含所有配置）
 ```
 
-**备份数据：** 只需备份 `data/` 和 `backend/config.json`
+**备份数据：**
+```bash
+# 使用自动备份脚本（推荐）
+bash backup.sh
 
-**恢复数据：** 将备份的文件恢复到对应目录即可
+# 或手动备份
+tar -czf backup_$(date +%Y%m%d).tar.gz data/ backend/config.json .env
+```
+
+**恢复数据：**
+```bash
+# 使用自动恢复脚本
+bash restore.sh
+
+# 或手动恢复
+tar -xzf backup_YYYYMMDD.tar.gz
+```
 
 ### 升级到新版本
 
@@ -278,7 +292,7 @@ docker compose restart mongo
 1. **修改默认密码** - 首次登录后立即修改
 2. **使用强 JWT_SECRET** - 安装脚本会自动生成，无需手动配置
 3. **启用防火墙** - 仅开放必要端口（如 5555）
-4. **定期备份** - 备份 `data/` 目录和 `backend/config.json`
+4. **定期备份** - 使用 `bash backup.sh` 自动备份，或手动备份 `data/` 目录和 `backend/config.json`
 5. **使用 HTTPS** - 生产环境建议配置 SSL 证书（可使用 Nginx Proxy Manager）
 6. **限制访问** - 配置 IP 白名单或使用 VPN 访问
 

@@ -356,7 +356,37 @@ app.post('/api/config', authMiddleware, (req, res) => {
       admin: currentConfig.admin // 保持管理员配置不变
     }, defaultConfig); // 与默认配置合并，确保所有新字段都存在
     
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(newConfig, null, 2));
+    // 检查 config.json 是否是目录（Docker 可能创建了目录）
+    if (fs.existsSync(CONFIG_PATH)) {
+      const stat = fs.statSync(CONFIG_PATH);
+      if (stat.isDirectory()) {
+        console.error('❌ config.json 是目录而非文件，正在删除并重建...');
+        fs.rmSync(CONFIG_PATH, { recursive: true, force: true });
+      }
+    }
+    
+    // 确保目录存在
+    const configDir = path.dirname(CONFIG_PATH);
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true });
+    }
+    
+    // 先写入临时文件，然后重命名（原子操作，避免损坏原文件）
+    const tempPath = CONFIG_PATH + '.tmp';
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(newConfig, null, 2), 'utf8');
+      fs.renameSync(tempPath, CONFIG_PATH);
+    } catch (writeError) {
+      // 如果重命名失败，尝试删除临时文件
+      if (fs.existsSync(tempPath)) {
+        try {
+          fs.unlinkSync(tempPath);
+        } catch (e) {
+          // 忽略删除失败
+        }
+      }
+      throw writeError; // 重新抛出错误
+    }
     
     // 如果 AI 分析配置有变化，重启定时器
     if (incoming.ai_analysis) {
@@ -368,13 +398,36 @@ app.post('/api/config', authMiddleware, (req, res) => {
     
     res.json({ status: 'ok', message: '配置保存成功' });
   } catch (error) {
-    // ✅ 改进的错误处理
-    if (process.env.NODE_ENV === 'production') {
-      console.error('[CONFIG_ERROR]', { timestamp: new Date().toISOString(), error: error.message });
-      res.status(500).json({ error: '保存配置失败' });
-    } else {
-      res.status(500).json({ error: '保存配置失败：' + error.message });
+    // 详细错误日志
+    const fileExists = fs.existsSync(CONFIG_PATH);
+    const isDirectory = fileExists ? fs.statSync(CONFIG_PATH).isDirectory() : false;
+    
+    console.error('[CONFIG_SAVE_ERROR]', {
+      timestamp: new Date().toISOString(),
+      error: error.message,
+      errorCode: error.code,
+      stack: error.stack,
+      configPath: CONFIG_PATH,
+      fileExists: fileExists,
+      isDirectory: isDirectory
+    });
+    
+    // 返回详细错误信息（帮助用户诊断问题）
+    let errorMessage = '保存配置失败';
+    
+    if (error.code === 'EACCES' || error.code === 'EPERM') {
+      errorMessage = '保存配置失败：没有写入权限，请检查 backend/config.json 文件权限。在服务器上执行: chmod 644 backend/config.json';
+    } else if (error.code === 'ENOENT') {
+      errorMessage = '保存配置失败：配置文件目录不存在';
+    } else if (error.code === 'EISDIR' || isDirectory) {
+      errorMessage = '保存配置失败：config.json 是目录而不是文件，请删除该目录后重试。在服务器上执行: rm -rf backend/config.json && cp backend/config.json.example backend/config.json';
+    } else if (error.message && error.message.includes('JSON')) {
+      errorMessage = '保存配置失败：配置数据格式错误，请检查配置内容';
+    } else if (error.message) {
+      errorMessage = `保存配置失败：${error.message}`;
     }
+    
+    res.status(500).json({ error: errorMessage });
   }
 });
 
