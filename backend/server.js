@@ -377,12 +377,20 @@ const STATS_CACHE_TTL = 10000; // 缓存10秒
 
 // 获取统计信息（带缓存）
 app.get('/api/stats', authMiddleware, async (req, res) => {
+  const startTime = Date.now();
   try {
     const now = Date.now();
     // 如果缓存有效，直接返回
     if (statsCache && (now - statsCacheTime) < STATS_CACHE_TTL) {
+      const cacheTime = Date.now() - startTime;
+      if (cacheTime > 10) {
+        console.log(`[性能监控] /api/stats 使用缓存，耗时: ${cacheTime}ms`);
+      }
       return res.json(statsCache);
     }
+    
+    console.log(`[性能监控] /api/stats 开始执行数据库查询...`);
+    const queryStartTime = Date.now();
     
     // 并行执行所有查询以提高效率
     const [total, todayCount, alertedCount, channelStats] = await Promise.all([
@@ -419,6 +427,13 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
     // 更新缓存
     statsCache = result;
     statsCacheTime = Date.now();
+    
+    const queryTime = Date.now() - queryStartTime;
+    const totalTime = Date.now() - startTime;
+    console.log(`[性能监控] /api/stats 数据库查询耗时: ${queryTime}ms, 总耗时: ${totalTime}ms`);
+    if (queryTime > 100) {
+      console.warn(`[性能警告] /api/stats 查询耗时过长: ${queryTime}ms，可能影响性能`);
+    }
     
     res.json(result);
   } catch (error) {
@@ -696,21 +711,29 @@ app.post('/api/internal/ai/analyze-now', async (req, res) => {
 
 // 获取 AI 分析统计信息
 app.get('/api/ai/stats', authMiddleware, async (req, res) => {
+  const startTime = Date.now();
   try {
-    const total = await AISummary.countDocuments();
-    const totalMessagesAnalyzed = await AISummary.aggregate([
-      { $group: { _id: null, total: { $sum: '$message_count' } } }
+    const queryStartTime = Date.now();
+    // 并行执行所有查询以提高效率
+    const [total, totalMessagesAnalyzed, sentimentStats, riskStats, unanalyzedCount] = await Promise.all([
+      AISummary.countDocuments(),
+      AISummary.aggregate([
+        { $group: { _id: null, total: { $sum: '$message_count' } } }
+      ]),
+      AISummary.aggregate([
+        { $group: { _id: '$analysis_result.sentiment', count: { $sum: 1 } } }
+      ]),
+      AISummary.aggregate([
+        { $group: { _id: '$analysis_result.risk_level', count: { $sum: 1 } } }
+      ]),
+      Log.countDocuments({ ai_analyzed: false })
     ]);
     
-    const sentimentStats = await AISummary.aggregate([
-      { $group: { _id: '$analysis_result.sentiment', count: { $sum: 1 } } }
-    ]);
-    
-    const riskStats = await AISummary.aggregate([
-      { $group: { _id: '$analysis_result.risk_level', count: { $sum: 1 } } }
-    ]);
-    
-    const unanalyzedCount = await Log.countDocuments({ ai_analyzed: false });
+    const queryTime = Date.now() - queryStartTime;
+    const totalTime = Date.now() - startTime;
+    if (queryTime > 100) {
+      console.log(`[性能监控] /api/ai/stats 数据库查询耗时: ${queryTime}ms, 总耗时: ${totalTime}ms`);
+    }
     
     const config = loadConfig();
     const aiConfig = config.ai_analysis || {};
@@ -940,6 +963,7 @@ function startAIAnalysisTimer() {
 
 // 监听新消息（用于计数触发）
 async function checkMessageCountTrigger() {
+  const startTime = Date.now();
   const config = loadConfig();
   
   if (!config.ai_analysis?.enabled || config.ai_analysis.analysis_trigger_type !== 'count') {
@@ -947,11 +971,22 @@ async function checkMessageCountTrigger() {
   }
 
   const threshold = config.ai_analysis.message_count_threshold || 50;
+  const queryStartTime = Date.now();
   const unanalyzedCount = await Log.countDocuments({ ai_analyzed: false });
+  const queryTime = Date.now() - queryStartTime;
+  
+  if (queryTime > 50) {
+    console.log(`[性能监控] checkMessageCountTrigger countDocuments 耗时: ${queryTime}ms`);
+  }
   
   if (unanalyzedCount >= threshold) {
     console.log(`📊 未分析消息达到阈值 ${threshold}，触发 AI 分析`);
     await performAIAnalysis('count');
+  }
+  
+  const totalTime = Date.now() - startTime;
+  if (totalTime > 100) {
+    console.log(`[性能监控] checkMessageCountTrigger 总耗时: ${totalTime}ms`);
   }
 }
 

@@ -865,6 +865,8 @@
             stopAutoRefresh(); // 先清除之前的计时器
             
             autoRefreshInterval = setInterval(() => {
+                const refreshStart = Date.now();
+                console.log(`[性能监控] Web界面自动刷新开始 (标签: ${tabName})`);
                 if (tabName === 'dashboard') {
                     loadStats();
                     loadRecentLogs();
@@ -873,6 +875,10 @@
                     loadAISummaries(currentAIPage);
                 } else if (tabName === 'logs') {
                     loadLogs();
+                }
+                const refreshTime = Date.now() - refreshStart;
+                if (refreshTime > 50) {
+                    console.log(`[性能监控] Web界面自动刷新耗时: ${refreshTime}ms`);
                 }
             }, REFRESH_INTERVAL);
         }

@@ -163,8 +163,13 @@ async def config_reloader_task():
     loop = asyncio.get_event_loop()
     while not SHUTDOWN.is_set():
         try:
+            import time
+            start_time = time.time()
             # run synchronous loader on loop's executor to avoid blocking event loop if file read is slow
             await loop.run_in_executor(None, load_config_sync)
+            elapsed = time.time() - start_time
+            if elapsed > 0.1:  # 只记录耗时超过100ms的操作
+                logger.warning(f"[性能监控] 配置重载任务耗时: {elapsed:.3f}秒")
         except Exception as e:
             logger.exception("配置重载任务异常: %s", e)
         # 使用asyncio.sleep而不是wait，更高效
