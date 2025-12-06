@@ -1250,11 +1250,21 @@
         
         // 切换标签
         function switchTab(tabName) {
+            // 检查是否为非admin用户尝试访问用户管理
+            const currentUsername = localStorage.getItem('username') || '';
+            if (tabName === 'users' && currentUsername !== 'admin') {
+                showToast('权限不足：仅管理员可访问用户管理', false);
+                return;
+            }
+            
             document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
             
             event.target.classList.add('active');
-            document.getElementById(tabName).classList.add('active');
+            const tabContent = document.getElementById(tabName);
+            if (tabContent) {
+                tabContent.classList.add('active');
+            }
             
             // 保存当前标签页
             localStorage.setItem('currentTab', tabName);
@@ -1841,6 +1851,150 @@
             }
         }
         
+        // ===== 用户管理功能（仅管理员） =====
+        
+        // 加载用户列表
+        async function loadUsers() {
+            const token = checkAuth();
+            if (!token) return;
+            
+            const username = localStorage.getItem('username');
+            if (username !== 'admin') {
+                return; // 非管理员用户不能访问
+            }
+            
+            try {
+                const data = await apiRequest('/users');
+                const userList = document.getElementById('userList');
+                
+                if (data && data.length > 0) {
+                    userList.innerHTML = `
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background: #f5f5f5; border-bottom: 2px solid #ddd;">
+                                    <th style="padding: 12px; text-align: left;">用户名</th>
+                                    <th style="padding: 12px; text-align: left;">显示名称</th>
+                                    <th style="padding: 12px; text-align: left;">创建时间</th>
+                                    <th style="padding: 12px; text-align: left;">最后登录</th>
+                                    <th style="padding: 12px; text-align: left;">状态</th>
+                                    <th style="padding: 12px; text-align: center;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${data.map(user => {
+                                    const createdDate = user.created_at ? new Date(user.created_at).toLocaleString('zh-CN') : '-';
+                                    const lastLogin = user.last_login ? new Date(user.last_login).toLocaleString('zh-CN') : '从未登录';
+                                    const status = user.is_active ? '<span style="color: #27ae60;">✓ 启用</span>' : '<span style="color: #e74c3c;">✗ 禁用</span>';
+                                    const canDelete = user.username !== 'admin'; // 不能删除admin用户
+                                    
+                                    return `
+                                        <tr style="border-bottom: 1px solid #eee;">
+                                            <td style="padding: 12px;"><strong>${user.username}</strong></td>
+                                            <td style="padding: 12px;">${user.display_name || '-'}</td>
+                                            <td style="padding: 12px; color: #666;">${createdDate}</td>
+                                            <td style="padding: 12px; color: #666;">${lastLogin}</td>
+                                            <td style="padding: 12px;">${status}</td>
+                                            <td style="padding: 12px; text-align: center;">
+                                                ${canDelete ? `<button class="btn btn-danger" onclick="deleteUser('${user._id}', '${user.username}')" style="padding: 4px 12px; font-size: 12px;">删除</button>` : '<span style="color: #999; font-size: 12px;">不可删除</span>'}
+                                            </td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                } else {
+                    userList.innerHTML = '<p style="text-align: center; color: #999;">暂无用户</p>';
+                }
+            } catch (error) {
+                console.error('加载用户列表失败:', error);
+                document.getElementById('userList').innerHTML = '<p style="text-align: center; color: #e74c3c;">加载失败: ' + (error.message || '未知错误') + '</p>';
+            }
+        }
+        
+        // 创建用户
+        async function createUser() {
+            const token = checkAuth();
+            if (!token) return;
+            
+            const username = localStorage.getItem('username');
+            if (username !== 'admin') {
+                showToast('权限不足：仅管理员可创建用户', false);
+                return;
+            }
+            
+            const newUsername = document.getElementById('newUsername').value.trim();
+            const newPassword = document.getElementById('newUserPassword').value;
+            const newDisplayName = document.getElementById('newUserDisplayName').value.trim();
+            
+            if (!newUsername || !newPassword) {
+                showToast('用户名和密码不能为空', false);
+                return;
+            }
+            
+            if (newUsername.length < 3 || newUsername.length > 50) {
+                showToast('用户名长度必须在3-50字符之间', false);
+                return;
+            }
+            
+            if (newPassword.length < 6) {
+                showToast('密码长度至少为6位', false);
+                return;
+            }
+            
+            try {
+                const data = await apiRequest('/users', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        username: newUsername,
+                        password: newPassword,
+                        display_name: newDisplayName || newUsername
+                    })
+                });
+                
+                showToast('用户创建成功', true);
+                
+                // 清空表单
+                document.getElementById('newUsername').value = '';
+                document.getElementById('newUserPassword').value = '';
+                document.getElementById('newUserDisplayName').value = '';
+                
+                // 刷新用户列表
+                loadUsers();
+            } catch (error) {
+                showToast('创建用户失败: ' + (error.message || '未知错误'), false);
+            }
+        }
+        
+        // 删除用户
+        async function deleteUser(userId, username) {
+            const token = checkAuth();
+            if (!token) return;
+            
+            const currentUsername = localStorage.getItem('username');
+            if (currentUsername !== 'admin') {
+                showToast('权限不足：仅管理员可删除用户', false);
+                return;
+            }
+            
+            if (!confirm(`确定要删除用户 "${username}" 吗？\n\n警告：删除用户将同时删除该用户的所有配置和数据，此操作不可恢复！`)) {
+                return;
+            }
+            
+            try {
+                await apiRequest(`/users/${userId}`, {
+                    method: 'DELETE'
+                });
+                
+                showToast('用户删除成功', true);
+                
+                // 刷新用户列表
+                loadUsers();
+            } catch (error) {
+                showToast('删除用户失败: ' + (error.message || '未知错误'), false);
+            }
+        }
+        
         // 测试 AI 分析
         async function testAIAnalysis() {
             const token = checkAuth();
@@ -1917,6 +2071,21 @@
         }
         
         loadCurrentUser();
+        
+        // 检查是否为admin用户，如果不是则隐藏用户管理标签页
+        const currentUsername = localStorage.getItem('username') || '';
+        const usersTab = document.querySelector('.nav-tab[onclick*="users"]');
+        const usersContent = document.getElementById('users');
+        if (usersTab && usersContent) {
+            if (currentUsername !== 'admin') {
+                usersTab.style.display = 'none';
+                usersContent.style.display = 'none';
+            } else {
+                usersTab.style.display = '';
+                usersContent.style.display = '';
+            }
+        }
+        
         restoreCardStates(); // 恢复卡片折叠状态
         
         // 加载前端设置
@@ -1932,7 +2101,14 @@
             }
         });
         document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-        document.getElementById(savedTab).classList.add('active');
+        const savedTabElement = document.getElementById(savedTab);
+        if (savedTabElement) {
+            savedTabElement.classList.add('active');
+        } else {
+            // 如果保存的标签页不存在（比如非admin用户选择了users），则显示dashboard
+            document.getElementById('dashboard').classList.add('active');
+            document.querySelectorAll('.nav-tab')[0].classList.add('active');
+        }
         
         // 根据标签页加载对应内容（使用 setTimeout 避免影响初始化滚动）
         setTimeout(() => {

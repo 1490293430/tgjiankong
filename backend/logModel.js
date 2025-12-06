@@ -42,7 +42,7 @@ const logSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
+    required: false, // 允许为空，兼容旧数据或未设置USER_ID的情况
     index: true
   }
 }, {

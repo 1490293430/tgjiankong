@@ -291,6 +291,30 @@ async function saveUserConfig(userId, configData) {
   }
 }
 
+// 初始化默认管理员用户
+async function initDefaultAdmin() {
+  try {
+    // 检查是否已存在admin用户
+    const adminUser = await User.findOne({ username: 'admin' });
+    if (!adminUser) {
+      // 创建默认管理员用户
+      const passwordHash = await bcrypt.hash('admin123', 10);
+      const admin = new User({
+        username: 'admin',
+        password_hash: passwordHash,
+        display_name: 'Administrator',
+        is_active: true
+      });
+      await admin.save();
+      console.log('✅ 默认管理员用户已创建 (username: admin, password: admin123)');
+    } else {
+      console.log('ℹ️  管理员用户已存在');
+    }
+  } catch (error) {
+    console.error('❌ 初始化默认管理员失败:', error);
+  }
+}
+
 // 连接 MongoDB
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017/tglogs';
 mongoose.connect(MONGO_URL, {
@@ -342,15 +366,23 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
       return res.status(400).json({ error: '用户名和密码不能为空' });
     }
     
+    // 检查MongoDB连接状态
+    if (mongoose.connection.readyState !== 1) {
+      console.error('❌ MongoDB 未连接，状态:', mongoose.connection.readyState);
+      return res.status(503).json({ error: '数据库未连接，请稍后重试' });
+    }
+    
     // 查找用户
     const user = await User.findOne({ username, is_active: true });
     if (!user) {
+      console.log(`❌ 登录失败：用户不存在或未激活 (username: ${username})`);
       return res.status(401).json({ error: '用户名或密码错误' });
     }
     
     // 验证密码
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
+      console.log(`❌ 登录失败：密码错误 (username: ${username})`);
       return res.status(401).json({ error: '用户名或密码错误' });
     }
     
@@ -364,6 +396,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
       username: user.username 
     }, JWT_SECRET, { expiresIn: '24h' });
     
+    console.log(`✅ 登录成功 (username: ${username}, userId: ${user._id})`);
     res.json({ 
       token, 
       username: user.username,
@@ -371,6 +404,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
       userId: user._id.toString()
     });
   } catch (error) {
+    console.error('❌ 登录异常:', error);
     res.status(500).json({ error: '登录失败：' + error.message });
   }
 });
@@ -404,6 +438,137 @@ app.post('/api/auth/change-password', authMiddleware, async (req, res) => {
     res.json({ status: 'ok', message: '密码修改成功' });
   } catch (error) {
     res.status(500).json({ error: '修改密码失败：' + error.message });
+  }
+});
+
+// ===== 管理员中间件（仅允许 admin 用户） =====
+const adminMiddleware = async (req, res, next) => {
+  try {
+    // 先通过身份验证
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ error: '未授权：缺少 token' });
+    }
+    
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await User.findById(decoded.userId);
+    
+    if (!user || !user.is_active) {
+      return res.status(401).json({ error: '用户不存在或已被禁用' });
+    }
+    
+    // 检查是否为 admin 用户
+    if (user.username !== 'admin') {
+      return res.status(403).json({ error: '权限不足：仅管理员可执行此操作' });
+    }
+    
+    // 设置 req.user
+    req.user = {
+      userId: decoded.userId,
+      username: decoded.username,
+      userObj: user
+    };
+    
+    next();
+  } catch (error) {
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: '未授权：token 无效或已过期' });
+    }
+    return res.status(500).json({ error: '权限验证失败：' + error.message });
+  }
+};
+
+// ===== 用户管理 API（仅管理员） =====
+
+// 获取用户列表（仅管理员）
+app.get('/api/users', adminMiddleware, async (req, res) => {
+  try {
+    const users = await User.find({}).select('-password_hash').sort({ created_at: -1 });
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: '获取用户列表失败：' + error.message });
+  }
+});
+
+// 创建用户（仅管理员）
+app.post('/api/users', adminMiddleware, async (req, res) => {
+  try {
+    const { username, password, display_name } = req.body;
+    
+    if (!username || !password) {
+      return res.status(400).json({ error: '用户名和密码不能为空' });
+    }
+    
+    if (username.length < 3 || username.length > 50) {
+      return res.status(400).json({ error: '用户名长度必须在3-50字符之间' });
+    }
+    
+    if (password.length < 6) {
+      return res.status(400).json({ error: '密码长度至少为6位' });
+    }
+    
+    // 检查用户名是否已存在
+    const existingUser = await User.findOne({ username });
+    if (existingUser) {
+      return res.status(400).json({ error: '用户名已存在' });
+    }
+    
+    const passwordHash = await bcrypt.hash(password, 10);
+    const user = new User({
+      username,
+      password_hash: passwordHash,
+      display_name: display_name || username,
+      is_active: true
+    });
+    await user.save();
+    
+    // 创建用户时自动创建默认配置
+    await saveUserConfig(user._id.toString(), {});
+    
+    res.json({ 
+      status: 'ok', 
+      message: '用户创建成功',
+      user: {
+        _id: user._id,
+        username: user.username,
+        display_name: user.display_name,
+        is_active: user.is_active,
+        created_at: user.created_at
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: '创建用户失败：' + error.message });
+  }
+});
+
+// 删除用户（仅管理员）
+app.delete('/api/users/:userId', adminMiddleware, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = req.user.userId;
+    
+    // 不允许删除自己
+    if (userId === currentUserId) {
+      return res.status(400).json({ error: '不能删除自己的账号' });
+    }
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: '用户不存在' });
+    }
+    
+    // 不允许删除 admin 用户
+    if (user.username === 'admin') {
+      return res.status(400).json({ error: '不能删除管理员账号' });
+    }
+    
+    // 删除用户及其配置
+    await User.findByIdAndDelete(userId);
+    await UserConfig.deleteOne({ userId });
+    
+    res.json({ status: 'ok', message: '用户删除成功' });
+  } catch (error) {
+    res.status(500).json({ error: '删除用户失败：' + error.message });
   }
 });
 
@@ -765,9 +930,10 @@ app.post('/api/alert/push', authMiddleware, async (req, res) => {
     });
     await log.save();
     
-    // 实时推送新消息事件给前端
+    // 实时推送新消息事件给前端（包含userId以便前端过滤）
     broadcastEvent('new_message', {
       id: log._id,
+      userId: userId,
       channel: cleanChannel,
       channelId: channelId || '',
       sender: cleanFrom,
