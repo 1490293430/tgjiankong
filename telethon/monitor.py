@@ -14,7 +14,7 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 import aiohttp
 import motor.motor_asyncio
-from mongo_index_init import ensure_indexes
+from telethon.mongo_index_init import ensure_indexes
 
 # -----------------------
 # 配置（ENV 或默认）
@@ -32,8 +32,8 @@ SESSION_STRING = os.getenv("SESSION_STRING", "").strip()
 AI_CONCURRENCY = int(os.getenv("AI_CONCURRENCY", "2"))
 ALERT_CONCURRENCY = int(os.getenv("ALERT_CONCURRENCY", "4"))
 
-# config reload interval (秒)
-CONFIG_RELOAD_INTERVAL = float(os.getenv("CONFIG_RELOAD_INTERVAL", "3.0"))
+# config reload interval (秒) - 增加到10秒以减少CPU开销
+CONFIG_RELOAD_INTERVAL = float(os.getenv("CONFIG_RELOAD_INTERVAL", "10.0"))
 
 # -----------------------
 # 日志
@@ -64,9 +64,30 @@ alert_semaphore = asyncio.Semaphore(ALERT_CONCURRENCY)
 SHUTDOWN = asyncio.Event()
 
 
+# CPU监控 - 使用缓存减少开销，避免频繁调用导致CPU峰值
+_cpu_process = None
+_cpu_last_check = 0
+_cpu_check_interval = 10.0  # 每10秒最多检查一次
+
 def log_cpu_usage(tag=""):
-    cpu = psutil.Process(os.getpid()).cpu_percent(interval=None)
-    logger.info(f"[CPU监控] {tag} 当前进程CPU占用: {cpu}%")
+    """记录CPU使用率，但限制调用频率以避免自身消耗过多CPU"""
+    global _cpu_process, _cpu_last_check
+    import time
+    
+    current_time = time.time()
+    # 限制CPU监控频率，避免频繁调用导致CPU峰值
+    if current_time - _cpu_last_check < _cpu_check_interval:
+        return
+    
+    try:
+        if _cpu_process is None:
+            _cpu_process = psutil.Process(os.getpid())
+        # 使用interval=0.1而不是None，减少开销
+        cpu = _cpu_process.cpu_percent(interval=0.1)
+        logger.info(f"[CPU监控] {tag} 当前进程CPU占用: {cpu}%")
+        _cpu_last_check = current_time
+    except Exception:
+        pass  # 忽略CPU监控错误，避免影响主流程
 
 
 # -----------------------
@@ -141,9 +162,13 @@ async def config_reloader_task():
     """后台任务：定期检查配置文件是否变化并加载（同步 IO，但很低频）"""
     loop = asyncio.get_event_loop()
     while not SHUTDOWN.is_set():
-        # run synchronous loader on loop's executor to avoid blocking event loop if file read is slow
-        await loop.run_in_executor(None, load_config_sync)
-        await asyncio.wait([SHUTDOWN.wait()], timeout=CONFIG_RELOAD_INTERVAL)
+        try:
+            # run synchronous loader on loop's executor to avoid blocking event loop if file read is slow
+            await loop.run_in_executor(None, load_config_sync)
+        except Exception as e:
+            logger.exception("配置重载任务异常: %s", e)
+        # 使用asyncio.sleep而不是wait，更高效
+        await asyncio.sleep(CONFIG_RELOAD_INTERVAL)
 
 
 # -----------------------
@@ -198,7 +223,8 @@ async def save_log_async(channel, channel_id, sender, message, keywords, message
 # AI 分析（异步队列）
 # -----------------------
 async def trigger_ai_analysis_async(sender_id, client, log_id=None):
-    log_cpu_usage("AI分析开始")
+    # 移除频繁的CPU监控调用
+    # log_cpu_usage("AI分析开始")
     """通过异步 HTTP 调用内部 AI 接口，并把结果发回给用户（限制并发）"""
     async with ai_semaphore:
         try:
@@ -259,7 +285,8 @@ async def send_alert_async(keyword, message, sender, channel, channel_id, messag
 # 消息处理器（非阻塞 / 轻量）
 # -----------------------
 async def message_handler(event, client):
-    log_cpu_usage("消息处理开始")
+    # 移除频繁的CPU监控调用，避免每条消息都触发CPU检查导致峰值
+    # log_cpu_usage("消息处理开始")
     try:
         # use cached config only (no IO here)
         config = CONFIG_CACHE or default_config()
@@ -390,7 +417,8 @@ async def message_handler(event, client):
                     logger.exception("发送 Telegram 告警失败")
     except Exception:
         logger.exception("处理消息失败")
-    log_cpu_usage("消息处理结束")
+    # 移除频繁的CPU监控调用，避免每条消息都触发CPU检查导致峰值
+    # log_cpu_usage("消息处理结束")
 
 
 # -----------------------
