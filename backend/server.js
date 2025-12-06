@@ -486,8 +486,7 @@ app.get('/api/logs', authMiddleware, async (req, res) => {
 
 // ===== SSE 实时推送 =====
 
-// SSE 客户端连接池
-const sseClients = new Set();
+// SSE 客户端连接池已在文件顶部声明（第22行），无需重复声明
 
 // SSE 事件推送端点
 app.get('/api/events', authMiddleware, (req, res) => {
