@@ -62,6 +62,11 @@ alert_semaphore = asyncio.Semaphore(ALERT_CONCURRENCY)
 SHUTDOWN = asyncio.Event()
 
 
+def log_cpu_usage(tag=""):
+    cpu = psutil.Process(os.getpid()).cpu_percent(interval=None)
+    logger.info(f"[CPU监控] {tag} 当前进程CPU占用: {cpu}%")
+
+
 # -----------------------
 # default config helper
 # -----------------------
