@@ -1,77 +1,236 @@
-import json
+# monitor_async.py
 import os
+import json
 import re
 import asyncio
+from datetime import datetime
+from typing import List, Optional, Dict, Any
+
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-import pymongo
-from datetime import datetime
-import requests
+import aiohttp
+import motor.motor_asyncio
+import logging
+import signal
 
-# 配置路径
+# -----------------------
+# 配置（ENV 或默认）
+# -----------------------
 CONFIG_PATH = os.getenv("CONFIG_PATH", "/app/config.json")
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017/tglogs")
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017")
+MONGO_DBNAME = os.getenv("MONGO_DBNAME", "tglogs")
 API_URL = os.getenv("API_URL", "http://api:3000")
-
-# Telegram API 配置（优先从配置文件读取，其次 ENV）
 ENV_API_ID = int(os.getenv("API_ID", "0"))
 ENV_API_HASH = os.getenv("API_HASH", "")
 SESSION_PATH = os.getenv("SESSION_PATH", "/app/session/telegram")
+SESSION_STRING = os.getenv("SESSION_STRING", "").strip()
 
-# MongoDB 连接
-mongo_client = pymongo.MongoClient(MONGO_URL)
-db = mongo_client["tglogs"]
+# 并发限制（可调）
+AI_CONCURRENCY = int(os.getenv("AI_CONCURRENCY", "2"))
+ALERT_CONCURRENCY = int(os.getenv("ALERT_CONCURRENCY", "4"))
+
+# config reload interval (秒)
+CONFIG_RELOAD_INTERVAL = float(os.getenv("CONFIG_RELOAD_INTERVAL", "3.0"))
+
+# -----------------------
+# 日志
+# -----------------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("tg_monitor")
+
+# -----------------------
+# 全局资源（异步安全）
+# -----------------------
+mongo_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL)
+db = mongo_client[MONGO_DBNAME]
 logs_collection = db["logs"]
 
-print("✅ MongoDB 已连接")
+# aiohttp session will be created on loop start
+http_session: Optional[aiohttp.ClientSession] = None
 
-def load_config():
-    """加载配置文件"""
+# config cache and compiled regex
+CONFIG_CACHE: Dict[str, Any] = {}
+CONFIG_MTIME = 0.0
+COMPILED_ALERT_REGEX: List[re.Pattern] = []
+
+# async semaphores to limit concurrency for heavy tasks
+ai_semaphore = asyncio.Semaphore(AI_CONCURRENCY)
+alert_semaphore = asyncio.Semaphore(ALERT_CONCURRENCY)
+
+# shutdown event
+SHUTDOWN = asyncio.Event()
+
+
+# -----------------------
+# default config helper
+# -----------------------
+def default_config():
+    return {
+        "telegram": {"api_id": ENV_API_ID or 0, "api_hash": ENV_API_HASH or ""},
+        "keywords": [],
+        "channels": [],
+        "alert_keywords": [],
+        "alert_regex": [],
+        "alert_target": "me",
+        "log_all_messages": False,
+        "ai_analysis": {
+            "ai_trigger_enabled": False,
+            "ai_trigger_users": []
+        }
+    }
+
+
+# -----------------------
+# async-safe config loader (only reloads when file mtime changes)
+# -----------------------
+def load_config_sync():
+    """Synchronous file read + json load but called rarely by background task.
+       We cache result in CONFIG_CACHE for message handler to use without IO.
+    """
+    global CONFIG_CACHE, CONFIG_MTIME, COMPILED_ALERT_REGEX
     try:
         if not os.path.exists(CONFIG_PATH):
-            print(f"⚠️  配置文件不存在: {CONFIG_PATH}")
-            return {
-                "keywords": [],
-                "channels": [],
-                "alert_keywords": [],
-                "alert_regex": [],
-                "alert_target": ""
-            }
-        
+            CONFIG_CACHE = default_config()
+            CONFIG_MTIME = 0.0
+            COMPILED_ALERT_REGEX = []
+            logger.warning("配置文件不存在: %s，使用默认配置", CONFIG_PATH)
+            return
+
+        mtime = os.path.getmtime(CONFIG_PATH)
+        if CONFIG_CACHE and mtime == CONFIG_MTIME:
+            return  # no change
+
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            config = json.load(f)
-            return config
+            cfg = json.load(f)
+
+        # normalize fields with defaults
+        base = default_config()
+        base.update(cfg or {})
+        CONFIG_CACHE = base
+        CONFIG_MTIME = mtime
+
+        # compile regex patterns
+        patterns = CONFIG_CACHE.get("alert_regex", []) or []
+        COMPILED_ALERT_REGEX = []
+        for p in patterns:
+            try:
+                COMPILED_ALERT_REGEX.append(re.compile(p, re.IGNORECASE))
+            except re.error:
+                logger.warning("无效的正则，跳过: %s", p)
+
+        logger.info("配置已加载/更新：keywords=%d alert_keywords=%d regex=%d channels=%d",
+                    len(CONFIG_CACHE.get("keywords", [])),
+                    len(CONFIG_CACHE.get("alert_keywords", [])),
+                    len(COMPILED_ALERT_REGEX),
+                    len(CONFIG_CACHE.get("channels", [])))
     except Exception as e:
-        print(f"❌ 加载配置失败: {e}")
-        return {
-            "keywords": [],
-            "channels": [],
-            "alert_keywords": [],
-            "alert_regex": [],
-            "alert_target": ""
-        }
+        logger.exception("加载配置失败: %s", e)
+        CONFIG_CACHE = default_config()
+        COMPILED_ALERT_REGEX = []
 
-def check_keywords(text, keywords):
-    """检查文本是否包含关键词"""
-    for keyword in keywords:
-        if keyword.lower() in text.lower():
-            return keyword
-    return None
 
-def check_regex(text, patterns):
-    """检查文本是否匹配正则表达式"""
-    for pattern in patterns:
-        try:
-            if re.search(pattern, text, re.IGNORECASE):
-                return pattern
-        except re.error:
-            print(f"⚠️  正则表达式错误: {pattern}")
-    return None
+async def config_reloader_task():
+    """后台任务：定期检查配置文件是否变化并加载（同步 IO，但很低频）"""
+    loop = asyncio.get_event_loop()
+    while not SHUTDOWN.is_set():
+        # run synchronous loader on loop's executor to avoid blocking event loop if file read is slow
+        await loop.run_in_executor(None, load_config_sync)
+        await asyncio.wait([SHUTDOWN.wait()], timeout=CONFIG_RELOAD_INTERVAL)
 
-async def send_alert(keyword, message, sender, channel, channel_id, message_id):
-    """发送告警到 API"""
+
+# -----------------------
+# HTTP helpers (aiohttp)
+# -----------------------
+async def post_json(url: str, payload: dict, timeout: int = 10) -> Optional[dict]:
+    global http_session
+    if http_session is None:
+        raise RuntimeError("HTTP session not initialized")
     try:
-        data = {
+        async with http_session.post(url, json=payload, timeout=timeout) as resp:
+            text = await resp.text()
+            if resp.status == 200:
+                try:
+                    return await resp.json()
+                except Exception:
+                    return {"raw": text}
+            else:
+                logger.warning("POST %s 返回 %s: %s", url, resp.status, text[:200])
+                return None
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception("POST 请求失败: %s %s", url, e)
+        return None
+
+
+# -----------------------
+# async DB write
+# -----------------------
+async def save_log_async(channel, channel_id, sender, message, keywords, message_id):
+    try:
+        doc = {
+            "channel": channel,
+            "channelId": str(channel_id),
+            "sender": sender,
+            "message": message,
+            "keywords": keywords if isinstance(keywords, list) else [keywords],
+            "time": datetime.utcnow(),
+            "messageId": message_id,
+            "alerted": bool(keywords),
+            "ai_analyzed": False
+        }
+        res = await logs_collection.insert_one(doc)
+        return str(res.inserted_id)
+    except Exception as e:
+        logger.exception("保存日志失败: %s", e)
+        return None
+
+
+# -----------------------
+# AI 分析（异步队列）
+# -----------------------
+async def trigger_ai_analysis_async(sender_id, client, log_id=None):
+    """通过异步 HTTP 调用内部 AI 接口，并把结果发回给用户（限制并发）"""
+    async with ai_semaphore:
+        try:
+            payload = {"trigger_type": "user_message"}
+            if log_id:
+                payload["log_id"] = log_id
+            logger.info("触发 AI 分析: log_id=%s", log_id)
+            result = await post_json(f"{API_URL}/api/internal/ai/analyze-now", payload, timeout=120)
+            if not result:
+                logger.warning("AI 分析无结果")
+                return
+            if result.get("success"):
+                analysis = result.get("analysis", {})
+                summary = (
+                    "🤖 AI 分析结果\n\n"
+                    f"📊 分析消息数: {result.get('message_count', 0)}\n\n"
+                    f"整体情感: {analysis.get('sentiment', 'unknown')} (score={analysis.get('sentiment_score', 0)})\n\n"
+                    f"风险等级: {analysis.get('risk_level', 'unknown')}\n\n"
+                    f"摘要:\n{analysis.get('summary', '无')}\n\n"
+                    f"关键词: {', '.join(analysis.get('keywords', []))}"
+                )
+                try:
+                    # 发送给用户（非阻塞）
+                    await client.send_message(int(sender_id), summary)
+                    logger.info("AI 分析结果已发送给 %s", sender_id)
+                    return True
+                except Exception as e:
+                    logger.exception("发送 AI 结果失败: %s", e)
+            else:
+                logger.warning("AI 分析返回失败: %s", result.get("error"))
+        except Exception as e:
+            logger.exception("触发 AI 分析异常: %s", e)
+        return False
+
+
+# -----------------------
+# 告警发送（异步）
+# -----------------------
+async def send_alert_async(keyword, message, sender, channel, channel_id, message_id):
+    async with alert_semaphore:
+        payload = {
             "keyword": keyword,
             "message": message,
             "from": sender,
@@ -79,341 +238,212 @@ async def send_alert(keyword, message, sender, channel, channel_id, message_id):
             "channelId": str(channel_id),
             "messageId": message_id
         }
-        
-        response = requests.post(
-            f"{API_URL}/api/alert/push",
-            json=data,
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            print(f"✅ 告警已发送: {keyword}")
+        logger.info("发送告警到 API: %s", keyword)
+        result = await post_json(f"{API_URL}/api/alert/push", payload, timeout=10)
+        if result is not None:
+            logger.info("告警发送成功: %s", keyword)
         else:
-            print(f"⚠️  告警发送失败: {response.status_code}")
-    except Exception as e:
-        print(f"❌ 发送告警失败: {e}")
+            logger.warning("告警发送失败: %s", keyword)
 
-async def trigger_ai_analysis(sender_id, client, log_id=None):
-    """触发 AI 分析并发送结果给指定用户"""
-    try:
-        # 调用内部 AI 分析接口（不需要认证）
-        # 增加超时时间到 120 秒，因为 AI 分析可能需要较长时间
-        payload = {"trigger_type": "user_message"}
-        if log_id:
-            payload["log_id"] = log_id  # 传递日志ID，只分析这条消息
-        
-        response = requests.post(
-            f"{API_URL}/api/internal/ai/analyze-now",
-            json=payload,
-            timeout=120
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("success"):
-                analysis = result.get("analysis", {})
-                
-                # 调试：打印完整的分析结果
-                print(f"🔍 分析结果详情: {analysis}")
-                
-                summary = f"""
-🤖 AI 分析结果
 
-📊 统计信息:
-- 分析消息数: {result.get('message_count', 0)}
-
-😊/😐/😔 情感分析:
-- 整体情感: {analysis.get('sentiment', 'unknown')}
-- 情感分数: {analysis.get('sentiment_score', 0)}
-
-⚠️ 风险评估:
-- 风险等级: {analysis.get('risk_level', 'unknown')}
-
-📝 内容摘要:
-{analysis.get('summary', '无法生成摘要')}
-
-🔑 关键词:
-{', '.join(analysis.get('keywords', []))}
-"""
-                
-                # 发送分析结果给用户
-                try:
-                    # 尝试通过用户 ID 发送
-                    await client.send_message(int(sender_id), summary)
-                    print(f"✅ AI 分析结果已发送给用户 {sender_id}")
-                except Exception as e:
-                    print(f"❌ 发送分析结果失败: {e}")
-            else:
-                error_msg = result.get("error", "未知错误")
-                print(f"❌ AI 分析失败: {error_msg}")
-        else:
-            print(f"❌ AI 分析请求失败: {response.status_code}")
-    except Exception as e:
-        print(f"❌ 触发 AI 分析异常: {e}")
-
-async def save_log(channel, channel_id, sender, message, keywords, message_id):
-    """保存日志到 MongoDB，返回插入的文档 ID"""
-    try:
-        log = {
-            "channel": channel,
-            "channelId": str(channel_id),
-            "sender": sender,
-            "message": message,
-            "keywords": keywords if isinstance(keywords, list) else [keywords],
-            "time": datetime.now(),
-            "messageId": message_id,
-            "alerted": len(keywords) > 0 if isinstance(keywords, list) else bool(keywords),
-            "ai_analyzed": False  # 新消息默认标记为未分析
-        }
-        
-        result = logs_collection.insert_one(log)
-        return str(result.inserted_id)
-        print(f"💾 日志已保存: {channel}")
-        return None
-    except Exception as e:
-        print(f"❌ 保存日志失败: {e}")
-        return None
-
+# -----------------------
+# 消息处理器（非阻塞 / 轻量）
+# -----------------------
 async def message_handler(event, client):
-    """消息处理器"""
     try:
-        # 加载配置
-        config = load_config()
+        # use cached config only (no IO here)
+        config = CONFIG_CACHE or default_config()
         log_all = bool(config.get("log_all_messages", False))
-        
-        # 获取消息内容
+
         text = event.raw_text or ""
         if not text:
             return
-        
-        # 获取频道信息
+
         chat = await event.get_chat()
         channel_id = str(chat.id)
-        channel_name = getattr(chat, 'title', None) or getattr(chat, 'username', None) or 'Unknown'
-        
-        # 检查是否监控该频道
-        monitored_channels = config.get("channels", [])
+        channel_name = getattr(chat, "title", None) or getattr(chat, "username", None) or "Unknown"
+
+        # check channel filter
+        monitored_channels = config.get("channels", []) or []
         if monitored_channels and channel_id not in monitored_channels:
             return
-        
-        # 获取发送者信息（优先显示真实名字，其次 username，最后 ID）
-        sender = "Unknown"
+
+        # sender info
+        sender_entity = None
         try:
             sender_entity = await event.get_sender()
         except Exception:
             sender_entity = None
 
+        sender = "Unknown"
         if sender_entity:
-            first_name = getattr(sender_entity, 'first_name', None)
-            last_name = getattr(sender_entity, 'last_name', None)
-            username = getattr(sender_entity, 'username', None)
-            
-            # 优先级：真实名字 > @username > ID
-            full_name = ' '.join([n for n in [first_name, last_name] if n]) if (first_name or last_name) else None
-            
+            first_name = getattr(sender_entity, "first_name", None)
+            last_name = getattr(sender_entity, "last_name", None)
+            username = getattr(sender_entity, "username", None)
+            full_name = " ".join([n for n in [first_name, last_name] if n]) if (first_name or last_name) else None
             if full_name:
-                # 如果有真实名字，显示 "真实名字 (@username)" 或仅 "真实名字"
                 sender = f"{full_name} (@{username})" if username else full_name
             elif username:
                 sender = f"@{username}"
             else:
-                sender = str(getattr(sender_entity, 'id', 'Unknown'))
+                sender = str(getattr(sender_entity, "id", "Unknown"))
         else:
-            sid = getattr(event, 'sender_id', None)
-            if sid:
-                sender = str(sid)
-            else:
-                sender = channel_name or "Unknown"
-        
-        # 获取发送者的 ID（用于固定用户触发检查和 AI 分析返回）
+            sid = getattr(event, "sender_id", None)
+            sender = str(sid) if sid else channel_name
+
         sender_id = None
         if sender_entity:
-            sender_id = getattr(sender_entity, 'id', None)
+            sender_id = getattr(sender_entity, "id", None)
         if not sender_id:
-            sender_id = getattr(event, 'sender_id', None)
-        
-        # 检查是否为固定用户触发 AI 分析
+            sender_id = getattr(event, "sender_id", None)
+
+        # ai trigger users normalize
         ai_trigger_enabled = config.get("ai_analysis", {}).get("ai_trigger_enabled", False)
-        ai_trigger_users = config.get("ai_analysis", {}).get("ai_trigger_users", [])
-        
-        # 确保 ai_trigger_users 是列表
+        ai_trigger_users = config.get("ai_analysis", {}).get("ai_trigger_users", []) or []
         if isinstance(ai_trigger_users, str):
-            ai_trigger_users = [u.strip() for u in ai_trigger_users.split('\n') if u.strip()]
-        
+            ai_trigger_users = [u.strip() for u in ai_trigger_users.splitlines() if u.strip()]
+
         is_trigger_user = False
         if ai_trigger_enabled and ai_trigger_users and sender_id:
-            # 获取发送者的完整名字
             full_name = None
             if sender_entity:
-                first_name = getattr(sender_entity, 'first_name', None)
-                last_name = getattr(sender_entity, 'last_name', None)
-                full_name = ' '.join([n for n in [first_name, last_name] if n]) if (first_name or last_name) else None
-            
-            # 检查发送者是否在固定用户列表中（支持用户名、显示名、ID）
+                first_name = getattr(sender_entity, "first_name", None)
+                last_name = getattr(sender_entity, "last_name", None)
+                full_name = " ".join([n for n in [first_name, last_name] if n]) if (first_name or last_name) else None
+
             sender_triggers = [
-                str(sender_id),  # 数字 ID
-                f"@{getattr(sender_entity, 'username', '')}" if sender_entity and getattr(sender_entity, 'username', None) else None,  # @username
-                full_name,  # 真实名字
-                sender  # 完整的 sender 字符串
+                str(sender_id),
+                f"@{getattr(sender_entity, 'username', '')}" if sender_entity and getattr(sender_entity, "username", None) else None,
+                full_name,
+                sender
             ]
-            
-            # 清理 None 值
             sender_triggers = [str(s) for s in sender_triggers if s]
-            
-            print(f"🔍 固定用户检查: 触发用户列表={ai_trigger_users}, 当前发送者={sender}, 发送者ID={sender_id}, 候选匹配列表={sender_triggers}")
-            
-            for trigger_user in ai_trigger_users:
-                trigger_user = trigger_user.strip()
-                if trigger_user in sender_triggers:
-                    print(f"✅ 固定用户 {sender} 匹配成功，将触发 AI 分析（匹配值: {trigger_user}）")
+            for trigger in ai_trigger_users:
+                if str(trigger).strip() in sender_triggers:
                     is_trigger_user = True
                     break
-            
-            if not is_trigger_user:
-                print(f"⏭️  发送者 {sender} 不在固定用户列表中")
-        
-        # 检查普通关键词
-        matched_keywords = []
-        for keyword in config.get("keywords", []):
-            if keyword.lower() in text.lower():
-                matched_keywords.append(keyword)
-        
-        # 检查告警关键词
+
+        # keyword checks (cheap)
+        matched_keywords = [k for k in (config.get("keywords") or []) if k.lower() in text.lower()]
+
+        # alert keywords (first-match)
         alert_keyword = None
-        for keyword in config.get("alert_keywords", []):
+        for keyword in (config.get("alert_keywords") or []):
             if keyword.lower() in text.lower():
                 alert_keyword = keyword
                 matched_keywords.append(keyword)
                 break
-        
-        # 检查正则表达式
+
+        # compiled regex (precompiled at config load)
         if not alert_keyword:
-            for pattern in config.get("alert_regex", []):
-                try:
-                    if re.search(pattern, text, re.IGNORECASE):
-                        alert_keyword = pattern
-                        matched_keywords.append(f"regex:{pattern}")
-                        break
-                except re.error:
-                    pass
-        
-        # 如果关键词命中或开启全量记录，则保存日志
+            for pattern in COMPILED_ALERT_REGEX:
+                if pattern.search(text):
+                    alert_keyword = pattern.pattern
+                    matched_keywords.append(f"regex:{pattern.pattern}")
+                    break
+
+        # save log if needed (async)
         if matched_keywords or log_all:
-            log_id = await save_log(
-                channel_name,
-                channel_id,
-                sender,
-                text,
-                matched_keywords if matched_keywords else [],
-                event.id
-            )
+            log_id = await save_log_async(channel_name, channel_id, sender, text, matched_keywords or [], event.id)
             if matched_keywords:
-                print(f"🎯 监控触发 | 频道: {channel_name} | 关键词: {matched_keywords}")
+                logger.info("监控触发 | %s | %s", channel_name, matched_keywords)
             elif log_all:
-                print(f"📝 已记录消息（全量）| 频道: {channel_name}")
-            
-            # 如果是固定用户，在保存日志后触发 AI 分析
+                logger.info("已记录消息（全量）| %s", channel_name)
+
+            # trigger AI analysis (async, limited)
             if is_trigger_user and log_id:
-                asyncio.create_task(trigger_ai_analysis(sender_id, client, log_id))
-            
-            # 如果有告警关键词，发送告警
+                # schedule but don't await; concurrency controlled inside function
+                asyncio.create_task(trigger_ai_analysis_async(sender_id, client, log_id))
+
+            # send alert (async)
             if alert_keyword:
-                await send_alert(
-                    alert_keyword,
-                    text,
-                    sender,
-                    channel_name,
-                    channel_id,
-                    event.id
-                )
-                
-                # 发送到 Telegram 目标：优先使用配置的 alert_target，否则发到“保存的消息”（me）
+                asyncio.create_task(send_alert_async(alert_keyword, text, sender, channel_name, channel_id, event.id))
+
+                # send telegram alert message (non-blocking)
                 try:
                     target = (config.get("alert_target") or "me").strip() or "me"
-                    # 将纯数字/负数字字符串转换为整数 chat_id（支持 -100... 群/频道）
                     def _normalize_target(t):
                         ts = str(t).strip()
-                        if (ts.isdigit()) or (ts.startswith('-') and ts[1:].isdigit()):
+                        if (ts.isdigit()) or (ts.startswith("-") and ts[1:].isdigit()):
                             try:
                                 return int(ts)
                             except Exception:
                                 return ts
                         return ts
-
                     target_id = _normalize_target(target)
-                    alert_message = f"""⚠️ 关键词告警触发
-
-来源：{channel_name} ({channel_id})
-发送者：{sender}
-关键词：{alert_keyword}
-时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-消息内容：
-{text[:500]}{'...' if len(text) > 500 else ''}
-
-👉 跳转链接：t.me/c/{channel_id.replace('-100', '')}/{event.id}"""
+                    alert_message = (
+                        f"⚠️ 关键词告警触发\n\n来源：{channel_name} ({channel_id})\n发送者：{sender}\n关键词：{alert_keyword}\n时间：{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}\n\n消息内容：\n{text[:500]}{'...' if len(text) > 500 else ''}\n"
+                    )
                     await client.send_message(target_id, alert_message)
-                    print(f"📱 告警已发送到 Telegram: {target}")
-                except Exception as e:
-                    print(f"⚠️  发送 Telegram 消息失败: {e}")
-    
-    except Exception as e:
-        print(f"❌ 处理消息失败: {e}")
+                    logger.info("告警已发送到 Telegram: %s", target)
+                except Exception:
+                    logger.exception("发送 Telegram 告警失败")
+    except Exception:
+        logger.exception("处理消息失败")
 
+
+# -----------------------
+# main 启动
+# -----------------------
 async def main():
-    """主函数"""
-    print("🚀 正在启动 Telegram 监听服务...")
-    
-    # 加载配置并读取 API 凭证
-    config = load_config()
-    cfg_api_id = int(str(config.get("telegram", {}).get("api_id", ENV_API_ID or 0)) or 0)
-    cfg_api_hash = str(config.get("telegram", {}).get("api_hash", ENV_API_HASH or ""))
-    cfg_session_string = (
-        str(config.get("telegram", {}).get("session_string", "")).strip()
-        or os.getenv("SESSION_STRING", "").strip()
-    )
+    global http_session
+
+    # initial config load (sync call on startup)
+    await asyncio.get_event_loop().run_in_executor(None, load_config_sync)
+
+    cfg = CONFIG_CACHE or default_config()
+    cfg_api_id = int(str(cfg.get("telegram", {}).get("api_id", ENV_API_ID or 0)) or 0)
+    cfg_api_hash = str(cfg.get("telegram", {}).get("api_hash", ENV_API_HASH or ""))
 
     if cfg_api_id == 0 or not cfg_api_hash:
-        print("❌ 错误：未配置 API_ID/API_HASH。请在 Web 后台的‘配置’页面填写并保存，或设置环境变量 API_ID/API_HASH。")
-        print("📝 获取方式：https://my.telegram.org/apps")
+        logger.error("未配置 API_ID/API_HASH，请在配置文件或环境变量中填写")
         return
 
-    # 创建并启动客户端
-    if cfg_session_string:
-        print("🔐 使用会话类型: StringSession (来自配置/环境)")
-        client = TelegramClient(StringSession(cfg_session_string), cfg_api_id, cfg_api_hash)
+    # create aiohttp session
+    http_session = aiohttp.ClientSession()
+
+    # create telethon client
+    if SESSION_STRING:
+        client = TelegramClient(StringSession(SESSION_STRING), cfg_api_id, cfg_api_hash)
     else:
-        print(f"💾 使用会话类型: FileSession @ {SESSION_PATH}")
         client = TelegramClient(SESSION_PATH, cfg_api_id, cfg_api_hash)
+
     await client.start()
-
-    # 事件处理绑定
     client.add_event_handler(lambda e: message_handler(e, client), events.NewMessage())
-
-    # 获取当前用户信息
     me = await client.get_me()
-    print(f"✅ 已登录为: {me.username or me.first_name} (ID: {me.id})")
-    
-    # 显示监控信息
-    print(f"📊 监控配置:")
-    print(f"  - 关键词: {len(config.get('keywords', []))} 个")
-    print(f"  - 告警关键词: {len(config.get('alert_keywords', []))} 个")
-    print(f"  - 正则表达式: {len(config.get('alert_regex', []))} 个")
-    print(f"  - 监控频道: {len(config.get('channels', []))} 个")
-    print(f"  - 全量记录: {'开启' if config.get('log_all_messages') else '关闭'}")
-    
-    if not config.get('channels'):
-        print("⚠️  警告：未配置监控频道，将监控所有消息")
-    
-    print("✅ Telegram 监听服务已启动，等待消息...")
-    
-    # 保持运行
-    await client.run_until_disconnected()
+    logger.info("已登录为: %s (ID: %s)", getattr(me, "username", None) or getattr(me, "first_name", None), me.id)
+
+    # start config reloader background task
+    reloader = asyncio.create_task(config_reloader_task())
+
+    logger.info("Telegram 监听服务已启动，等待消息...")
+
+    # run until disconnected or shutdown requested
+    try:
+        await client.run_until_disconnected()
+    finally:
+        SHUTDOWN.set()
+        reloader.cancel()
+        await http_session.close()
+
+
+# graceful shutdown
+def _signal_handler(signame):
+    logger.info("收到退出信号 %s，准备关闭...", signame)
+    SHUTDOWN.set()
+
 
 if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    for s in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(s, lambda s=s: _signal_handler(s))
+        except NotImplementedError:
+            # Windows 上 loop.add_signal_handler 可能不可用
+            pass
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n👋 服务已停止")
-    except Exception as e:
-        print(f"❌ 服务异常: {e}")
+        loop.run_until_complete(main())
+    except Exception:
+        logger.exception("服务异常退出")
+    finally:
+        logger.info("服务已终止")
