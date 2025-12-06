@@ -180,92 +180,140 @@
     <script>
         const API_URL = '/api';
         
-        // 切换登录/注册表单
-        document.getElementById('showRegister').addEventListener('click', (e) => {
-            e.preventDefault();
+        // 切换登录/注册表单的函数
+        function showRegisterForm() {
             document.getElementById('loginForm').style.display = 'none';
             document.getElementById('registerForm').style.display = 'block';
             document.getElementById('showRegister').style.display = 'none';
             document.getElementById('showLoginLink').style.display = 'inline';
-        });
+            document.getElementById('errorMessage').style.display = 'none';
+        }
         
-        document.getElementById('showLoginLink').addEventListener('click', (e) => {
-            e.preventDefault();
+        function showLoginForm() {
             document.getElementById('loginForm').style.display = 'block';
             document.getElementById('registerForm').style.display = 'none';
             document.getElementById('showRegister').style.display = 'inline';
             document.getElementById('showLoginLink').style.display = 'none';
-        });
+            document.getElementById('errorMessage').style.display = 'none';
+        }
         
-        // 注册表单提交
-        document.getElementById('registerForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
+        // 等待 DOM 加载完成后绑定所有事件并初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            // 切换登录/注册表单
+            const showRegisterLink = document.getElementById('showRegister');
+            const showLoginLink = document.getElementById('showLoginLink');
             
-            const username = document.getElementById('reg_username').value;
-            const password = document.getElementById('reg_password').value;
-            const display_name = document.getElementById('reg_display_name').value;
-            const errorMessage = document.getElementById('errorMessage');
-            
-            try {
-                const response = await fetch(`${API_URL}/auth/register`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ username, password, display_name })
+            if (showRegisterLink) {
+                showRegisterLink.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    showRegisterForm();
                 });
-                
-                const data = await response.json();
-                
-                if (response.ok) {
-                    localStorage.setItem('token', data.token);
-                    localStorage.setItem('username', data.username);
-                    localStorage.setItem('userId', data.userId || '');
-                    showToast('注册成功！', true);
-                    setTimeout(() => {
-                        window.location.href = 'dashboard.html';
-                    }, 500);
-                } else {
-                    errorMessage.textContent = data.error || '注册失败';
-                    errorMessage.style.display = 'block';
-                }
-            } catch (error) {
-                errorMessage.textContent = '网络错误，请稍后重试';
-                errorMessage.style.display = 'block';
             }
-        });
-        
-        // 登录表单提交
-        document.getElementById('loginForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
             
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-            const errorMessage = document.getElementById('errorMessage');
-            
-            try {
-                const response = await fetch(`${API_URL}/auth/login`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ username, password })
+            if (showLoginLink) {
+                showLoginLink.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    showLoginForm();
                 });
-                
-                const data = await response.json();
-                
-                if (response.ok) {
-                    localStorage.setItem('token', data.token);
-                    localStorage.setItem('username', data.username);
-                    localStorage.setItem('userId', data.userId || '');
-                    window.location.href = 'dashboard.html';
-                } else {
-                    errorMessage.textContent = data.error || '登录失败';
-                    errorMessage.style.display = 'block';
+            }
+            
+            // 注册表单提交
+            const registerForm = document.getElementById('registerForm');
+            if (registerForm) {
+                registerForm.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    
+                    const username = document.getElementById('reg_username').value;
+                    const password = document.getElementById('reg_password').value;
+                    const display_name = document.getElementById('reg_display_name').value;
+                    const errorMessage = document.getElementById('errorMessage');
+                    
+                    try {
+                        const response = await fetch(`${API_URL}/auth/register`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ username, password, display_name })
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (response.ok) {
+                            localStorage.setItem('token', data.token);
+                            localStorage.setItem('username', data.username);
+                            localStorage.setItem('userId', data.userId || '');
+                            showToast('注册成功！', true);
+                            setTimeout(() => {
+                                window.location.href = 'dashboard.html';
+                            }, 500);
+                        } else {
+                            errorMessage.textContent = data.error || '注册失败';
+                            errorMessage.style.display = 'block';
+                        }
+                    } catch (error) {
+                        errorMessage.textContent = '网络错误，请稍后重试';
+                        errorMessage.style.display = 'block';
+                    }
+                });
+            }
+            
+            // 登录表单提交
+            const loginForm = document.getElementById('loginForm');
+            if (loginForm) {
+                loginForm.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    
+                    const username = document.getElementById('username').value;
+                    const password = document.getElementById('password').value;
+                    const errorMessage = document.getElementById('errorMessage');
+                    
+                    try {
+                        const response = await fetch(`${API_URL}/auth/login`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ username, password })
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (response.ok) {
+                            localStorage.setItem('token', data.token);
+                            localStorage.setItem('username', data.username);
+                            localStorage.setItem('userId', data.userId || '');
+                            window.location.href = 'dashboard.html';
+                        } else {
+                            errorMessage.textContent = data.error || '登录失败';
+                            errorMessage.style.display = 'block';
+                        }
+                    } catch (error) {
+                        errorMessage.textContent = '网络错误，请稍后重试';
+                        errorMessage.style.display = 'block';
+                    }
+                });
+            }
+            
+            // 检查是否已登录
+            if (localStorage.getItem('token')) {
+                window.location.href = 'dashboard.html';
+                return;
+            }
+            
+            // 从URL参数读取用户名（用于切换用户）
+            const urlParams = new URLSearchParams(window.location.search);
+            const username = urlParams.get('username');
+            if (username) {
+                const usernameInput = document.getElementById('username');
+                if (usernameInput) {
+                    usernameInput.value = username;
                 }
-            } catch (error) {
-                errorMessage.textContent = '网络错误，请稍后重试';
-                errorMessage.style.display = 'block';
+                // 如果URL中有用户名，显示登录表单
+                showLoginForm();
+            } else {
+                // 页面加载时检查系统状态
+                checkSystemInit();
             }
         });
         
@@ -317,17 +365,6 @@
             }
         `;
         document.head.appendChild(style);
-            } catch (error) {
-                errorMessage.textContent = '网络错误，请稍后重试';
-                errorMessage.style.display = 'block';
-            }
-        });
-        
-        // 检查是否已登录
-        if (localStorage.getItem('token')) {
-            window.location.href = 'dashboard.html';
-            return;
-        }
         
         // 检查系统是否有用户（首次进入显示注册页面）
         async function checkSystemInit() {
@@ -337,10 +374,7 @@
                 
                 if (data.initialized) {
                     // 系统已初始化，有用户存在，显示登录表单
-                    document.getElementById('loginForm').style.display = 'block';
-                    document.getElementById('registerForm').style.display = 'none';
-                    document.getElementById('showRegister').style.display = 'inline';
-                    document.getElementById('showLoginLink').style.display = 'none';
+                    showLoginForm();
                 } else {
                     // 系统未初始化，没有用户，显示注册表单
                     document.getElementById('loginForm').style.display = 'none';
@@ -348,30 +382,18 @@
                     document.getElementById('showRegister').style.display = 'none';
                     document.getElementById('showLoginLink').style.display = 'none';
                     // 隐藏底部提示（因为是首次安装，没有默认账号）
-                    document.querySelector('.footer').style.display = 'none';
+                    const footer = document.querySelector('.footer');
+                    if (footer) {
+                        footer.style.display = 'none';
+                    }
                 }
             } catch (error) {
                 // 网络错误或服务未启动，默认显示登录表单
                 console.error('检查系统初始化状态失败:', error);
-                document.getElementById('loginForm').style.display = 'block';
-                document.getElementById('registerForm').style.display = 'none';
+                showLoginForm();
             }
         }
         
-        // 页面加载时检查系统状态
-        checkSystemInit();
-        
-        // 从URL参数读取用户名（用于切换用户）
-        const urlParams = new URLSearchParams(window.location.search);
-        const username = urlParams.get('username');
-        if (username) {
-            document.getElementById('username').value = username;
-            // 如果URL中有用户名，显示登录表单
-            document.getElementById('loginForm').style.display = 'block';
-            document.getElementById('registerForm').style.display = 'none';
-            document.getElementById('showRegister').style.display = 'inline';
-            document.getElementById('showLoginLink').style.display = 'none';
-        }
     </script>
 </body>
 </html>
