@@ -1,5 +1,6 @@
 # monitor_async.py
 import os
+from mongo_index_init import ensure_indexes
 import json
 import re
 import asyncio
@@ -395,7 +396,11 @@ async def message_handler(event, client):
 # main 启动
 # -----------------------
 async def main():
+
     global http_session
+
+    # 自动建立 Mongo 索引（如果不存在）
+    ensure_indexes()
 
     # initial config load (sync call on startup)
     await asyncio.get_event_loop().run_in_executor(None, load_config_sync)
