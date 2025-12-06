@@ -14,7 +14,7 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 import aiohttp
 import motor.motor_asyncio
-from telethon.mongo_index_init import ensure_indexes
+from mongo_index_init import ensure_indexes
 
 # -----------------------
 # 配置（ENV 或默认）
