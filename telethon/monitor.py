@@ -5,6 +5,7 @@ import re
 import asyncio
 from datetime import datetime
 from typing import List, Optional, Dict, Any
+import psutil
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -190,6 +191,7 @@ async def save_log_async(channel, channel_id, sender, message, keywords, message
 # AI 分析（异步队列）
 # -----------------------
 async def trigger_ai_analysis_async(sender_id, client, log_id=None):
+    log_cpu_usage("AI分析开始")
     """通过异步 HTTP 调用内部 AI 接口，并把结果发回给用户（限制并发）"""
     async with ai_semaphore:
         try:
@@ -250,6 +252,7 @@ async def send_alert_async(keyword, message, sender, channel, channel_id, messag
 # 消息处理器（非阻塞 / 轻量）
 # -----------------------
 async def message_handler(event, client):
+    log_cpu_usage("消息处理开始")
     try:
         # use cached config only (no IO here)
         config = CONFIG_CACHE or default_config()
@@ -380,6 +383,7 @@ async def message_handler(event, client):
                     logger.exception("发送 Telegram 告警失败")
     except Exception:
         logger.exception("处理消息失败")
+    log_cpu_usage("消息处理结束")
 
 
 # -----------------------
