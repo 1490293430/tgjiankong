@@ -719,7 +719,16 @@ app.get('/api/logs', authMiddleware, async (req, res) => {
     
     const { page, pageSize, keyword, channelId } = value;
     
-    const query = { userId: req.user.userId }; // 添加用户ID过滤
+    // 构建查询条件：兼容旧数据（没有userId的），admin用户可以查看所有旧数据
+    const userIdObj = new mongoose.Types.ObjectId(req.user.userId);
+    const isAdmin = req.user.username === 'admin';
+    
+    // 如果是admin用户，可以查看自己的数据 + 没有userId的旧数据
+    // 其他用户只能查看自己的数据
+    const query = isAdmin 
+      ? { $or: [{ userId: userIdObj }, { userId: { $exists: false } }, { userId: null }] }
+      : { userId: userIdObj };
+    
     if (keyword) {
       // ✅ 清理正则表达式特殊字符（防止 ReDoS）
       const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -830,6 +839,7 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
   // const startTime = Date.now();
   try {
     const userId = req.user.userId;
+    const username = req.user.username;
     const now = Date.now();
     
     // 检查用户缓存是否有效
@@ -843,17 +853,25 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
     
     // 并行执行所有查询以提高效率
     const userIdObj = new mongoose.Types.ObjectId(userId);
+    const isAdmin = username === 'admin';
+    
+    // 构建查询条件：兼容旧数据（没有userId的），admin用户可以查看所有旧数据
+    const userQuery = isAdmin 
+      ? { $or: [{ userId: userIdObj }, { userId: { $exists: false } }, { userId: null }] }
+      : { userId: userIdObj };
+    
     const [total, todayCount, alertedCount, channelStats] = await Promise.all([
-      Log.countDocuments({ userId: userIdObj }),
+      Log.countDocuments(userQuery),
       (() => {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        return Log.countDocuments({ userId: userIdObj, time: { $gte: today } });
+        const todayQuery = { ...userQuery, time: { $gte: today } };
+        return Log.countDocuments(todayQuery);
       })(),
-      Log.countDocuments({ userId: userIdObj, alerted: true }),
+      Log.countDocuments({ ...userQuery, alerted: true }),
       Log.aggregate([
         {
-          $match: { userId: userIdObj }
+          $match: userQuery
         },
         {
           $group: {
@@ -1096,12 +1114,18 @@ async function sendEmail(emailConfig, subject, text) {
 app.get('/api/ai/summary', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
+    const username = req.user.username;
     const page = parseInt(req.query.page) || 1;
     const pageSize = parseInt(req.query.pageSize) || 10;
     const sentiment = req.query.sentiment || '';
     const riskLevel = req.query.riskLevel || '';
     
-    const query = { userId: new mongoose.Types.ObjectId(userId) };
+    // admin用户可以查看旧数据（没有userId的）
+    const userIdObj = new mongoose.Types.ObjectId(userId);
+    const isAdmin = username === 'admin';
+    const query = isAdmin 
+      ? { $or: [{ userId: userIdObj }, { userId: { $exists: false } }, { userId: null }] }
+      : { userId: userIdObj };
     if (sentiment) {
       query['analysis_result.sentiment'] = sentiment;
     }
@@ -1256,25 +1280,35 @@ app.get('/api/ai/stats', authMiddleware, async (req, res) => {
   // const startTime = Date.now();
   try {
     const userId = req.user.userId;
+    const username = req.user.username;
     const userIdObj = new mongoose.Types.ObjectId(userId);
+    
+    // admin用户可以查看旧数据（没有userId的）
+    const isAdmin = username === 'admin';
+    const userQuery = isAdmin 
+      ? { $or: [{ userId: userIdObj }, { userId: { $exists: false } }, { userId: null }] }
+      : { userId: userIdObj };
+    const logQuery = isAdmin 
+      ? { $or: [{ userId: userIdObj }, { userId: { $exists: false } }, { userId: null }], ai_analyzed: false }
+      : { userId: userIdObj, ai_analyzed: false };
     
     // const queryStartTime = Date.now();
     // 并行执行所有查询以提高效率
     const [total, totalMessagesAnalyzed, sentimentStats, riskStats, unanalyzedCount] = await Promise.all([
-      AISummary.countDocuments({ userId: userIdObj }),
+      AISummary.countDocuments(userQuery),
       AISummary.aggregate([
-        { $match: { userId: userIdObj } },
+        { $match: userQuery },
         { $group: { _id: null, total: { $sum: '$message_count' } } }
       ]),
       AISummary.aggregate([
-        { $match: { userId: userIdObj } },
+        { $match: userQuery },
         { $group: { _id: '$analysis_result.sentiment', count: { $sum: 1 } } }
       ]),
       AISummary.aggregate([
-        { $match: { userId: userIdObj } },
+        { $match: userQuery },
         { $group: { _id: '$analysis_result.risk_level', count: { $sum: 1 } } }
       ]),
-      Log.countDocuments({ userId: userIdObj, ai_analyzed: false })
+      Log.countDocuments(logQuery)
     ]);
     
     // const queryTime = Date.now() - queryStartTime;
@@ -1368,6 +1402,7 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
       // 使用配置中的最大消息数限制，避免token超限
       const maxMessages = config.ai_analysis?.max_messages_per_analysis || 500;
       
+      // 查询未分析的消息（不区分admin，因为这里是按userId查询的）
       const query = Log.find({ userId: userIdObj, ai_analyzed: false }).sort({ time: -1 }).limit(maxMessages);
       unanalyzedMessages = await query;
       

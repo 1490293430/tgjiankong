@@ -450,7 +450,6 @@
                 <span id="sseStatusText">连接中...</span>
             </div>
             <span>👤 <span id="username"></span></span>
-            <button class="btn-switch-user" onclick="showUserMenu()" style="margin-right: 10px; padding: 6px 12px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">切换用户</button>
             <button class="btn-logout" onclick="logout()">退出登录</button>
         </div>
     </div>
@@ -461,8 +460,7 @@
             <button class="nav-tab" onclick="switchTab('ai')">🤖 AI 分析</button>
             <button class="nav-tab" onclick="switchTab('logs')">📝 日志</button>
             <button class="nav-tab" onclick="switchTab('config')">⚙️ 配置</button>
-            <button class="nav-tab" onclick="switchTab('settings')">🔐 设置</button>
-            <button class="nav-tab" onclick="switchTab('users')">👥 用户管理</button>
+            <button class="nav-tab" onclick="switchTab('settings')">⚙️ 设置</button>
         </div>
         
         <!-- 仪表盘 -->
@@ -842,8 +840,9 @@
         <div id="settings" class="tab-content">
             <div id="settingsMessage" class="success-message"></div>
             
+            <!-- 修改密码 -->
             <div class="card">
-                <h2>修改密码</h2>
+                <h2>🔐 修改密码</h2>
                 <div class="form-group">
                     <label>原密码</label>
                     <input type="password" id="oldPassword">
@@ -858,31 +857,31 @@
                 </div>
                 <button class="btn btn-primary" onclick="changePassword()">🔐 修改密码</button>
             </div>
-        </div>
-        
-        <!-- 用户管理 -->
-        <div id="users" class="tab-content">
-            <div class="card" style="margin-bottom: 20px;">
-                <h2>创建新用户</h2>
-                <div class="form-group">
-                    <label>用户名</label>
-                    <input type="text" id="newUsername" placeholder="用户名（3-50个字符）">
-                </div>
-                <div class="form-group">
-                    <label>密码</label>
-                    <input type="password" id="newUserPassword" placeholder="密码（至少6位）">
-                </div>
-                <div class="form-group">
-                    <label>显示名称（可选）</label>
-                    <input type="text" id="newUserDisplayName" placeholder="显示名称">
-                </div>
-                <button class="btn btn-primary" onclick="createUser()">➕ 创建用户</button>
-            </div>
             
-            <div class="card">
-                <h2>用户列表</h2>
-                <div id="userList" style="margin-top: 20px;">
-                    <p style="text-align: center; color: #999;">加载中...</p>
+            <!-- 用户管理（仅管理员可见） -->
+            <div id="userManagementSection" style="display: none;">
+                <div class="card" style="margin-bottom: 20px; margin-top: 20px;">
+                    <h2>👥 创建新用户</h2>
+                    <div class="form-group">
+                        <label>用户名</label>
+                        <input type="text" id="newUsername" placeholder="用户名（3-50个字符）">
+                    </div>
+                    <div class="form-group">
+                        <label>密码</label>
+                        <input type="password" id="newUserPassword" placeholder="密码（至少6位）">
+                    </div>
+                    <div class="form-group">
+                        <label>显示名称（可选）</label>
+                        <input type="text" id="newUserDisplayName" placeholder="显示名称">
+                    </div>
+                    <button class="btn btn-primary" onclick="createUser()">➕ 创建用户</button>
+                </div>
+                
+                <div class="card">
+                    <h2>👥 用户列表</h2>
+                    <div id="userList" style="margin-top: 20px;">
+                        <p style="text-align: center; color: #999;">加载中...</p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1250,13 +1249,6 @@
         
         // 切换标签
         function switchTab(tabName) {
-            // 检查是否为非admin用户尝试访问用户管理
-            const currentUsername = localStorage.getItem('username') || '';
-            if (tabName === 'users' && currentUsername !== 'admin') {
-                showToast('权限不足：仅管理员可访问用户管理', false);
-                return;
-            }
-            
             document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
             
@@ -1279,8 +1271,12 @@
                 loadAISummaries();
             } else if (tabName === 'logs') {
                 loadLogs();
-            } else if (tabName === 'users') {
-                loadUsers();
+            } else if (tabName === 'settings') {
+                // 如果是admin用户，加载用户列表
+                const currentUsername = localStorage.getItem('username') || '';
+                if (currentUsername === 'admin') {
+                    loadUsers();
+                }
             }
         }
         
@@ -1634,11 +1630,90 @@
             }
         }
         
+        // 切换用户
+        async function showUserMenu() {
+            const token = checkAuth();
+            if (!token) return;
+            
+            const username = localStorage.getItem('username');
+            if (username !== 'admin') {
+                showToast('仅管理员可以切换用户', false);
+                return;
+            }
+            
+            try {
+                // 获取用户列表
+                const users = await apiRequest('/users');
+                
+                if (!users || users.length === 0) {
+                    showToast('没有可用用户', false);
+                    return;
+                }
+                
+                // 创建用户选择菜单
+                const menu = document.createElement('div');
+                menu.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border: 1px solid #ddd; border-radius: 8px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); z-index: 10000; min-width: 300px; max-width: 500px; max-height: 80vh; overflow-y: auto;';
+                menu.innerHTML = `
+                    <h2 style="margin: 0 0 15px 0; font-size: 18px;">选择用户</h2>
+                    <div style="max-height: 400px; overflow-y: auto;">
+                        ${users.map(user => `
+                            <div style="padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" 
+                                 onmouseover="this.style.background='#f5f5f5'" 
+                                 onmouseout="this.style.background='white'"
+                                 onclick="switchUser('${user._id}', '${user.username}')">
+                                <div>
+                                    <div style="font-weight: 500;">${user.username}</div>
+                                    <div style="font-size: 12px; color: #666;">${user.display_name || user.username}</div>
+                                </div>
+                                ${user.username === username ? '<span style="color: #27ae60;">当前用户</span>' : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                    <button onclick="this.parentElement.remove()" style="margin-top: 15px; width: 100%; padding: 8px; background: #95a5a6; color: white; border: none; border-radius: 4px; cursor: pointer;">取消</button>
+                `;
+                
+                // 关闭菜单的函数
+                menu.addEventListener('click', (e) => {
+                    if (e.target === menu || e.target.tagName === 'BUTTON') {
+                        if (e.target.textContent === '取消') {
+                            menu.remove();
+                        }
+                    }
+                });
+                
+                document.body.appendChild(menu);
+            } catch (error) {
+                showToast('获取用户列表失败: ' + (error.message || '未知错误'), false);
+            }
+        }
+        
+        // 切换到指定用户
+        async function switchUser(userId, username) {
+            try {
+                // 这里需要调用一个API来获取该用户的token
+                // 但由于安全原因，我们不能直接切换，需要重新登录
+                // 所以跳转到登录页面，并提示用户登录
+                if (confirm(`确定要切换到用户 "${username}" 吗？\n\n将跳转到登录页面，请使用该用户的账号密码登录。`)) {
+                    // 清除当前token
+                    localStorage.removeItem('token');
+                    localStorage.removeItem('username');
+                    localStorage.removeItem('userId');
+                    // 跳转到登录页面，可以预先填充用户名
+                    window.location.href = `index.html?username=${encodeURIComponent(username)}`;
+                }
+            } catch (error) {
+                showToast('切换用户失败: ' + (error.message || '未知错误'), false);
+            }
+        }
+        
         // 退出登录
         function logout() {
-            localStorage.removeItem('token');
-            localStorage.removeItem('username');
-            window.location.href = 'index.html';
+            if (confirm('确定要退出登录吗？')) {
+                localStorage.removeItem('token');
+                localStorage.removeItem('username');
+                localStorage.removeItem('userId');
+                window.location.href = 'index.html';
+            }
         }
         
         // 邮件/Webhook/AI 复选框事件
@@ -2072,17 +2147,14 @@
         
         loadCurrentUser();
         
-        // 检查是否为admin用户，如果不是则隐藏用户管理标签页
+        // 检查是否为admin用户，显示/隐藏用户管理部分
         const currentUsername = localStorage.getItem('username') || '';
-        const usersTab = document.querySelector('.nav-tab[onclick*="users"]');
-        const usersContent = document.getElementById('users');
-        if (usersTab && usersContent) {
-            if (currentUsername !== 'admin') {
-                usersTab.style.display = 'none';
-                usersContent.style.display = 'none';
+        const userManagementSection = document.getElementById('userManagementSection');
+        if (userManagementSection) {
+            if (currentUsername === 'admin') {
+                userManagementSection.style.display = 'block';
             } else {
-                usersTab.style.display = '';
-                usersContent.style.display = '';
+                userManagementSection.style.display = 'none';
             }
         }
         
@@ -2091,11 +2163,15 @@
         // 加载前端设置
         loadRefreshInterval();
         
-        // 恢复上次选中的标签页
-        const savedTab = localStorage.getItem('currentTab') || 'dashboard';
+        // 恢复上次选中的标签页（将旧的users标签页映射到settings）
+        let savedTab = localStorage.getItem('currentTab') || 'dashboard';
+        if (savedTab === 'users') {
+            savedTab = 'settings'; // 兼容旧版本，将users映射到settings
+        }
+        
         document.querySelectorAll('.nav-tab').forEach((tab, index) => {
             tab.classList.remove('active');
-            const tabNames = ['dashboard', 'ai', 'logs', 'config', 'settings', 'users'];
+            const tabNames = ['dashboard', 'ai', 'logs', 'config', 'settings'];
             if (tabNames[index] === savedTab) {
                 tab.classList.add('active');
             }
@@ -2105,7 +2181,7 @@
         if (savedTabElement) {
             savedTabElement.classList.add('active');
         } else {
-            // 如果保存的标签页不存在（比如非admin用户选择了users），则显示dashboard
+            // 如果保存的标签页不存在，则显示dashboard
             document.getElementById('dashboard').classList.add('active');
             document.querySelectorAll('.nav-tab')[0].classList.add('active');
         }
@@ -2122,8 +2198,11 @@
                 loadAISummaries();
             } else if (savedTab === 'logs') {
                 loadLogs();
-            } else if (savedTab === 'users') {
-                loadUsers();
+            } else if (savedTab === 'settings') {
+                // 如果是admin用户，加载用户列表
+                if (currentUsername === 'admin') {
+                    loadUsers();
+                }
             }
         }, 100);
         
