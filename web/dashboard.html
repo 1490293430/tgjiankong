@@ -453,36 +453,49 @@
         
         /* 模态弹窗样式 */
         .modal-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.5);
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            bottom: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            margin: 0 !important;
+            padding: 20px !important;
+            background: rgba(0, 0, 0, 0.6) !important;
             display: none !important;
-            align-items: center;
-            justify-content: center;
-            z-index: 100000;
+            flex-direction: column !important;
+            align-items: center !important;
+            justify-content: center !important;
+            z-index: 999999 !important;
             opacity: 0;
             visibility: hidden;
             pointer-events: none;
+            overflow-y: auto !important;
+            box-sizing: border-box !important;
         }
         
         .modal-overlay.show {
             display: flex !important;
-            opacity: 1;
-            visibility: visible;
-            pointer-events: auto;
+            opacity: 1 !important;
+            visibility: visible !important;
+            pointer-events: auto !important;
         }
         
         .modal-dialog {
-            background: white;
-            border-radius: 12px;
-            padding: 30px;
-            max-width: 450px;
-            width: 90%;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            position: relative !important;
+            background: white !important;
+            border-radius: 12px !important;
+            padding: 30px !important;
+            max-width: 450px !important;
+            width: calc(100% - 40px) !important;
+            max-height: calc(100vh - 40px) !important;
+            margin: 0 !important;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5) !important;
             animation: modalSlideIn 0.3s ease-out;
+            overflow-y: auto;
+            box-sizing: border-box !important;
+            flex-shrink: 0;
         }
         
         @keyframes modalSlideIn {
@@ -1040,7 +1053,7 @@
     <div id="toastNotification" class="toast-notification"></div>
     
     <!-- Telegram 登录模态弹窗 -->
-    <div id="telegramLoginModal" class="modal-overlay" style="display: none !important; visibility: hidden; opacity: 0; pointer-events: none;">
+    <div id="telegramLoginModal" class="modal-overlay">
         <div class="modal-dialog">
             <div class="modal-header">
                 <h3>📱 Telegram 首次登录</h3>
@@ -1083,7 +1096,7 @@
     </div>
     
     <!-- 清除日志确认模态框 -->
-    <div id="clearLogsModal" class="modal-overlay" style="display: none !important; visibility: hidden; opacity: 0; pointer-events: none;">
+    <div id="clearLogsModal" class="modal-overlay">
         <div class="modal-dialog">
             <div class="modal-header">
                 <h3>⚠️ 确认清除日志</h3>
@@ -1117,10 +1130,6 @@
         // 立即隐藏所有模态框（在页面加载时）
         (function() {
             document.querySelectorAll('.modal-overlay').forEach(modal => {
-                modal.style.display = 'none';
-                modal.style.visibility = 'hidden';
-                modal.style.opacity = '0';
-                modal.style.pointerEvents = 'none';
                 modal.classList.remove('show');
             });
         })();
@@ -1629,8 +1638,12 @@
         
         // 加载配置
         async function loadConfig() {
-            config = await apiRequest('/config');
-            if (config) {
+            try {
+                config = await apiRequest('/config');
+                if (!config) {
+                    console.warn('配置加载失败：返回值为空');
+                    return;
+                }
                 // Telegram API 凭证
                 document.getElementById('tgApiId').value = (config.telegram?.api_id ?? 0) || 0;
                 // 🔒 API Hash 不发送给前端，使用占位符
@@ -1697,6 +1710,12 @@
                 setTimeout(() => {
                     checkTelegramLoginStatus();
                 }, 500);
+            } else {
+                console.warn('配置加载失败：config 为空');
+            }
+            } catch (error) {
+                console.error('加载配置失败:', error);
+                showToast('❌ 加载配置失败：' + (error.message || '未知错误'), false);
             }
         }
         
@@ -1866,10 +1885,8 @@
             const modal = document.getElementById('clearLogsModal');
             if (modal) {
                 modal.classList.add('show');
-                modal.style.display = 'flex';
-                modal.style.visibility = 'visible';
-                modal.style.opacity = '1';
-                modal.style.pointerEvents = 'auto';
+                // 阻止页面滚动
+                document.body.style.overflow = 'hidden';
                 // 隐藏错误信息
                 const errorDiv = document.getElementById('clearLogsModalError');
                 if (errorDiv) {
@@ -1884,11 +1901,9 @@
             const modal = document.getElementById('clearLogsModal');
             if (modal) {
                 modal.classList.remove('show');
-                modal.style.display = 'none';
-                modal.style.visibility = 'hidden';
-                modal.style.opacity = '0';
-                modal.style.pointerEvents = 'none';
             }
+            // 恢复页面滚动
+            document.body.style.overflow = '';
         }
         
         // 确认清除日志
@@ -2488,12 +2503,15 @@
                 const userInfo = await apiRequest('/auth/me');
                 if (userInfo) {
                     localStorage.setItem('userId', userInfo.userId || '');
+                    localStorage.setItem('username', userInfo.username || '');
                     document.getElementById('username').textContent = userInfo.displayName || userInfo.username || 'Admin';
                 } else {
-                    document.getElementById('username').textContent = localStorage.getItem('username') || 'Admin';
+                    const username = localStorage.getItem('username') || 'Admin';
+                    document.getElementById('username').textContent = username;
                 }
             } catch (error) {
-                document.getElementById('username').textContent = localStorage.getItem('username') || 'Admin';
+                const username = localStorage.getItem('username') || 'Admin';
+                document.getElementById('username').textContent = username;
             }
         }
         
@@ -2536,10 +2554,6 @@
         // 确保所有模态框在页面初始化时都是隐藏的
         document.querySelectorAll('.modal-overlay').forEach(modal => {
             modal.classList.remove('show');
-            modal.style.display = 'none';
-            modal.style.visibility = 'hidden';
-            modal.style.opacity = '0';
-            modal.style.pointerEvents = 'none';
         });
         
         // 加载前端设置
@@ -2582,6 +2596,7 @@
                 loadLogs();
             } else if (savedTab === 'settings') {
                 // 如果是admin用户，加载用户列表
+                const currentUsername = localStorage.getItem('username');
                 if (currentUsername === 'admin') {
                     loadUsers();
                 }
@@ -2691,10 +2706,8 @@
             const modal = document.getElementById('telegramLoginModal');
             if (modal) {
                 modal.classList.add('show');
-                modal.style.display = 'flex';
-                modal.style.visibility = 'visible';
-                modal.style.opacity = '1';
-                modal.style.pointerEvents = 'auto';
+                // 确保模态框在屏幕中央
+                document.body.style.overflow = 'hidden';
             }
             
             // 聚焦到输入框
@@ -2714,11 +2727,10 @@
             const modal = document.getElementById('telegramLoginModal');
             if (modal) {
                 modal.classList.remove('show');
-                modal.style.display = 'none';
-                modal.style.visibility = 'hidden';
-                modal.style.opacity = '0';
-                modal.style.pointerEvents = 'none';
             }
+            
+            // 恢复页面滚动
+            document.body.style.overflow = '';
             
             // 重置状态
             telegramLoginStep = 0;
@@ -2937,10 +2949,6 @@
             // 确保所有模态框在页面加载时都是隐藏的
             document.querySelectorAll('.modal-overlay').forEach(modal => {
                 modal.classList.remove('show');
-                modal.style.display = 'none';
-                modal.style.visibility = 'hidden';
-                modal.style.opacity = '0';
-                modal.style.pointerEvents = 'none';
             });
             
             const modal = document.getElementById('telegramLoginModal');
