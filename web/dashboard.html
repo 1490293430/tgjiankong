@@ -483,6 +483,24 @@
             z-index: 999999 !important; /* 显示时使用高z-index */
         }
         
+        /* 清除日志模态框允许背景滚动 */
+        #clearLogsModal.modal-overlay.show {
+            pointer-events: none !important; /* 允许点击穿透到背景 */
+        }
+        
+        #clearLogsModal.modal-overlay.show .modal-dialog {
+            pointer-events: auto !important; /* 对话框内容可以交互 */
+        }
+        
+        /* Telegram 登录模态框允许背景滚动 */
+        #telegramLoginModal.modal-overlay.show {
+            pointer-events: none !important; /* 允许点击穿透到背景 */
+        }
+        
+        #telegramLoginModal.modal-overlay.show .modal-dialog {
+            pointer-events: auto !important; /* 对话框内容可以交互 */
+        }
+        
         .modal-dialog {
             position: relative !important;
             background: white !important;
@@ -980,10 +998,7 @@
         <!-- 日志 -->
         <div id="logs" class="tab-content">
             <div class="card">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                    <h2 style="margin: 0;">日志记录</h2>
-                    <button class="btn btn-danger" onclick="showClearLogsConfirm()">🗑️ 清除日志</button>
-                </div>
+                <h2>日志记录</h2>
                 <div class="form-group">
                     <input type="text" id="searchKeyword" placeholder="搜索关键词...">
                 </div>
@@ -995,6 +1010,10 @@
                     <button onclick="changePage(-1)">上一页</button>
                     <span class="page-info">第 <span id="currentPage">1</span> / <span id="totalPages">1</span> 页</span>
                     <button onclick="changePage(1)">下一页</button>
+                </div>
+                
+                <div style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #e0e0e0; text-align: center;">
+                    <button class="btn btn-danger" onclick="showClearLogsConfirm()">🗑️ 清除日志</button>
                 </div>
             </div>
         </div>
@@ -1883,9 +1902,6 @@
         function showClearLogsConfirm() {
             const modal = document.getElementById('clearLogsModal');
             if (modal) {
-                // 保存当前滚动位置
-                savedScrollPosition = window.pageYOffset || document.documentElement.scrollTop;
-                
                 // 移除内联隐藏样式
                 modal.style.display = '';
                 modal.style.visibility = '';
@@ -1894,14 +1910,7 @@
                 modal.style.zIndex = '';
                 modal.classList.add('show');
                 
-                // 阻止页面滚动并固定位置
-                document.body.style.overflow = 'hidden';
-                document.body.style.position = 'fixed';
-                document.body.style.top = `-${savedScrollPosition}px`;
-                document.body.style.width = '100%';
-                
-                // 确保模态框在屏幕中央（不随页面滚动）
-                window.scrollTo(0, 0);
+                // 不阻止页面滚动，允许用户滚动页面
                 
                 // 隐藏错误信息
                 const errorDiv = document.getElementById('clearLogsModalError');
@@ -1924,12 +1933,6 @@
                 modal.style.pointerEvents = 'none';
                 modal.style.zIndex = '-1';
             }
-            // 恢复页面滚动和位置
-            document.body.style.overflow = '';
-            document.body.style.position = '';
-            document.body.style.top = '';
-            document.body.style.width = '';
-            window.scrollTo(0, savedScrollPosition);
         }
         
         // 确认清除日志
@@ -2731,9 +2734,6 @@
             // 显示模态弹窗
             const modal = document.getElementById('telegramLoginModal');
             if (modal) {
-                // 保存当前滚动位置
-                savedScrollPosition = window.pageYOffset || document.documentElement.scrollTop;
-                
                 // 移除内联隐藏样式
                 modal.style.display = '';
                 modal.style.visibility = '';
@@ -2742,21 +2742,14 @@
                 modal.style.zIndex = '';
                 modal.classList.add('show');
                 
-                // 阻止页面滚动并固定位置
-                document.body.style.overflow = 'hidden';
-                document.body.style.position = 'fixed';
-                document.body.style.top = `-${savedScrollPosition}px`;
-                document.body.style.width = '100%';
-                
-                // 确保模态框在屏幕中央（不随页面滚动）
-                window.scrollTo(0, 0);
+                // 不阻止页面滚动，允许用户滚动页面
             }
             
-            // 聚焦到输入框（使用 preventScroll 防止滚动）
+            // 聚焦到输入框（允许自动滚动）
             setTimeout(() => {
                 const phoneInput = document.getElementById('modalTelegramPhone');
                 if (phoneInput) {
-                    phoneInput.focus({ preventScroll: true });
+                    phoneInput.focus();
                 }
             }, 100);
         }
@@ -2779,13 +2772,6 @@
                 modal.style.pointerEvents = 'none';
                 modal.style.zIndex = '-1';
             }
-            
-            // 恢复页面滚动和位置
-            document.body.style.overflow = '';
-            document.body.style.position = '';
-            document.body.style.top = '';
-            document.body.style.width = '';
-            window.scrollTo(0, savedScrollPosition);
             
             // 重置状态
             telegramLoginStep = 0;
@@ -2860,7 +2846,7 @@
                         document.getElementById('telegramModalStep2').style.display = 'block';
                         const codeInput = document.getElementById('modalTelegramCode');
                         if (codeInput) {
-                            codeInput.focus({ preventScroll: true });
+                            codeInput.focus();
                         }
                         confirmBtn.textContent = '确认';
                         showToast('✅ 验证码已发送到您的 Telegram 应用', true);
@@ -2924,7 +2910,7 @@
                         document.getElementById('telegramModalStep3').style.display = 'block';
                         const passwordInput = document.getElementById('modalTelegramPassword');
                         if (passwordInput) {
-                            passwordInput.focus({ preventScroll: true });
+                            passwordInput.focus();
                         }
                         confirmBtn.textContent = '确认';
                         errorDiv.textContent = '需要两步验证密码';
