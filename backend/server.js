@@ -834,7 +834,7 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
       fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
       console.log(`✅ 已更新全局配置文件中的 user_id 为: ${targetUser._id}`);
       
-      // 同步用户配置到全局配置文件（keywords, channels, alert_keywords, alert_regex, log_all_messages）
+      // 同步用户配置到全局配置文件（包括 Telegram API 配置）
       const userConfig = await loadUserConfig(targetUser._id.toString());
       if (userConfig) {
         const configToSync = {
@@ -845,10 +845,34 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
           log_all_messages: userConfig.log_all_messages || false
         };
         
-        // 更新全局配置，保留其他字段（如 telegram, alert_actions 等）
+        // 如果用户配置中有 Telegram API 配置，也同步到全局配置
+        if (userConfig.telegram && userConfig.telegram.api_id && userConfig.telegram.api_hash) {
+          configToSync.telegram = {
+            api_id: userConfig.telegram.api_id,
+            api_hash: userConfig.telegram.api_hash
+          };
+          console.log(`✅ 已同步用户的 Telegram API 配置到全局配置文件`);
+        }
+        
+        // 更新全局配置，保留其他字段（如 alert_actions 等）
         Object.assign(globalConfig, configToSync);
         fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
         console.log(`✅ 已同步用户配置到全局配置文件 (userId: ${targetUser._id})`);
+        
+        // 如果用户的 Telegram API 配置发生变化，需要重启 Telethon 服务
+        // 异步重启，不阻塞切换用户的响应
+        setTimeout(async () => {
+          try {
+            const restarted = await restartTelethonService();
+            if (restarted) {
+              console.log(`✅ Telethon 服务已重启，正在使用新用户配置 (userId: ${targetUser._id})`);
+            } else {
+              console.warn(`⚠️  Telethon 服务重启失败，请手动执行: docker compose restart telethon`);
+            }
+          } catch (error) {
+            console.error('重启 Telethon 服务时出错:', error);
+          }
+        }, 1000); // 延迟1秒，确保配置文件已写入
       }
     } catch (configError) {
       console.error('⚠️  更新全局配置文件失败（不影响切换用户）:', configError);
@@ -861,7 +885,8 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
       token, 
       username: targetUser.username,
       displayName: targetUser.display_name || targetUser.username,
-      userId: targetUser._id.toString()
+      userId: targetUser._id.toString(),
+      message: '切换用户成功。Telethon 服务正在重启以应用新配置，请稍候...'
     });
   } catch (error) {
     res.status(500).json({ error: '切换用户失败：' + error.message });
@@ -1693,8 +1718,8 @@ function validateInput(input, type = 'string') {
   return str;
 }
 
-// 安全执行 Docker 命令调用登录脚本（使用 Docker SDK）
-async function execTelethonLoginScript(command, args = []) {
+// 获取 Docker 连接和 Telethon 容器
+async function getDockerAndContainer() {
   const Docker = require('dockerode');
   const fs = require('fs');
   
@@ -1755,6 +1780,26 @@ async function execTelethonLoginScript(command, args = []) {
       `无法找到运行中的容器。请检查容器名称是否为 tg_listener 或 telethon，并确保容器正在运行。`
     ));
   }
+  
+  return { docker, container };
+}
+
+// 重启 Telethon 服务
+async function restartTelethonService() {
+  try {
+    const { container } = await getDockerAndContainer();
+    await container.restart();
+    console.log('✅ Telethon 服务已重启');
+    return true;
+  } catch (error) {
+    console.error('⚠️  重启 Telethon 服务失败:', error.message);
+    return false;
+  }
+}
+
+// 安全执行 Docker 命令调用登录脚本（使用 Docker SDK）
+async function execTelethonLoginScript(command, args = []) {
+  const { container } = await getDockerAndContainer();
   
   // 执行命令
   const execArgs = ['python3', '/app/login_helper.py', command, ...args];

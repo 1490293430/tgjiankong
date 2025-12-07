@@ -601,15 +601,30 @@ async def main():
     # create aiohttp session (需要先创建，才能获取用户配置)
     http_session = aiohttp.ClientSession()
 
+    # 首先加载配置文件，检查是否有 user_id
+    await asyncio.get_event_loop().run_in_executor(None, load_config_sync)
+    cfg = CONFIG_CACHE or default_config()
+    
+    # 优先从配置文件读取 user_id，如果没有则使用环境变量
+    active_user_id = cfg.get("user_id") or USER_ID
+    if active_user_id:
+        logger.info("📋 使用用户ID: %s (来源: %s)", active_user_id, "配置文件" if cfg.get("user_id") else "环境变量")
+    
     # 尝试从用户配置中获取 API_ID 和 API_HASH
     cfg_api_id = ENV_API_ID or 0
     cfg_api_hash = ENV_API_HASH or ""
     
-    # 如果设置了 USER_ID，尝试从后端 API 获取用户配置
-    if USER_ID:
+    # 如果配置文件中有 Telegram API 配置，优先使用
+    if cfg.get("telegram", {}).get("api_id") and cfg.get("telegram", {}).get("api_hash"):
+        cfg_api_id = int(str(cfg.get("telegram", {}).get("api_id", 0)) or "0")
+        cfg_api_hash = str(cfg.get("telegram", {}).get("api_hash", "") or "")
+        logger.info("✅ 从配置文件获取 Telegram API 配置")
+    
+    # 如果设置了用户ID，尝试从后端 API 获取用户配置（优先级最高）
+    if active_user_id and (cfg_api_id == 0 or not cfg_api_hash):
         try:
-            logger.info("从后端 API 获取用户配置 (USER_ID: %s)", USER_ID)
-            user_config_url = f"{API_URL}/api/internal/user-config/{USER_ID}"
+            logger.info("从后端 API 获取用户配置 (USER_ID: %s)", active_user_id)
+            user_config_url = f"{API_URL}/api/internal/user-config/{active_user_id}"
             user_config = await get_json(user_config_url, timeout=5)
             
             if user_config and user_config.get("telegram"):
@@ -619,20 +634,16 @@ async def main():
                 if user_api_id and user_api_hash:
                     cfg_api_id = int(str(user_api_id) or "0") or cfg_api_id
                     cfg_api_hash = str(user_api_hash or "") or cfg_api_hash
-                    logger.info("✅ 已从用户配置中获取 API_ID 和 API_HASH (USER_ID: %s)", USER_ID)
+                    logger.info("✅ 已从用户配置中获取 API_ID 和 API_HASH (USER_ID: %s)", active_user_id)
                 else:
-                    logger.warning("⚠️  用户配置中没有设置 API_ID/API_HASH，使用环境变量或全局配置 (USER_ID: %s)", USER_ID)
+                    logger.warning("⚠️  用户配置中没有设置 API_ID/API_HASH，使用环境变量或全局配置 (USER_ID: %s)", active_user_id)
             else:
-                logger.warning("⚠️  无法获取用户配置，使用环境变量或全局配置 (USER_ID: %s)", USER_ID)
+                logger.warning("⚠️  无法获取用户配置，使用环境变量或全局配置 (USER_ID: %s)", active_user_id)
         except Exception as e:
             logger.warning("⚠️  获取用户配置失败，使用环境变量或全局配置: %s", str(e))
     
     # 如果还没有获取到，尝试从全局配置文件读取
     if cfg_api_id == 0 or not cfg_api_hash:
-        # initial config load (sync call on startup)
-        await asyncio.get_event_loop().run_in_executor(None, load_config_sync)
-        
-        cfg = CONFIG_CACHE or default_config()
         if cfg_api_id == 0:
             cfg_api_id = int(str(cfg.get("telegram", {}).get("api_id", 0)) or "0") or ENV_API_ID or 0
         if not cfg_api_hash:
@@ -651,9 +662,9 @@ async def main():
     if SESSION_STRING:
         client = TelegramClient(StringSession(SESSION_STRING), cfg_api_id, cfg_api_hash)
     else:
-        # 如果设置了 USER_ID，使用用户特定的 session 文件
-        if USER_ID:
-            session_file = f"{SESSION_PATH}_{USER_ID}"
+        # 如果设置了用户ID，使用用户特定的 session 文件
+        if active_user_id:
+            session_file = f"{SESSION_PATH}_{active_user_id}"
             logger.info("使用用户专属 Session 文件: %s", session_file)
             client = TelegramClient(session_file, cfg_api_id, cfg_api_hash)
         else:
