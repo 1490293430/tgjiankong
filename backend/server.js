@@ -1886,6 +1886,7 @@ async function restartTelethonService() {
 async function execTelethonLoginScript(command, args = [], retryCount = 0) {
   const maxRetries = 3;
   const retryDelay = 2000; // 2秒
+  const timeout = 60000; // 60秒超时
   
   try {
     // 获取容器并等待就绪（如果正在重启）
@@ -1895,6 +1896,29 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0) {
     const execArgs = ['python3', '/app/login_helper.py', command, ...args];
     
     return new Promise((resolve, reject) => {
+      let timeoutId = null;
+      let streamEnded = false;
+      
+      // 设置超时
+      timeoutId = setTimeout(() => {
+        if (!streamEnded) {
+          streamEnded = true;
+          console.error(`❌ 执行脚本超时（${timeout/1000}秒）: ${command} ${args.join(' ')}`);
+          reject(new Error(
+            `脚本执行超时（${timeout/1000}秒）\n` +
+            `可能原因：\n` +
+            `1. 网络连接问题，无法连接到 Telegram 服务器\n` +
+            `2. 容器资源不足（内存或 CPU）\n` +
+            `3. Telegram API 响应慢\n\n` +
+            `建议：\n` +
+            `- 检查网络连接\n` +
+            `- 检查容器状态: docker ps\n` +
+            `- 查看容器日志: docker logs tg_listener\n` +
+            `- 检查容器资源使用: docker stats tg_listener`
+          ));
+        }
+      }, timeout);
+      
       // 创建 exec 实例
       container.exec({
         Cmd: execArgs,
@@ -1902,6 +1926,7 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0) {
         AttachStderr: true
       }, (err, exec) => {
         if (err) {
+          if (timeoutId) clearTimeout(timeoutId);
           // 检查是否是容器重启相关的错误
           if (err.message && (
             err.message.includes('restarting') ||
@@ -1932,6 +1957,7 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0) {
         // 启动 exec
         exec.start({ hijack: true, stdin: false }, (err, stream) => {
           if (err) {
+            if (timeoutId) clearTimeout(timeoutId);
             return reject(new Error(`启动 exec 失败: ${err.message}`));
           }
           
@@ -1944,6 +1970,10 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0) {
           });
           
           stream.on('end', () => {
+            if (streamEnded) return;
+            streamEnded = true;
+            if (timeoutId) clearTimeout(timeoutId);
+            
             // 解析 Docker 的流格式
             let buffer = output;
             let offset = 0;
@@ -1981,6 +2011,21 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0) {
                 } catch (e) {
                   resolve({ success: false, error: `解析结果失败: ${stdout.trim() || stderr.trim() || '无输出'}` });
                 }
+              } else if (data.ExitCode === 137) {
+                // 退出码 137 = 128 + 9 (SIGKILL)，表示进程被强制终止
+                reject(new Error(
+                  `脚本执行被强制终止（退出码: 137）\n` +
+                  `可能原因：\n` +
+                  `1. 容器内存不足 (OOM Killer)\n` +
+                  `2. 进程执行时间过长被系统终止\n` +
+                  `3. Docker 容器资源限制\n\n` +
+                  `建议：\n` +
+                  `- 检查容器内存使用: docker stats tg_listener\n` +
+                  `- 查看系统日志: dmesg | grep -i oom\n` +
+                  `- 检查容器资源限制: docker inspect tg_listener | grep -A 10 Memory\n` +
+                  `- 尝试增加容器内存限制或优化脚本执行时间\n` +
+                  `- 输出: ${stderr || stdout || '无输出'}`
+                ));
               } else {
                 reject(new Error(`脚本执行失败 (退出码: ${data.ExitCode}): ${stderr || stdout || '无输出'}`));
               }
@@ -1988,6 +2033,9 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0) {
           });
           
           stream.on('error', (err) => {
+            if (streamEnded) return;
+            streamEnded = true;
+            if (timeoutId) clearTimeout(timeoutId);
             reject(new Error(`流错误: ${err.message}`));
           });
         });
