@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const nodemailer = require('nodemailer');
 const axios = require('axios');
 const rateLimit = require('express-rate-limit');
@@ -1715,8 +1716,27 @@ async function waitForContainerReady(container, maxWaitSeconds = 30) {
   ));
 }
 
-// 获取 Docker 连接和 Telethon 容器
-async function getDockerAndContainer(checkReady = false) {
+// 检查本地 session 文件是否存在（不依赖容器）
+function checkSessionFileExists(sessionPath) {
+  try {
+    // sessionPath 是容器内的路径，需要转换为本地路径
+    // 容器内路径格式: /app/session/telegram 或 /app/session/telegram_xxx
+    // 本地路径格式: ./data/session/telegram 或 ./data/session/telegram_xxx
+    const localSessionPath = sessionPath.replace('/app/session', path.join(process.cwd(), 'data', 'session'));
+    
+    // Telethon 使用 .session 扩展名
+    const sessionFile1 = localSessionPath;
+    const sessionFile2 = `${localSessionPath}.session`;
+    
+    return fs.existsSync(sessionFile1) || fs.existsSync(sessionFile2);
+  } catch (error) {
+    console.error('检查 session 文件失败:', error);
+    return false;
+  }
+}
+
+// 获取 Docker 连接和 Telethon 容器（支持创建临时容器用于登录操作）
+async function getDockerAndContainer(checkReady = false, allowCreateTemp = false) {
   const Docker = require('dockerode');
   const fs = require('fs');
   
@@ -1796,27 +1816,168 @@ async function getDockerAndContainer(checkReady = false) {
         containerInfo = info;
         break;
       } else {
-        // 容器未运行
-        container = null;
-        continue;
+        // 容器存在但未运行，尝试启动
+        console.log(`⚠️  检测到容器 ${name} 已停止，尝试启动...`);
+        try {
+          await container.start();
+          console.log(`✅ 容器 ${name} 已启动，等待就绪...`);
+          
+          if (checkReady) {
+            await waitForContainerReady(container, 30);
+          } else {
+            // 等待容器启动
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          }
+          
+          containerInfo = await container.inspect();
+          if (containerInfo.State.Running) {
+            console.log(`✅ 容器 ${name} 已成功启动并运行`);
+            break;
+          }
+        } catch (startError) {
+          console.error(`❌ 启动容器 ${name} 失败:`, startError.message);
+          // 继续尝试下一个容器名称
+          container = null;
+          continue;
+        }
       }
     } catch (e) {
       // 容器不存在或查询失败，尝试下一个
+      if (e.statusCode === 404) {
+        // 容器不存在
+        console.log(`容器 ${name} 不存在`);
+      } else {
+        console.error(`查询容器 ${name} 状态失败:`, e.message);
+      }
       container = null;
       continue;
     }
   }
   
   if (!container || !containerInfo) {
+    // 收集所有容器的状态信息，提供更详细的错误提示
+    let containerStatusInfo = [];
+    for (const name of containerNames) {
+      try {
+        const tempContainer = docker.getContainer(name);
+        const tempInfo = await tempContainer.inspect();
+        const state = tempInfo.State;
+        let statusText = '未知状态';
+        if (state.Running) {
+          statusText = '运行中';
+        } else if (state.Exited) {
+          statusText = `已退出 (退出码: ${state.ExitCode})`;
+        } else if (state.Restarting) {
+          statusText = '正在重启';
+        }
+        containerStatusInfo.push(`  - ${name}: ${statusText}`);
+      } catch (e) {
+        containerStatusInfo.push(`  - ${name}: 不存在`);
+      }
+    }
+    
     return Promise.reject(new Error(
-      `无法找到运行中的 Telethon 容器。请检查：\n` +
-      `1. 容器名称是否为 tg_listener 或 telethon\n` +
-      `2. 容器是否正在运行: docker ps -a | grep -E 'tg_listener|telethon'\n` +
-      `3. 如果容器未运行，请启动: docker compose up -d telethon`
+      `无法找到运行中的 Telethon 容器。\n\n` +
+      `容器状态：\n${containerStatusInfo.join('\n')}\n\n` +
+      `请执行以下操作：\n` +
+      `1. 检查容器状态: docker ps -a | grep -E 'tg_listener|telethon'\n` +
+      `2. 如果容器已停止，启动容器: docker compose up -d telethon\n` +
+      `3. 如果容器不存在，重新创建: docker compose up -d --force-recreate telethon\n` +
+      `4. 查看容器日志: docker logs tg_listener`
     ));
   }
   
   return { docker, container, containerInfo };
+}
+
+// 使用 docker run 执行登录脚本（当主容器未运行时使用）
+async function execLoginScriptWithDockerRun(command, args) {
+  return new Promise((resolve, reject) => {
+    const projectRoot = process.cwd();
+    const timeout = 60000; // 60秒超时
+    
+    // 尝试获取现有容器的镜像名称
+    let containerImage = 'tg_listener';
+    try {
+      const Docker = require('dockerode');
+      const dockerSocketPaths = [
+        '/var/run/docker.sock',
+        process.env.DOCKER_HOST?.replace('unix://', '') || null
+      ].filter(Boolean);
+      
+      for (const socketPath of dockerSocketPaths) {
+        if (fs.existsSync(socketPath)) {
+          try {
+            const docker = new Docker({ socketPath });
+            const container = docker.getContainer('tg_listener');
+            container.inspect().then(info => {
+              if (info && info.Config && info.Config.Image) {
+                containerImage = info.Config.Image;
+              }
+            }).catch(() => {});
+          } catch (e) {
+            // 忽略错误，使用默认镜像名称
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      // 忽略错误，使用默认镜像名称
+    }
+    
+    // 构建 docker run 命令
+    // 登录脚本只需要访问 Telegram 服务器，不需要内部网络
+    const dockerArgs = [
+      'run',
+      '--rm', // 执行完后自动删除容器
+      '-v', `${projectRoot}/backend/config.json:/app/config.json:ro`, // 挂载配置文件
+      '-v', `${projectRoot}/data/session:/app/session`, // 挂载 session 目录
+      containerImage, // 使用主容器镜像
+      'python3', '/app/login_helper.py', command, ...args
+    ];
+    
+    console.log(`🐳 使用 docker run 执行登录脚本: ${command}`);
+    
+    const dockerProcess = spawn('docker', dockerArgs, {
+      cwd: projectRoot,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    
+    let stdout = '';
+    let stderr = '';
+    let timeoutId = setTimeout(() => {
+      dockerProcess.kill('SIGKILL');
+      reject(new Error(`docker run 执行超时（${timeout/1000}秒）`));
+    }, timeout);
+    
+    dockerProcess.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    
+    dockerProcess.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    dockerProcess.on('close', (code) => {
+      clearTimeout(timeoutId);
+      
+      if (code === 0) {
+        try {
+          const result = JSON.parse(stdout.trim());
+          resolve(result);
+        } catch (e) {
+          reject(new Error(`解析结果失败: ${stdout.trim() || stderr.trim() || '无输出'}`));
+        }
+      } else {
+        reject(new Error(`docker run 执行失败 (退出码: ${code}): ${stderr || stdout || '无输出'}`));
+      }
+    });
+    
+    dockerProcess.on('error', (err) => {
+      clearTimeout(timeoutId);
+      reject(new Error(`启动 docker run 失败: ${err.message}`));
+    });
+  });
 }
 
 // 同步用户配置到全局配置文件并重启 Telethon 服务
@@ -1883,14 +2044,39 @@ async function restartTelethonService() {
 }
 
 // 安全执行 Docker 命令调用登录脚本（使用 Docker SDK）
-async function execTelethonLoginScript(command, args = [], retryCount = 0) {
+// allowCreateTemp: 如果为 true，当容器未运行时，创建临时容器执行脚本
+async function execTelethonLoginScript(command, args = [], retryCount = 0, allowCreateTemp = true) {
   const maxRetries = 3;
   const retryDelay = 2000; // 2秒
   const timeout = 60000; // 60秒超时
   
   try {
     // 获取容器并等待就绪（如果正在重启）
-    const { container } = await getDockerAndContainer(true);
+    // 对于登录操作（send_code, sign_in），允许创建临时容器
+    let containerResult;
+    try {
+      containerResult = await getDockerAndContainer(true, allowCreateTemp);
+    } catch (containerError) {
+      // 如果容器未运行且允许创建临时容器，则使用 docker run 执行脚本
+      if (allowCreateTemp && (
+        containerError.message.includes('无法找到运行中的 Telethon 容器') ||
+        containerError.message.includes('容器不存在') ||
+        containerError.message.includes('已退出')
+      )) {
+        console.log('📦 容器未运行，使用 docker run 执行登录脚本...');
+        // 直接使用 docker run 执行脚本，不需要容器运行
+        try {
+          return await execLoginScriptWithDockerRun(command, args);
+        } catch (runError) {
+          // 如果 docker run 也失败，抛出原始错误
+          throw new Error(`容器未运行，且 docker run 执行失败: ${runError.message}`);
+        }
+      } else {
+        throw containerError;
+      }
+    }
+    
+    const { container } = containerResult;
     
     // 执行命令
     const execArgs = ['python3', '/app/login_helper.py', command, ...args];
@@ -2081,13 +2267,25 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       ? `/app/session/telegram_${userId}`
       : '/app/session/telegram';
     
+    // 首先检查 session 文件是否存在（不依赖容器）
+    const sessionExists = checkSessionFileExists(sessionPath);
+    
+    if (!sessionExists) {
+      // 如果 session 文件不存在，直接返回未登录，不需要容器
+      return res.json({
+        logged_in: false,
+        message: '未登录（session 文件不存在）'
+      });
+    }
+    
     try {
-      // 使用安全的脚本调用方式
+      // 使用安全的脚本调用方式（session 文件存在时才需要容器验证）
+      // 允许创建临时容器，因为即使容器未运行也可以检查登录状态
       const result = await execTelethonLoginScript('check', [
         sessionPath,
         validatedApiId.toString(),
         validatedApiHash
-      ]);
+      ], 0, true); // allowCreateTemp = true，允许使用 docker run 检查状态
       
       if (result.success) {
         res.json({
@@ -2103,10 +2301,22 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       }
     } catch (error) {
       console.error('检查登录状态失败:', error);
-      res.json({
-        logged_in: false,
-        message: '无法检查登录状态：' + error.message
-      });
+      // 如果容器未运行，返回未登录状态而不是错误
+      if (error.message && (
+        error.message.includes('无法找到运行中的 Telethon 容器') ||
+        error.message.includes('容器不存在') ||
+        error.message.includes('已退出')
+      )) {
+        res.json({
+          logged_in: false,
+          message: '未登录（Telethon 容器未运行，但可以正常登录）'
+        });
+      } else {
+        res.json({
+          logged_in: false,
+          message: '无法检查登录状态：' + error.message
+        });
+      }
     }
   } catch (error) {
     console.error('检查登录状态失败:', error);
