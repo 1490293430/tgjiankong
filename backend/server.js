@@ -827,57 +827,14 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
     targetUser.last_login = new Date();
     await targetUser.save();
     
-    // 更新全局配置文件中的 user_id，使 Telethon 服务能正确关联日志到新用户
-    try {
-      const globalConfig = loadConfig();
-      globalConfig.user_id = targetUser._id.toString();
-      fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
-      console.log(`✅ 已更新全局配置文件中的 user_id 为: ${targetUser._id}`);
-      
-      // 同步用户配置到全局配置文件（包括 Telegram API 配置）
-      const userConfig = await loadUserConfig(targetUser._id.toString());
-      if (userConfig) {
-        const configToSync = {
-          keywords: userConfig.keywords || [],
-          channels: userConfig.channels || [],
-          alert_keywords: userConfig.alert_keywords || [],
-          alert_regex: userConfig.alert_regex || [],
-          log_all_messages: userConfig.log_all_messages || false
-        };
-        
-        // 如果用户配置中有 Telegram API 配置，也同步到全局配置
-        if (userConfig.telegram && userConfig.telegram.api_id && userConfig.telegram.api_hash) {
-          configToSync.telegram = {
-            api_id: userConfig.telegram.api_id,
-            api_hash: userConfig.telegram.api_hash
-          };
-          console.log(`✅ 已同步用户的 Telegram API 配置到全局配置文件`);
-        }
-        
-        // 更新全局配置，保留其他字段（如 alert_actions 等）
-        Object.assign(globalConfig, configToSync);
-        fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
-        console.log(`✅ 已同步用户配置到全局配置文件 (userId: ${targetUser._id})`);
-        
-        // 如果用户的 Telegram API 配置发生变化，需要重启 Telethon 服务
-        // 异步重启，不阻塞切换用户的响应
-        setTimeout(async () => {
-          try {
-            const restarted = await restartTelethonService();
-            if (restarted) {
-              console.log(`✅ Telethon 服务已重启，正在使用新用户配置 (userId: ${targetUser._id})`);
-            } else {
-              console.warn(`⚠️  Telethon 服务重启失败，请手动执行: docker compose restart telethon`);
-            }
-          } catch (error) {
-            console.error('重启 Telethon 服务时出错:', error);
-          }
-        }, 1000); // 延迟1秒，确保配置文件已写入
+    // 更新全局配置文件并同步用户配置（异步执行，不阻塞响应）
+    setTimeout(async () => {
+      try {
+        await syncUserConfigAndRestartTelethon(targetUser._id.toString());
+      } catch (error) {
+        console.error('⚠️  切换用户后同步配置失败（不影响切换用户）:', error);
       }
-    } catch (configError) {
-      console.error('⚠️  更新全局配置文件失败（不影响切换用户）:', configError);
-      // 不阻止切换用户，即使配置文件更新失败
-    }
+    }, 500); // 延迟500ms，确保切换用户响应已返回
     
     console.log(`✅ 用户 ${currentUser.username} 切换到用户: ${targetUser.username} (userId: ${targetUser._id})`);
     
@@ -1784,6 +1741,56 @@ async function getDockerAndContainer() {
   return { docker, container };
 }
 
+// 同步用户配置到全局配置文件并重启 Telethon 服务
+async function syncUserConfigAndRestartTelethon(userId) {
+  try {
+    // 更新全局配置文件中的 user_id
+    const globalConfig = loadConfig();
+    globalConfig.user_id = userId.toString();
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
+    console.log(`✅ 已更新全局配置文件中的 user_id 为: ${userId}`);
+    
+    // 同步用户配置到全局配置文件
+    const userConfig = await loadUserConfig(userId.toString());
+    if (userConfig) {
+      const configToSync = {
+        keywords: userConfig.keywords || [],
+        channels: userConfig.channels || [],
+        alert_keywords: userConfig.alert_keywords || [],
+        alert_regex: userConfig.alert_regex || [],
+        log_all_messages: userConfig.log_all_messages || false
+      };
+      
+      // 如果用户配置中有 Telegram API 配置，也同步到全局配置
+      if (userConfig.telegram && userConfig.telegram.api_id && userConfig.telegram.api_hash) {
+        configToSync.telegram = {
+          api_id: userConfig.telegram.api_id,
+          api_hash: userConfig.telegram.api_hash
+        };
+        console.log(`✅ 已同步用户的 Telegram API 配置到全局配置文件`);
+      }
+      
+      // 更新全局配置，保留其他字段（如 alert_actions 等）
+      Object.assign(globalConfig, configToSync);
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
+      console.log(`✅ 已同步用户配置到全局配置文件 (userId: ${userId})`);
+    }
+    
+    // 重启 Telethon 服务以应用新配置
+    const restartSuccess = await restartTelethonService();
+    if (restartSuccess) {
+      console.log(`✅ 已重启 Telethon 服务以应用用户 ${userId} 的配置`);
+    } else {
+      console.warn(`⚠️  Telethon 服务重启失败，配置将在下次配置重载时生效（约10秒）`);
+    }
+    
+    return restartSuccess;
+  } catch (error) {
+    console.error('⚠️  同步用户配置失败（不影响登录）:', error);
+    return false;
+  }
+}
+
 // 重启 Telethon 服务
 async function restartTelethonService() {
   try {
@@ -2089,6 +2096,17 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
       ]);
       
       if (result.success) {
+        // Telegram 登录成功后，同步用户配置并重启 Telethon 服务
+        // 异步执行，不阻塞响应
+        setTimeout(async () => {
+          try {
+            console.log(`🔄 Telegram 登录成功，开始同步用户 ${userId} 的配置并重启 Telethon 服务...`);
+            await syncUserConfigAndRestartTelethon(userId);
+          } catch (error) {
+            console.error('⚠️  Telegram 登录后同步配置失败（不影响登录）:', error);
+          }
+        }, 100);
+        
         res.json({
           success: true,
           message: result.message || '登录成功！',
