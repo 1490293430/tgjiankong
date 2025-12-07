@@ -936,7 +936,12 @@
             </div>
 
             <div class="card">
-                <h2>📋 最近分析结果</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h2 style="margin: 0;">📋 最近分析结果</h2>
+                    <button class="btn btn-danger" onclick="clearAIAnalysis()" style="background: #e74c3c; border-color: #e74c3c; padding: 6px 12px; font-size: 13px;">
+                        🗑️ 清除所有分析结果
+                    </button>
+                </div>
                 <div class="form-group">
                     <select id="filterSentiment" onchange="loadAISummaries()">
                         <option value="">所有情感</option>
@@ -956,14 +961,6 @@
                     <button id="aiPrevPage" onclick="loadAISummaries(currentAIPage - 1)">上一页</button>
                     <span id="aiPageInfo">第 1 页 / 共 1 页</span>
                     <button id="aiNextPage" onclick="loadAISummaries(currentAIPage + 1)">下一页</button>
-                </div>
-                <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center;">
-                    <button class="btn btn-danger" onclick="clearAIAnalysis()" style="background: #e74c3c; border-color: #e74c3c;">
-                        🗑️ 清除所有分析结果
-                    </button>
-                    <div class="hint" style="margin-top: 8px; color: #666;">
-                        此操作将删除所有AI分析结果，并重置所有消息的分析标记，不可恢复
-                    </div>
                 </div>
             </div>
             
@@ -1009,7 +1006,12 @@
         <!-- 日志 -->
         <div id="logs" class="tab-content">
             <div class="card">
-                <h2>日志记录</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h2 style="margin: 0;">日志记录</h2>
+                    <button class="btn btn-danger" onclick="showClearLogsConfirm()" style="background: #e74c3c; border-color: #e74c3c; padding: 6px 12px; font-size: 13px;">
+                        🗑️ 清除日志
+                    </button>
+                </div>
                 <div class="form-group">
                     <input type="text" id="searchKeyword" placeholder="搜索关键词...">
                 </div>
@@ -1021,10 +1023,6 @@
                     <button onclick="changePage(-1)">上一页</button>
                     <span class="page-info">第 <span id="currentPage">1</span> / <span id="totalPages">1</span> 页</span>
                     <button onclick="changePage(1)">下一页</button>
-                </div>
-                
-                <div style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #e0e0e0; text-align: center;">
-                    <button class="btn btn-danger" onclick="showClearLogsConfirm()">🗑️ 清除日志</button>
                 </div>
             </div>
         </div>
@@ -1975,94 +1973,42 @@
             loadLogs();
         }
         
-        // 显示清除日志确认对话框
-        function showClearLogsConfirm() {
-            const modal = document.getElementById('clearLogsModal');
-            if (modal) {
-                // 移除内联隐藏样式
-                modal.style.display = '';
-                modal.style.visibility = '';
-                modal.style.opacity = '';
-                modal.style.pointerEvents = '';
-                modal.style.zIndex = '';
-                modal.classList.add('show');
-                
-                // 不阻止页面滚动，允许用户滚动页面
-                
-                // 隐藏错误信息
-                const errorDiv = document.getElementById('clearLogsModalError');
-                if (errorDiv) {
-                    errorDiv.style.display = 'none';
-                    errorDiv.textContent = '';
-                }
+        // 显示清除日志确认对话框（使用双重确认机制）
+        async function showClearLogsConfirm() {
+            if (!confirm('⚠️ 确定要清除所有日志记录吗？\n\n此操作将：\n- 永久删除所有日志记录\n- 此操作不可恢复！')) {
+                return;
             }
-        }
-        
-        // 关闭清除日志确认对话框
-        function closeClearLogsModal() {
-            const modal = document.getElementById('clearLogsModal');
-            if (modal) {
-                modal.classList.remove('show');
-                // 恢复内联隐藏样式
-                modal.style.display = 'none';
-                modal.style.visibility = 'hidden';
-                modal.style.opacity = '0';
-                modal.style.pointerEvents = 'none';
-                modal.style.zIndex = '-1';
-            }
-        }
-        
-        // 确认清除日志
-        async function confirmClearLogs() {
-            const errorDiv = document.getElementById('clearLogsModalError');
-            const confirmBtn = document.querySelector('#clearLogsModal .btn-danger');
             
-            // 禁用确认按钮，防止重复点击
-            if (confirmBtn) {
-                confirmBtn.disabled = true;
-                confirmBtn.textContent = '清除中...';
+            const confirmText = prompt('请输入 "清除" 以确认此操作：');
+            if (confirmText !== '清除') {
+                alert('操作已取消');
+                return;
             }
             
             try {
-                const result = await apiRequest('/logs', {
+                const result = await apiRequest('/api/logs', {
                     method: 'DELETE',
                     body: JSON.stringify({})
                 });
                 
                 if (result && result.status === 'ok') {
-                    // 关闭模态框
-                    closeClearLogsModal();
-                    
-                    // 显示成功消息
-                    showToast(`✅ ${result.message || '日志清除成功'} (已删除 ${result.deletedCount || 0} 条)`, true);
+                    alert(`✅ 清除成功！\n\n已删除 ${result.deletedCount || 0} 条日志记录`);
                     
                     // 重置页码并重新加载日志
                     currentPage = 1;
                     await loadLogs();
                     
                     // 刷新统计信息
-                    await loadStats();
-                } else {
-                    // 显示错误信息
-                    const errorMsg = result?.error || '清除日志失败';
-                    if (errorDiv) {
-                        errorDiv.textContent = errorMsg;
-                        errorDiv.style.display = 'block';
+                    if (typeof loadStats === 'function') {
+                        await loadStats();
                     }
+                } else {
+                    const errorMsg = result?.error || '清除日志失败';
+                    alert('❌ ' + errorMsg);
                 }
             } catch (error) {
                 console.error('清除日志失败:', error);
-                const errorMsg = `清除日志失败：${error.message || '未知错误'}`;
-                if (errorDiv) {
-                    errorDiv.textContent = errorMsg;
-                    errorDiv.style.display = 'block';
-                }
-            } finally {
-                // 恢复确认按钮
-                if (confirmBtn) {
-                    confirmBtn.disabled = false;
-                    confirmBtn.textContent = '确认清除';
-                }
+                alert('❌ 清除失败：' + (error.message || '未知错误'));
             }
         }
         
@@ -3313,16 +3259,6 @@
                 });
             }
             
-            // 清除日志模态框的事件监听
-            const clearLogsModal = document.getElementById('clearLogsModal');
-            if (clearLogsModal) {
-                clearLogsModal.addEventListener('click', (e) => {
-                    // 点击背景区域关闭弹窗
-                    if (e.target === clearLogsModal) {
-                        closeClearLogsModal();
-                    }
-                });
-            }
         });
     </script>
 </body>
