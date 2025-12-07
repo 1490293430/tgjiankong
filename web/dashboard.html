@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>控制面板 - Telegram 监控系统</title>
-    <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="apple-touch-icon" href="/favicon.ico">
+    <title>Telegram 监控</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico?v=1">
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico?v=1">
+    <link rel="apple-touch-icon" href="/favicon.ico?v=1">
     <style>
         * {
             margin: 0;
@@ -1240,9 +1240,7 @@
             // 注意：EventSource API 不支持自定义 headers，使用 fetch + ReadableStream 实现带认证的 SSE
             // 保存连接引用以便后续管理
             const fetchController = new AbortController();
-            eventSource = { controller: fetchController };
-            
-            fetch(`${API_URL}/events`, {
+            const readerPromise = fetch(`${API_URL}/events`, {
                 signal: fetchController.signal,
                 headers: {
                     'Authorization': `Bearer ${token}`,
@@ -1253,7 +1251,7 @@
                     if (response.status === 401) {
                         localStorage.removeItem('token');
                         window.location.href = 'index.html';
-                        return;
+                        return null;
                     }
                     throw new Error('SSE连接失败: ' + response.status);
                 }
@@ -1264,19 +1262,47 @@
                 stopFallbackRefresh(); // 停止降级刷新
                 console.log('✅ SSE实时推送已连接');
                 
-                const reader = response.body.getReader();
+                return response.body.getReader();
+            }).catch(err => {
+                if (err.name === 'AbortError') {
+                    // 连接被主动中止，不需要重试
+                    console.log('SSE连接已中止');
+                    return null;
+                }
+                throw err;
+            });
+            
+            // 保存连接引用
+            eventSource = { 
+                controller: fetchController,
+                readerPromise: readerPromise
+            };
+            
+            readerPromise.then(reader => {
+                if (!reader) return; // 连接失败或已中止
+                
+                // 保存 reader 引用以便清理
+                eventSource.reader = reader;
+                
                 const decoder = new TextDecoder();
                 let buffer = '';
                 
                 function readStream() {
                     reader.read().then(({ done, value }) => {
+                        // 检查连接是否已被中止
+                        if (!eventSource || eventSource.controller.signal.aborted) {
+                            return;
+                        }
+                        
                         if (done) {
                             // 连接断开
-                            sseConnected = false;
-                            updateSSEStatus('disconnected', '连接断开（定期刷新模式）');
-                            startFallbackRefresh(); // 启用降级刷新
-                            console.warn('⚠️ SSE连接断开，切换到定期刷新模式');
-                            setTimeout(() => connectSSE(), 5000);
+                            if (eventSource && !eventSource.controller.signal.aborted) {
+                                sseConnected = false;
+                                updateSSEStatus('disconnected', '连接断开（定期刷新模式）');
+                                startFallbackRefresh(); // 启用降级刷新
+                                console.warn('⚠️ SSE连接断开，切换到定期刷新模式');
+                                setTimeout(() => connectSSE(), 5000);
+                            }
                             return;
                         }
                         
@@ -1297,15 +1323,22 @@
                         
                         readStream();
                     }).catch(err => {
+                        // 忽略中止错误
+                        if (err.name === 'AbortError') {
+                            return;
+                        }
                         console.error('读取SSE流失败:', err);
-                        sseConnected = false;
-                        updateSSEStatus('disconnected', '读取失败（定期刷新模式）');
-                        startFallbackRefresh(); // 启用降级刷新
-                        setTimeout(() => connectSSE(), 5000);
+                        if (eventSource && !eventSource.controller.signal.aborted) {
+                            sseConnected = false;
+                            updateSSEStatus('disconnected', '读取失败（定期刷新模式）');
+                            startFallbackRefresh(); // 启用降级刷新
+                            setTimeout(() => connectSSE(), 5000);
+                        }
                     });
                 }
                 
                 readStream();
+            }).catch(err => {
             }).catch(err => {
                 console.error('SSE连接失败:', err);
                 sseConnected = false;
@@ -1425,11 +1458,27 @@
         
         // 断开 SSE 连接
         function disconnectSSE() {
-            if (eventSource && eventSource.controller) {
-                eventSource.controller.abort();
+            if (eventSource) {
+                if (eventSource.controller) {
+                    try {
+                        eventSource.controller.abort();
+                    } catch (e) {
+                        // 忽略中止错误
+                        console.log('SSE连接中止:', e.message);
+                    }
+                }
+                // 清理 reader（如果有）
+                if (eventSource.reader) {
+                    try {
+                        eventSource.reader.cancel();
+                    } catch (e) {
+                        // 忽略取消错误
+                    }
+                }
+                eventSource = null;
             }
-            eventSource = null;
             sseConnected = false;
+            updateSSEStatus('disconnected', '已断开连接');
             stopFallbackRefresh();
         }
         
@@ -2115,11 +2164,15 @@
                 currentPage = 1; // 重置分页
                 currentAIPage = 1;
                 
-                // 断开 SSE 连接
-                disconnectSSE();
-                
                 // 保存旧的用户ID用于检测切换
                 const oldUserId = localStorage.getItem('userId');
+                
+                // 先断开旧的 SSE 连接（确保完全清理）
+                if (eventSource) {
+                    disconnectSSE();
+                    // 等待连接完全断开
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                }
                 
                 // 保存新的token和用户信息
                 localStorage.setItem('token', data.token);
@@ -2145,11 +2198,21 @@
                 // 重新加载当前用户信息
                 await loadCurrentUser();
                 
-                // 重新连接 SSE（使用新 token）
-                disconnectSSE();
+                // 重新连接 SSE（使用新 token，等待更长时间确保旧连接完全关闭）
                 setTimeout(() => {
+                    // 再次确保旧连接已断开
+                    if (eventSource && eventSource.controller) {
+                        try {
+                            eventSource.controller.abort();
+                        } catch (e) {
+                            // 忽略错误
+                        }
+                    }
+                    eventSource = null;
+                    sseConnected = false;
+                    // 重新连接
                     connectSSE();
-                }, 500);
+                }, 800); // 增加到800ms，确保旧连接完全断开
                 
                 // 获取当前激活的标签页并重新加载数据
                 const activeTab = document.querySelector('.tab-content.active')?.id || 'dashboard';
