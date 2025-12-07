@@ -1645,11 +1645,13 @@ function validateInput(input, type = 'string') {
   }
   
   if (type === 'phone') {
+    // 移除所有空格
+    const phoneNoSpaces = str.replace(/\s+/g, '');
     // 验证手机号格式（只允许数字和+号）
-    if (!/^\+?[1-9]\d{1,14}$/.test(str)) {
+    if (!/^\+?[1-9]\d{1,14}$/.test(phoneNoSpaces)) {
       throw new Error('无效的手机号格式');
     }
-    return str;
+    return phoneNoSpaces;
   }
   
   if (type === 'code') {
@@ -1667,49 +1669,74 @@ function validateInput(input, type = 'string') {
 async function execTelethonLoginScript(command, args = []) {
   const { spawn } = require('child_process');
   
-  return new Promise((resolve, reject) => {
-    const dockerArgs = [
-      'exec',
-      '-i',
-      'tg_listener',
-      'python3',
-      '/app/login_helper.py',
-      command,
-      ...args
-    ];
+  // 尝试多个可能的 Docker 命令（按优先级排序）
+  const dockerCommands = [
+    { cmd: 'docker', args: ['exec', '-i', 'tg_listener', 'python3', '/app/login_helper.py', command, ...args] },
+    { cmd: 'docker-compose', args: ['exec', '-T', 'telethon', 'python3', '/app/login_helper.py', command, ...args] },
+    { cmd: 'docker', args: ['compose', 'exec', '-T', 'telethon', 'python3', '/app/login_helper.py', command, ...args] }
+  ];
+  
+  // 递归尝试每个命令
+  const tryCommand = (index) => {
+    if (index >= dockerCommands.length) {
+      return Promise.reject(new Error(
+        '无法执行 Docker 命令。可能的原因：\n' +
+        '1. Docker 未安装或不在 PATH 中\n' +
+        '2. API 容器无法访问 Docker socket\n' +
+        '3. 容器名称不正确（应为 tg_listener 或 telethon）\n\n' +
+        '解决方案：\n' +
+        '1. 在主机上执行以下命令手动登录：\n' +
+        `   docker exec -i tg_listener python3 /app/login_helper.py ${command} ${args.join(' ')}\n` +
+        '2. 或者修改 docker-compose.yml，为 API 容器添加 Docker socket 挂载：\n' +
+        '   volumes:\n' +
+        '     - /var/run/docker.sock:/var/run/docker.sock'
+      ));
+    }
     
-    const child = spawn('docker', dockerArgs, {
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
+    const { cmd, args: cmdArgs } = dockerCommands[index];
     
-    let stdout = '';
-    let stderr = '';
-    
-    child.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-    
-    child.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-    
-    child.on('close', (code) => {
-      if (code === 0) {
-        try {
-          const result = JSON.parse(stdout.trim());
-          resolve(result);
-        } catch (e) {
-          resolve({ success: false, error: `解析结果失败: ${stdout.trim()}` });
+    return new Promise((resolve, reject) => {
+      const child = spawn(cmd, cmdArgs, {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+      
+      let stdout = '';
+      let stderr = '';
+      
+      child.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+      
+      child.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+      
+      child.on('close', (code) => {
+        if (code === 0) {
+          try {
+            const result = JSON.parse(stdout.trim());
+            resolve(result);
+          } catch (e) {
+            resolve({ success: false, error: `解析结果失败: ${stdout.trim()}` });
+          }
+        } else {
+          // 如果命令失败，尝试下一个
+          tryCommand(index + 1).then(resolve).catch(reject);
         }
-      } else {
-        reject(new Error(`脚本执行失败 (code: ${code}): ${stderr || stdout}`));
-      }
+      });
+      
+      child.on('error', (error) => {
+        // 如果 spawn 失败（通常是命令不存在），尝试下一个
+        if (error.code === 'ENOENT') {
+          tryCommand(index + 1).then(resolve).catch(reject);
+        } else {
+          reject(new Error(`无法执行 Docker 命令: ${error.message}`));
+        }
+      });
     });
-    
-    child.on('error', (error) => {
-      reject(new Error(`无法执行 Docker 命令: ${error.message}`));
-    });
-  });
+  };
+  
+  return tryCommand(0);
 }
 
 // 检查 Telegram 登录状态

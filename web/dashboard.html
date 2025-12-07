@@ -2806,7 +2806,8 @@
             
             if (telegramLoginStep === 1) {
                 // 步骤1：发送验证码
-                const phone = document.getElementById('modalTelegramPhone').value.trim();
+                // 移除所有空格并trim
+                const phone = document.getElementById('modalTelegramPhone').value.trim().replace(/\s+/g, '');
                 
                 if (!phone) {
                     errorDiv.textContent = '请输入手机号';
@@ -3017,11 +3018,27 @@
                 }
                 
                 // 支持回车键确认
-                document.getElementById('modalTelegramPhone')?.addEventListener('keypress', (e) => {
-                    if (e.key === 'Enter' && !telegramLoginInProgress) {
-                        handleTelegramLoginStep();
-                    }
-                });
+                // 手机号输入框：实时去除空格
+                const phoneInput = document.getElementById('modalTelegramPhone');
+                if (phoneInput) {
+                    phoneInput.addEventListener('input', (e) => {
+                        // 移除所有空格，但保留输入值
+                        const value = e.target.value.replace(/\s+/g, '');
+                        if (value !== e.target.value) {
+                            const cursorPos = e.target.selectionStart;
+                            e.target.value = value;
+                            // 恢复光标位置（减去被删除的空格数）
+                            const spacesRemoved = (e.target.value.length + (e.target.value.match(/\s+/g) || []).join('').length) - value.length;
+                            e.target.setSelectionRange(cursorPos - spacesRemoved, cursorPos - spacesRemoved);
+                        }
+                    });
+                    
+                    phoneInput.addEventListener('keypress', (e) => {
+                        if (e.key === 'Enter' && !telegramLoginInProgress) {
+                            handleTelegramLoginStep();
+                        }
+                    });
+                }
                 document.getElementById('modalTelegramCode')?.addEventListener('keypress', (e) => {
                     if (e.key === 'Enter' && !telegramLoginInProgress) {
                         handleTelegramLoginStep();
