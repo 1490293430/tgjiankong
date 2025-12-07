@@ -1721,14 +1721,96 @@ function checkSessionFileExists(sessionPath) {
   try {
     // sessionPath 是容器内的路径，需要转换为本地路径
     // 容器内路径格式: /app/session/telegram 或 /app/session/telegram_xxx
-    // 本地路径格式: ./data/session/telegram 或 ./data/session/telegram_xxx
-    const localSessionPath = sessionPath.replace('/app/session', path.join(process.cwd(), 'data', 'session'));
+    // API 容器内路径格式: /app/data/session/telegram 或 /app/data/session/telegram_xxx
     
-    // Telethon 使用 .session 扩展名
-    const sessionFile1 = localSessionPath;
-    const sessionFile2 = `${localSessionPath}.session`;
+    // 提取 session 文件名（去掉 /app/session 前缀）
+    let sessionFileName = sessionPath.replace('/app/session/', '').replace('/app/session', '');
+    if (!sessionFileName) {
+      sessionFileName = 'telegram'; // 默认文件名
+    }
     
-    return fs.existsSync(sessionFile1) || fs.existsSync(sessionFile2);
+    // API 容器中挂载的路径是 /app/data/session
+    const possibleBasePaths = [
+      '/app/data/session',                           // API 容器内的挂载路径（优先）
+      path.join(process.cwd(), 'data', 'session'),  // 相对路径
+      '/opt/telegram-monitor/data/session',         // 常见部署路径
+      path.join(__dirname, '..', 'data', 'session'), // 相对于 server.js 的位置
+      './data/session'                               // 当前目录
+    ];
+    
+    // 检查所有可能的基础路径
+    for (const basePath of possibleBasePaths) {
+      try {
+        // Telethon 可能生成的文件名变体：
+        // 1. telegram_xxx.session（标准格式）
+        // 2. telegram_xxx（不带扩展名，不推荐，但可能）
+        // 3. telegram_xxx.session-journal（SQLite journal 文件）
+        const sessionFile1 = path.join(basePath, sessionFileName);           // telegram_xxx
+        const sessionFile2 = path.join(basePath, `${sessionFileName}.session`); // telegram_xxx.session
+        const sessionFile3 = path.join(basePath, `${sessionFileName}.session-journal`); // telegram_xxx.session-journal
+        
+        // 检查文件是否存在
+        const exists1 = fs.existsSync(sessionFile1) && fs.statSync(sessionFile1).isFile();
+        const exists2 = fs.existsSync(sessionFile2) && fs.statSync(sessionFile2).isFile();
+        const exists3 = fs.existsSync(sessionFile3) && fs.statSync(sessionFile3).isFile();
+        
+        if (exists1 || exists2 || exists3) {
+          // 如果找到了文件，验证是否是有效的 session 文件
+          // .session 文件应该大于 0 字节（至少有一些内容）
+          if (exists2) {
+            const stats = fs.statSync(sessionFile2);
+            if (stats.size > 0) {
+              console.log(`✅ 找到 session 文件: ${sessionFile2} (${stats.size} 字节)`);
+              return true;
+            }
+          } else if (exists1) {
+            const stats = fs.statSync(sessionFile1);
+            if (stats.size > 0) {
+              console.log(`✅ 找到 session 文件: ${sessionFile1} (${stats.size} 字节)`);
+              return true;
+            }
+          } else if (exists3) {
+            // journal 文件存在，说明至少尝试创建过 session
+            // 但我们需要检查对应的 .session 文件是否存在
+            const correspondingSession = path.join(basePath, `${sessionFileName}.session`);
+            if (fs.existsSync(correspondingSession)) {
+              const stats = fs.statSync(correspondingSession);
+              if (stats.size > 0) {
+                console.log(`✅ 找到 session 文件（通过 journal）: ${correspondingSession} (${stats.size} 字节)`);
+                return true;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        // 继续尝试下一个路径
+        continue;
+      }
+    }
+    
+    // 如果所有路径都没找到，尝试直接检查（可能是绝对路径）
+    try {
+      if (fs.existsSync(sessionPath) && fs.statSync(sessionPath).isFile()) {
+        const stats = fs.statSync(sessionPath);
+        if (stats.size > 0) {
+          console.log(`✅ 找到 session 文件（绝对路径）: ${sessionPath} (${stats.size} 字节)`);
+          return true;
+        }
+      }
+      const sessionPathWithExt = `${sessionPath}.session`;
+      if (fs.existsSync(sessionPathWithExt) && fs.statSync(sessionPathWithExt).isFile()) {
+        const stats = fs.statSync(sessionPathWithExt);
+        if (stats.size > 0) {
+          console.log(`✅ 找到 session 文件（绝对路径）: ${sessionPathWithExt} (${stats.size} 字节)`);
+          return true;
+        }
+      }
+    } catch (err) {
+      // 忽略错误
+    }
+    
+    console.log(`❌ 未找到 session 文件: ${sessionPath} (尝试过的路径: ${possibleBasePaths.join(', ')})`);
+    return false;
   } catch (error) {
     console.error('检查 session 文件失败:', error);
     return false;
@@ -2040,12 +2122,14 @@ async function execLoginScriptWithDockerRun(command, args) {
     
     // 启动容器
     await container.start();
-    console.log(`✅ 临时容器已启动: ${tempContainerName}`);
+    // 减少日志输出，提高响应速度
+    // console.log(`✅ 临时容器已启动: ${tempContainerName}`);
     
     // 使用 attach 方式实时获取输出（必须在容器启动后）
     let stdout = '';
     let stderr = '';
     let attachResolved = false;
+    let hasValidJson = false; // 标记是否已检测到有效 JSON 输出
     
     // 创建 attach 流来实时获取输出
     const attachPromise = new Promise((resolve, reject) => {
@@ -2074,16 +2158,20 @@ async function execLoginScriptWithDockerRun(command, args) {
             if (streamType === 1) { // stdout
               const text = payload.toString();
               stdout += text;
-              // 实时输出调试信息（只显示前100字符）
-              if (text.trim()) {
-                console.log(`📤 容器输出: ${text.substring(0, 100).replace(/\n/g, '\\n')}`);
+              
+              // 一旦检测到有效的 JSON 输出，立即标记可以返回（不等待流结束）
+              if (text.includes('{') && (stdout.match(/\{[\s\S]*\}/) || stdout.includes('"success"'))) {
+                // 检测到可能的 JSON 输出，准备快速返回
+                if (!hasValidJson) {
+                  hasValidJson = true;
+                }
               }
             } else if (streamType === 2) { // stderr
               const text = payload.toString();
               stderr += text;
-              // 实时输出错误信息
-              if (text.trim()) {
-                console.log(`📥 容器错误: ${text.substring(0, 100).replace(/\n/g, '\\n')}`);
+              // 只在有错误时输出
+              if (text.trim() && !text.includes('INFO')) {
+                console.log(`📥 容器错误: ${text.substring(0, 200).replace(/\n/g, '\\n')}`);
               }
             }
             
@@ -2092,7 +2180,8 @@ async function execLoginScriptWithDockerRun(command, args) {
         });
         
         stream.on('end', () => {
-          console.log('✅ Attach 流结束');
+          // 减少日志输出，提高响应速度
+          // console.log('✅ Attach 流结束');
           attachResolved = true;
           resolve();
         });
@@ -2113,18 +2202,35 @@ async function execLoginScriptWithDockerRun(command, args) {
     
     // 等待容器执行完成（最多等待 timeout 毫秒）
     const waitPromise = container.wait().then(async (data) => {
-      console.log(`📋 容器已退出，退出码: ${data.StatusCode}`);
+      // 减少日志输出
+      // console.log(`📋 容器已退出，退出码: ${data.StatusCode}`);
       
-      // 等待 attach 完成或超时（最多等待 2 秒）
-      const attachTimeout = new Promise(resolve => setTimeout(() => {
-        console.log('⏱️  Attach 等待超时，使用 logs 获取输出');
-        resolve();
-      }, 2000));
+      // 如果已经有输出，立即处理（不等待 attach 完成）
+      let hasOutput = stdout.trim() || stderr.trim();
       
-      await Promise.race([attachTask, attachTimeout]);
+      if (hasValidJson || (hasOutput && stdout.includes('{'))) {
+        // 如果已经检测到有效的 JSON 输出，只等待很短时间确保数据完整（减少到 50ms）
+        await Promise.race([
+          attachTask,
+          new Promise(resolve => setTimeout(resolve, 50)) // 只等待 50ms，确保 JSON 完整
+        ]);
+      } else if (hasOutput) {
+        // 如果有输出但不是 JSON，等待稍长时间（减少到 100ms）
+        await Promise.race([
+          attachTask,
+          new Promise(resolve => setTimeout(resolve, 100))
+        ]);
+      } else {
+        // 如果没有输出，等待 attach 完成或超时（减少到 300ms）
+        const attachTimeout = new Promise(resolve => setTimeout(() => {
+          // console.log('⏱️  Attach 等待超时，使用 logs 获取输出');
+          resolve();
+        }, 300));
+        await Promise.race([attachTask, attachTimeout]);
+      }
       
       // 如果 attach 没有获取到输出，或者输出为空，尝试从 logs 获取
-      if ((!stdout.trim() && !stderr.trim()) || !attachResolved) {
+      if ((!stdout.trim() && !stderr.trim()) || (!attachResolved && !hasOutput)) {
         console.log('📋 从 logs 获取容器输出...');
         try {
           const logs = await container.logs({
@@ -2162,7 +2268,8 @@ async function execLoginScriptWithDockerRun(command, args) {
             offset += 8 + payloadLength;
           }
           
-          console.log(`📋 从 logs 获取到 stdout: ${stdout.length} 字节, stderr: ${stderr.length} 字节`);
+          // 减少日志输出
+          // console.log(`📋 从 logs 获取到 stdout: ${stdout.length} 字节, stderr: ${stderr.length} 字节`);
         } catch (logError) {
           console.warn(`⚠️  获取日志失败: ${logError.message}`);
         }
@@ -2177,15 +2284,19 @@ async function execLoginScriptWithDockerRun(command, args) {
     
     await Promise.race([waitPromise, timeoutPromise]);
     
-    // 等待 attach 任务完成
-    await attachTask;
+    // 如果已经有输出，不需要等待 attach 任务完成
+    if (!stdout.trim() && !stderr.trim()) {
+      // 只有在没有输出时才等待 attach 任务
+      await attachTask;
+    }
     
     // 检查容器退出码
     const containerInfo = await container.inspect();
     const exitCode = containerInfo.State.ExitCode;
     
-    console.log(`📋 容器执行完成，退出码: ${exitCode}`);
-    console.log(`📋 stdout 长度: ${stdout.length}, stderr 长度: ${stderr.length}`);
+    // 减少日志输出，只在出错时输出
+    // console.log(`📋 容器执行完成，退出码: ${exitCode}`);
+    // console.log(`📋 stdout 长度: ${stdout.length}, stderr 长度: ${stderr.length}`);
     
     // 清理容器（AutoRemove 应该已经删除，但为了安全还是尝试清理）
     try {
@@ -2220,8 +2331,8 @@ async function execLoginScriptWithDockerRun(command, args) {
       );
     }
     
-    // 输出调试信息
-    if (stderr.trim()) {
+    // 只在有错误时输出调试信息
+    if (stderr.trim() && !stdout.trim()) {
       console.log(`⚠️  stderr 输出: ${stderr.substring(0, 200)}`);
     }
     
@@ -2241,6 +2352,7 @@ async function execLoginScriptWithDockerRun(command, args) {
     } catch (parseError) {
       // 如果无法解析为 JSON，返回错误信息
       const errorMsg = stderr.trim() || stdout.trim() || '未知错误';
+      // 只在出错时输出详细错误
       console.error(`❌ 解析 JSON 失败: ${parseError.message}`);
       console.error(`❌ 输出内容: ${errorMsg.substring(0, 500)}`);
       throw new Error(`脚本输出不是有效的 JSON: ${errorMsg.substring(0, 500)}`);
@@ -2341,10 +2453,79 @@ async function syncUserConfigAndRestartTelethon(userId) {
 // 重启 Telethon 服务
 async function restartTelethonService() {
   try {
-    const { container } = await getDockerAndContainer();
-    await container.restart();
-    console.log('✅ Telethon 服务已重启');
-    return true;
+    const Docker = require('dockerode');
+    const dockerSocketPaths = [
+      '/var/run/docker.sock',
+      process.env.DOCKER_HOST?.replace('unix://', '') || null
+    ].filter(Boolean);
+    
+    let docker = null;
+    for (const socketPath of dockerSocketPaths) {
+      if (fs.existsSync(socketPath)) {
+        try {
+          docker = new Docker({ socketPath });
+          await docker.ping();
+          break;
+        } catch (e) {
+          docker = null;
+        }
+      }
+    }
+    
+    if (!docker) {
+      throw new Error('无法连接到 Docker daemon');
+    }
+    
+    // 尝试获取容器
+    let container = null;
+    const containerNames = ['tg_listener', 'telethon'];
+    
+    for (const name of containerNames) {
+      try {
+        container = docker.getContainer(name);
+        await container.inspect();
+        break;
+      } catch (e) {
+        container = null;
+      }
+    }
+    
+    if (!container) {
+      console.warn('⚠️  Telethon 容器不存在，无法重启');
+      return false;
+    }
+    
+    // 检查容器状态
+    const containerInfo = await container.inspect();
+    const state = containerInfo.State;
+    
+    // 如果容器正在重启，先停止它
+    if (state.Restarting) {
+      console.log('⚠️  容器正在重启中，先停止容器...');
+      try {
+        await container.stop({ t: 10 }); // 等待最多10秒
+        // 等待容器完全停止
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (stopError) {
+        console.warn('⚠️  停止容器失败（可能已经停止）:', stopError.message);
+      }
+    } else if (state.Running) {
+      // 如果容器正在运行，直接重启
+      await container.restart({ t: 10 });
+      console.log('✅ Telethon 服务已重启');
+      return true;
+    }
+    
+    // 启动容器
+    try {
+      await container.start();
+      console.log('✅ Telethon 服务已启动');
+      return true;
+    } catch (startError) {
+      // 如果启动失败，可能是容器配置问题
+      console.error('⚠️  启动 Telethon 服务失败:', startError.message);
+      return false;
+    }
   } catch (error) {
     console.error('⚠️  重启 Telethon 服务失败:', error.message);
     return false;
@@ -2355,8 +2536,8 @@ async function restartTelethonService() {
 // allowCreateTemp: 如果为 true，当容器未运行时，创建临时容器执行脚本
 async function execTelethonLoginScript(command, args = [], retryCount = 0, allowCreateTemp = true) {
   const maxRetries = 3;
-  const retryDelay = 2000; // 2秒
-  const timeout = 60000; // 60秒超时
+  const retryDelay = 1000; // 1秒（减少重试延迟）
+  const timeout = 30000; // 30秒超时（减少超时时间，登录操作通常很快）
   
   try {
     // 获取容器并等待就绪（如果正在重启）
@@ -2596,20 +2777,35 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       ], 0, true); // allowCreateTemp = true，允许使用 docker run 检查状态
       
       if (result.success) {
-        res.json({
-          logged_in: result.logged_in || false,
-          message: result.logged_in ? '已登录' : '未登录',
-          user: result.user || null
-        });
+        if (result.logged_in) {
+          res.json({
+            logged_in: true,
+            message: '已登录',
+            user: result.user || null
+          });
+        } else {
+          // session 文件存在但未登录，可能文件已损坏或无效
+          res.json({
+            logged_in: false,
+            message: 'session 文件存在但未登录，可能需要重新登录'
+          });
+        }
       } else {
+        // 脚本执行失败，但 session 文件存在，尝试返回更详细的信息
+        const errorMsg = result.error || '无法检查登录状态';
+        console.error(`检查登录状态失败: ${errorMsg}`);
         res.json({
           logged_in: false,
-          message: result.error || '无法检查登录状态'
+          message: `无法验证登录状态：${errorMsg}（session 文件存在）`
         });
       }
     } catch (error) {
       console.error('检查登录状态失败:', error);
-      // 如果容器未运行，返回未登录状态而不是错误
+      
+      // 即使出错，如果 session 文件存在，也返回更友好的提示
+      const errorMsg = error.message || '未知错误';
+      
+      // 如果容器未运行，但 session 文件存在，提示可以尝试登录或启动容器
       if (error.message && (
         error.message.includes('无法找到运行中的 Telethon 容器') ||
         error.message.includes('容器不存在') ||
@@ -2617,12 +2813,12 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       )) {
         res.json({
           logged_in: false,
-          message: '未登录（Telethon 容器未运行，但可以正常登录）'
+          message: 'session 文件存在，但无法验证登录状态（Telethon 容器未运行）。可以尝试重新登录或启动容器'
         });
       } else {
         res.json({
           logged_in: false,
-          message: '无法检查登录状态：' + error.message
+          message: `无法检查登录状态：${errorMsg}（session 文件存在）`
         });
       }
     }
@@ -2787,6 +2983,22 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
         setTimeout(async () => {
           try {
             console.log(`🔄 Telegram 登录成功，开始同步用户 ${userId} 的配置并重启 Telethon 服务...`);
+            
+            // 等待一小段时间确保 session 文件完全写入（减少等待时间）
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // 验证 session 文件是否已生成
+            const sessionPath = userId 
+              ? `/app/session/telegram_${userId}`
+              : '/app/session/telegram';
+            const sessionExists = checkSessionFileExists(sessionPath);
+            
+            if (sessionExists) {
+              console.log(`✅ Session 文件已确认存在: ${sessionPath}`);
+            } else {
+              console.warn(`⚠️  Session 文件可能还未完全写入，但继续尝试重启...`);
+            }
+            
             await syncUserConfigAndRestartTelethon(userId);
           } catch (error) {
             console.error('⚠️  Telegram 登录后同步配置失败（不影响登录）:', error);
