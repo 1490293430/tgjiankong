@@ -1161,71 +1161,218 @@ app.delete('/api/logs', authMiddleware, async (req, res) => {
 
 // ===== SSE 实时推送 =====
 
-// SSE 客户端连接池已在文件顶部声明（第22行），无需重复声明
+// SSE 客户端连接池已在文件顶部声明（第25行），无需重复声明
 
 // SSE 事件推送端点
 app.get('/api/events', authMiddleware, (req, res) => {
-  // 设置 SSE 响应头
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  const userId = req.user.userId;
+  
+  // 设置 SSE 响应头（必须严格按照 SSE 规范）
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no'); // 禁用 nginx 缓冲
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  
+  // 立即刷新响应头，确保连接建立
+  res.flushHeaders();
 
   // 发送初始连接消息
-  res.write('data: {"type":"connected","message":"实时推送已连接"}\n\n');
+  try {
+    const initMessage = JSON.stringify({
+      type: 'connected',
+      message: '实时推送已连接',
+      userId: userId,
+      timestamp: new Date().toISOString()
+    });
+    res.write(`data: ${initMessage}\n\n`);
+  } catch (err) {
+    console.error('SSE 初始化消息发送失败:', err);
+    return res.end();
+  }
 
-  // 将客户端添加到连接池
-  sseClients.add(res);
+  // 创建客户端信息对象，包含用户ID和连接时间
+  const clientInfo = {
+    res: res,
+    userId: userId,
+    connectedAt: Date.now(),
+    lastPing: Date.now(),
+    heartbeatInterval: null
+  };
 
-  // 客户端断开连接时清理
-  req.on('close', () => {
-    sseClients.delete(res);
-    res.end();
-  });
+  // 将客户端添加到连接池（使用对象而不是直接存储 res）
+  sseClients.add(clientInfo);
 
-  // 定期发送心跳，保持连接活跃
+  // 定期发送心跳，保持连接活跃（减少到15秒，确保连接不会超时）
   const heartbeatInterval = setInterval(() => {
-    if (sseClients.has(res)) {
+    if (sseClients.has(clientInfo)) {
       try {
-        res.write('data: {"type":"ping"}\n\n');
+        // 检查响应对象是否仍然可写
+        if (res.writable && !res.destroyed) {
+          const pingMessage = JSON.stringify({
+            type: 'ping',
+            timestamp: new Date().toISOString()
+          });
+          res.write(`data: ${pingMessage}\n\n`);
+          clientInfo.lastPing = Date.now();
+        } else {
+          // 连接已断开
+          clearInterval(heartbeatInterval);
+          sseClients.delete(clientInfo);
+          res.end();
+        }
       } catch (err) {
+        // 写入失败，连接可能已断开
         clearInterval(heartbeatInterval);
-        sseClients.delete(res);
-        res.end();
+        sseClients.delete(clientInfo);
+        try {
+          res.end();
+        } catch (e) {
+          // 忽略结束连接时的错误
+        }
       }
     } else {
       clearInterval(heartbeatInterval);
     }
-  }, 30000); // 30秒心跳
+  }, 15000); // 15秒心跳（更频繁，确保连接活跃）
 
-  // 清理心跳定时器
-  req.on('close', () => {
+  clientInfo.heartbeatInterval = heartbeatInterval;
+
+  // 处理客户端断开连接
+  const cleanup = () => {
     clearInterval(heartbeatInterval);
+    sseClients.delete(clientInfo);
+    try {
+      if (!res.destroyed && res.writable) {
+        res.end();
+      }
+    } catch (err) {
+      // 忽略清理时的错误
+    }
+  };
+
+  // 监听多种断开事件
+  req.on('close', cleanup);
+  req.on('error', (err) => {
+    console.error('SSE 连接错误:', err);
+    cleanup();
+  });
+  req.on('aborted', () => {
+    console.log('SSE 连接被客户端中止');
+    cleanup();
+  });
+  
+  res.on('close', cleanup);
+  res.on('error', (err) => {
+    console.error('SSE 响应错误:', err);
+    cleanup();
+  });
+  
+  res.on('finish', () => {
+    cleanup();
   });
 });
 
-// 推送事件给所有连接的客户端
-function broadcastEvent(eventType, data) {
-  const message = JSON.stringify({ type: eventType, data, timestamp: new Date().toISOString() });
+// 推送事件给所有连接的客户端（支持按用户ID过滤）
+function broadcastEvent(eventType, data, targetUserId = null) {
+  const message = JSON.stringify({ 
+    type: eventType, 
+    data, 
+    timestamp: new Date().toISOString() 
+  });
   const formattedMessage = `data: ${message}\n\n`;
   
   // 移除已断开的连接
   const disconnectedClients = [];
   
-  sseClients.forEach(client => {
+  sseClients.forEach(clientInfo => {
     try {
-      client.write(formattedMessage);
+      // 如果指定了目标用户ID，只发送给该用户
+      if (targetUserId && clientInfo.userId !== targetUserId) {
+        return;
+      }
+      
+      const res = clientInfo.res;
+      
+      // 检查连接是否仍然有效
+      if (!res || res.destroyed || !res.writable) {
+        disconnectedClients.push(clientInfo);
+        return;
+      }
+      
+      // 尝试发送消息
+      res.write(formattedMessage);
+      
+      // 更新最后活跃时间
+      clientInfo.lastPing = Date.now();
+      
     } catch (err) {
       // 连接已断开，标记为待删除
-      disconnectedClients.push(client);
+      console.error('SSE 推送消息失败:', err.message);
+      disconnectedClients.push(clientInfo);
     }
   });
   
   // 清理断开的连接
-  disconnectedClients.forEach(client => {
-    sseClients.delete(client);
+  disconnectedClients.forEach(clientInfo => {
+    try {
+      if (clientInfo.heartbeatInterval) {
+        clearInterval(clientInfo.heartbeatInterval);
+      }
+      if (clientInfo.res && !clientInfo.res.destroyed) {
+        clientInfo.res.end();
+      }
+    } catch (e) {
+      // 忽略清理错误
+    }
+    sseClients.delete(clientInfo);
   });
 }
+
+// 定期清理无效连接（每5分钟）
+setInterval(() => {
+  const now = Date.now();
+  const timeout = 2 * 60 * 1000; // 2分钟无响应视为超时
+  const disconnectedClients = [];
+  
+  sseClients.forEach(clientInfo => {
+    try {
+      // 检查连接是否超时
+      if (now - clientInfo.lastPing > timeout) {
+        console.log(`清理超时的 SSE 连接: 用户 ${clientInfo.userId}`);
+        disconnectedClients.push(clientInfo);
+        return;
+      }
+      
+      // 检查响应对象是否仍然有效
+      if (!clientInfo.res || clientInfo.res.destroyed || !clientInfo.res.writable) {
+        disconnectedClients.push(clientInfo);
+      }
+    } catch (err) {
+      disconnectedClients.push(clientInfo);
+    }
+  });
+  
+  // 清理无效连接
+  disconnectedClients.forEach(clientInfo => {
+    try {
+      if (clientInfo.heartbeatInterval) {
+        clearInterval(clientInfo.heartbeatInterval);
+      }
+      if (clientInfo.res && !clientInfo.res.destroyed) {
+        clientInfo.res.end();
+      }
+    } catch (e) {
+      // 忽略清理错误
+    }
+    sseClients.delete(clientInfo);
+  });
+  
+  if (disconnectedClients.length > 0) {
+    console.log(`🧹 清理了 ${disconnectedClients.length} 个无效的 SSE 连接`);
+  }
+}, 5 * 60 * 1000); // 每5分钟检查一次
 
 // ===== 统计相关 API =====
 
@@ -1348,7 +1495,7 @@ app.post('/api/alert/push', authMiddleware, async (req, res) => {
     });
     await log.save();
     
-    // 实时推送新消息事件给前端（包含userId以便前端过滤）
+    // 实时推送新消息事件给前端（只推送给该用户）
     broadcastEvent('new_message', {
       id: log._id,
       userId: userId,
@@ -1359,10 +1506,10 @@ app.post('/api/alert/push', authMiddleware, async (req, res) => {
       keywords: [cleanKeyword],
       time: log.time,
       alerted: true
-    });
+    }, userId);
     
-    // 推送统计更新事件（包含userId以便前端过滤）
-    broadcastEvent('stats_updated', { userId: userId });
+    // 推送统计更新事件（只推送给该用户）
+    broadcastEvent('stats_updated', { userId: userId }, userId);
     
     const userConfig = await loadUserConfig(userId);
     const config = userConfig.toObject ? userConfig.toObject() : userConfig;
@@ -1618,7 +1765,7 @@ app.post('/api/internal/message-notify', async (req, res) => {
       }
     }
     
-    // 推送新消息事件给前端（包含userId以便前端过滤）
+    // 推送新消息事件给前端（只推送给该用户）
     broadcastEvent('new_message', {
       id: log_id,
       userId: userId,
@@ -1629,10 +1776,10 @@ app.post('/api/internal/message-notify', async (req, res) => {
       keywords: keywords || [],
       time: time || new Date().toISOString(),
       alerted: alerted || false
-    });
+    }, userId);
     
-    // 推送统计更新事件（包含userId以便前端过滤）
-    broadcastEvent('stats_updated', { userId: userId });
+    // 推送统计更新事件（只推送给该用户）
+    broadcastEvent('stats_updated', { userId: userId }, userId);
     
     // 清除统计缓存（如果有userId，只清除该用户的缓存；否则清除所有）
     if (userId) {
@@ -3586,16 +3733,17 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
     }
     
     // 实时推送AI分析完成事件（包含userId以便前端过滤）
+    // 实时推送AI分析完成事件（只推送给该用户）
     broadcastEvent('ai_analysis_complete', {
       userId: userId,
       summary_id: summary._id,
       message_count: unanalyzedMessages.length,
       trigger_type: triggerType,
       analysis: analysisResult.analysis
-    });
+    }, userId);
     
-    // 推送AI统计更新事件（包含userId以便前端过滤）
-    broadcastEvent('ai_stats_updated', { userId: userId });
+    // 推送AI统计更新事件（只推送给该用户）
+    broadcastEvent('ai_stats_updated', { userId: userId }, userId);
 
     return {
       success: true,
