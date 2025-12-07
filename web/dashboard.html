@@ -1127,6 +1127,7 @@
         let sseConnected = false; // SSE 连接状态
         let refreshIntervalTimer = null; // 定期刷新定时器
         let refreshInterval = 30; // 默认刷新间隔（秒）
+        let savedScrollPosition = 0; // 保存滚动位置，用于模态框显示时
         
         // 立即隐藏所有模态框（在页面加载时）
         (function() {
@@ -1882,6 +1883,9 @@
         function showClearLogsConfirm() {
             const modal = document.getElementById('clearLogsModal');
             if (modal) {
+                // 保存当前滚动位置
+                savedScrollPosition = window.pageYOffset || document.documentElement.scrollTop;
+                
                 // 移除内联隐藏样式
                 modal.style.display = '';
                 modal.style.visibility = '';
@@ -1889,8 +1893,16 @@
                 modal.style.pointerEvents = '';
                 modal.style.zIndex = '';
                 modal.classList.add('show');
-                // 阻止页面滚动
+                
+                // 阻止页面滚动并固定位置
                 document.body.style.overflow = 'hidden';
+                document.body.style.position = 'fixed';
+                document.body.style.top = `-${savedScrollPosition}px`;
+                document.body.style.width = '100%';
+                
+                // 确保模态框在屏幕中央（不随页面滚动）
+                window.scrollTo(0, 0);
+                
                 // 隐藏错误信息
                 const errorDiv = document.getElementById('clearLogsModalError');
                 if (errorDiv) {
@@ -1912,8 +1924,12 @@
                 modal.style.pointerEvents = 'none';
                 modal.style.zIndex = '-1';
             }
-            // 恢复页面滚动
+            // 恢复页面滚动和位置
             document.body.style.overflow = '';
+            document.body.style.position = '';
+            document.body.style.top = '';
+            document.body.style.width = '';
+            window.scrollTo(0, savedScrollPosition);
         }
         
         // 确认清除日志
@@ -2715,6 +2731,9 @@
             // 显示模态弹窗
             const modal = document.getElementById('telegramLoginModal');
             if (modal) {
+                // 保存当前滚动位置
+                savedScrollPosition = window.pageYOffset || document.documentElement.scrollTop;
+                
                 // 移除内联隐藏样式
                 modal.style.display = '';
                 modal.style.visibility = '';
@@ -2722,13 +2741,23 @@
                 modal.style.pointerEvents = '';
                 modal.style.zIndex = '';
                 modal.classList.add('show');
-                // 确保模态框在屏幕中央
+                
+                // 阻止页面滚动并固定位置
                 document.body.style.overflow = 'hidden';
+                document.body.style.position = 'fixed';
+                document.body.style.top = `-${savedScrollPosition}px`;
+                document.body.style.width = '100%';
+                
+                // 确保模态框在屏幕中央（不随页面滚动）
+                window.scrollTo(0, 0);
             }
             
-            // 聚焦到输入框
+            // 聚焦到输入框（使用 preventScroll 防止滚动）
             setTimeout(() => {
-                document.getElementById('modalTelegramPhone').focus();
+                const phoneInput = document.getElementById('modalTelegramPhone');
+                if (phoneInput) {
+                    phoneInput.focus({ preventScroll: true });
+                }
             }, 100);
         }
         
@@ -2751,8 +2780,12 @@
                 modal.style.zIndex = '-1';
             }
             
-            // 恢复页面滚动
+            // 恢复页面滚动和位置
             document.body.style.overflow = '';
+            document.body.style.position = '';
+            document.body.style.top = '';
+            document.body.style.width = '';
+            window.scrollTo(0, savedScrollPosition);
             
             // 重置状态
             telegramLoginStep = 0;
@@ -2825,7 +2858,10 @@
                         telegramLoginStep = 2;
                         document.getElementById('telegramModalStep1').style.display = 'none';
                         document.getElementById('telegramModalStep2').style.display = 'block';
-                        document.getElementById('modalTelegramCode').focus();
+                        const codeInput = document.getElementById('modalTelegramCode');
+                        if (codeInput) {
+                            codeInput.focus({ preventScroll: true });
+                        }
                         confirmBtn.textContent = '确认';
                         showToast('✅ 验证码已发送到您的 Telegram 应用', true);
                     } else {
@@ -2886,7 +2922,10 @@
                         telegramLoginStep = 3;
                         document.getElementById('telegramModalStep2').style.display = 'none';
                         document.getElementById('telegramModalStep3').style.display = 'block';
-                        document.getElementById('modalTelegramPassword').focus();
+                        const passwordInput = document.getElementById('modalTelegramPassword');
+                        if (passwordInput) {
+                            passwordInput.focus({ preventScroll: true });
+                        }
                         confirmBtn.textContent = '确认';
                         errorDiv.textContent = '需要两步验证密码';
                         errorDiv.style.display = 'block';
