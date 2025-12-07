@@ -13,6 +13,7 @@ import signal
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 import aiohttp
+from aiohttp import web
 import motor.motor_asyncio
 from mongo_index_init import ensure_indexes
 
@@ -425,6 +426,26 @@ async def notify_new_message_async(log_id, channel, channel_id, sender, message,
 # -----------------------
 async def send_alert_async(keyword, message, sender, channel, channel_id, message_id):
     async with alert_semaphore:
+        # 获取userId用于告警推送
+        userId = None
+        if USER_ID:
+            try:
+                from bson import ObjectId
+                userId = str(ObjectId(USER_ID))
+            except Exception:
+                pass
+        
+        # 如果配置文件中有user_id，也尝试获取
+        if not userId:
+            config = CONFIG_CACHE or default_config()
+            config_user_id = config.get("user_id")
+            if config_user_id:
+                try:
+                    from bson import ObjectId
+                    userId = str(ObjectId(config_user_id))
+                except Exception:
+                    pass
+        
         payload = {
             "keyword": keyword,
             "message": message,
@@ -433,12 +454,76 @@ async def send_alert_async(keyword, message, sender, channel, channel_id, messag
             "channelId": str(channel_id),
             "messageId": message_id
         }
-        logger.info("发送告警到 API: %s", keyword)
-        result = await post_json(f"{API_URL}/api/alert/push", payload, timeout=10)
+        
+        # 如果有userId，添加到payload中
+        if userId:
+            payload["userId"] = userId
+        
+        logger.info("发送告警到 API: %s (userId: %s)", keyword, userId or "未设置")
+        # 使用内部API，不需要认证
+        result = await post_json(f"{API_URL}/api/internal/alert/push", payload, timeout=10)
         if result is not None:
             logger.info("告警发送成功: %s", keyword)
         else:
             logger.warning("告警发送失败: %s", keyword)
+
+
+# -----------------------
+# Telegram消息发送（异步）
+# -----------------------
+async def send_telegram_message_async(target: str, message: str) -> bool:
+    """
+    发送Telegram消息到指定目标
+    :param target: 目标（用户名、手机号或用户ID）
+    :param message: 消息内容
+    :return: 是否发送成功
+    """
+    global telegram_client
+    if not telegram_client:
+        logger.warning("⚠️ Telegram客户端未初始化，无法发送消息")
+        return False
+    
+    try:
+        if not telegram_client.is_connected():
+            await telegram_client.connect()
+        
+        # 尝试通过用户名或手机号获取实体
+        try:
+            entity = await telegram_client.get_entity(target)
+        except Exception as e:
+            logger.error("❌ 无法找到目标用户/群组 %s: %s", target, str(e))
+            return False
+        
+        # 发送消息
+        await telegram_client.send_message(entity, message)
+        logger.info("✅ Telegram消息已发送到: %s", target)
+        return True
+    except Exception as e:
+        logger.error("❌ 发送Telegram消息失败: %s", str(e))
+        return False
+
+
+# -----------------------
+# HTTP服务器用于接收发送消息请求
+# -----------------------
+async def handle_send_telegram(request):
+    """处理发送Telegram消息的HTTP请求"""
+    try:
+        data = await request.json()
+        target = data.get("target")
+        message = data.get("message")
+        
+        if not target or not message:
+            return web.json_response({"error": "缺少必要字段：target 和 message"}, status=400)
+        
+        success = await send_telegram_message_async(target, message)
+        if success:
+            return web.json_response({"status": "ok", "message": "消息已发送"})
+        else:
+            return web.json_response({"error": "发送失败"}, status=500)
+    except Exception as e:
+        logger.error("处理发送Telegram消息请求失败: %s", str(e))
+        return web.json_response({"error": str(e)}, status=500)
 
 
 # -----------------------
@@ -762,6 +847,19 @@ async def main():
     me = await client.get_me()
     logger.info("已登录为: %s (ID: %s)", getattr(me, "username", None) or getattr(me, "first_name", None), me.id)
 
+    # 保存Telegram客户端实例用于发送消息
+    global telegram_client
+    telegram_client = client
+
+    # 启动HTTP服务器用于接收发送消息请求
+    app = web.Application()
+    app.router.add_post('/api/internal/telegram/send', handle_send_telegram)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8888)
+    await site.start()
+    logger.info("📡 HTTP服务器已启动，监听端口 8888，用于接收Telegram消息发送请求")
+
     # start config reloader background task
     reloader = asyncio.create_task(config_reloader_task())
 
@@ -773,6 +871,7 @@ async def main():
     finally:
         SHUTDOWN.set()
         reloader.cancel()
+        await runner.cleanup()
         await http_session.close()
 
 

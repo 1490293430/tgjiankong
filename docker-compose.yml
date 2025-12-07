@@ -32,6 +32,7 @@ services:
       - JWT_SECRET=${JWT_SECRET:-change-this-secret-key-in-production}
       - PORT=3000
       - NODE_ENV=production
+      - TELETHON_URL=http://telethon:8888
     volumes:
       - ./backend:/app
       - /app/node_modules

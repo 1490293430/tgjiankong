@@ -1254,7 +1254,7 @@ app.get('/api/events', authMiddleware, (req, res) => {
         clearInterval(heartbeatInterval);
         sseClients.delete(clientInfo);
         try {
-          res.end();
+        res.end();
         } catch (e) {
           // 忽略结束连接时的错误
         }
@@ -1485,7 +1485,147 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
 
 // ===== 告警相关 API =====
 
-// 🚨 推送告警（CRITICAL FIX：添加 authMiddleware）
+// 内部 API：Telethon 服务调用的告警推送接口（不需要认证）
+app.post('/api/internal/alert/push', async (req, res) => {
+  try {
+    const { keyword, message, from, channel, channelId, messageId, userId } = req.body;
+    
+    // ✅ 验证必要字段
+    if (!keyword || !message) {
+      return res.status(400).json({ error: '缺少必要字段：keyword 和 message' });
+    }
+    
+    // ✅ 限制消息长度
+    if (message.length > 5000) {
+      return res.status(400).json({ error: '消息过长（最大 5000 字符）' });
+    }
+    
+    // ✅ 清理输入
+    const cleanKeyword = String(keyword).trim().substring(0, 500);
+    const cleanMessage = String(message).trim();
+    const cleanFrom = String(from || 'Unknown').trim().substring(0, 200);
+    const cleanChannel = String(channel || 'Unknown').trim().substring(0, 200);
+    
+    // 获取userId（从请求或从日志查询）
+    let userIdObj = null;
+    if (userId) {
+      try {
+        userIdObj = new mongoose.Types.ObjectId(userId);
+      } catch (e) {
+        console.error('无效的userId:', userId);
+      }
+    }
+    
+    // 如果提供了userId，保存日志到数据库
+    if (userIdObj) {
+      const log = new Log({
+        userId: userIdObj,
+        channel: cleanChannel,
+        channelId: channelId || '',
+        sender: cleanFrom,
+        message: cleanMessage,
+        keywords: [cleanKeyword],
+        messageId,
+        alerted: true
+      });
+      await log.save();
+      
+      // 实时推送新消息事件给前端（只推送给该用户）
+      broadcastEvent('new_message', {
+        id: log._id,
+        userId: userId,
+        channel: cleanChannel,
+        channelId: channelId || '',
+        sender: cleanFrom,
+        message: cleanMessage,
+        keywords: [cleanKeyword],
+        time: log.time,
+        alerted: true
+      }, userId);
+      
+      // 推送统计更新事件（只推送给该用户）
+      broadcastEvent('stats_updated', { userId: userId }, userId);
+      
+      // 清除统计缓存
+      statsCache.delete(userId);
+    }
+    
+    // 加载用户配置发送告警
+    if (userIdObj) {
+      const userConfig = await loadUserConfig(userIdObj.toString());
+      const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+      const actions = config.alert_actions;
+      
+      // 构建告警消息
+      const alertMessage = `⚠️ 关键词告警触发
+
+来源：${cleanChannel} (${channelId})
+发送者：${cleanFrom}
+关键词：${cleanKeyword}
+时间：${new Date().toLocaleString('zh-CN')}
+
+消息内容：
+${cleanMessage}
+
+${messageId ? `👉 跳转链接：t.me/c/${channelId}/${messageId}` : ''}`;
+      
+      // Telegram 推送（通过Telethon服务发送）
+      if (actions.telegram && config.alert_target) {
+        try {
+          // 调用Telethon服务的HTTP接口发送消息
+          await axios.post(`${process.env.TELETHON_URL || 'http://telethon:8888'}/api/internal/telegram/send`, {
+            target: config.alert_target,
+            message: alertMessage
+          }, {
+            timeout: 10000,
+            headers: {
+              'Content-Type': 'application/json'
+            }
+          });
+          console.log('📱 Telegram 告警已发送到:', config.alert_target);
+        } catch (error) {
+          console.error('❌ Telegram 发送失败:', error.message);
+        }
+      }
+      
+      // 邮件推送
+      if (actions.email && actions.email.enable) {
+        try {
+          await sendEmail(actions.email, '⚠️ Telegram 监控告警', alertMessage);
+          console.log('📧 邮件告警已发送');
+        } catch (error) {
+          console.error('❌ 邮件发送失败:', error.message);
+        }
+      }
+      
+      // Webhook 推送
+      if (actions.webhook && actions.webhook.enable && actions.webhook.url) {
+        try {
+          await axios.post(actions.webhook.url, {
+            type: 'telegram_alert',
+            keyword,
+            message,
+            from,
+            channel,
+            channelId,
+            messageId,
+            timestamp: new Date().toISOString()
+          });
+          console.log('🔗 Webhook 告警已发送');
+        } catch (error) {
+          console.error('❌ Webhook 发送失败:', error.message);
+        }
+      }
+    }
+    
+    res.json({ status: 'ok', message: '告警已推送' });
+  } catch (error) {
+    console.error('❌ 内部告警推送失败:', error);
+    res.status(500).json({ error: '推送告警失败：' + error.message });
+  }
+});
+
+// 🚨 推送告警（受保护的API，需要认证）
 app.post('/api/alert/push', authMiddleware, async (req, res) => {
   try {
     const { keyword, message, from, channel, channelId, messageId } = req.body;
@@ -1762,6 +1902,38 @@ app.get('/api/ai/summary/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// 清除 AI 分析结果
+app.delete('/api/ai/summary/clear', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const userIdObj = new mongoose.Types.ObjectId(userId);
+    
+    // 删除该用户的所有AI分析结果
+    const deleteResult = await AISummary.deleteMany({ userId: userIdObj });
+    
+    // 重置该用户所有Log记录中的ai_analyzed和ai_summary_id字段
+    const updateResult = await Log.updateMany(
+      { userId: userIdObj },
+      { $set: { ai_analyzed: false, ai_summary_id: null } }
+    );
+    
+    console.log(`🗑️ 用户 ${userId} 已清除 ${deleteResult.deletedCount} 条AI分析结果，重置了 ${updateResult.modifiedCount} 条日志的AI分析标记`);
+    
+    // 清除统计缓存
+    statsCache.delete(userId);
+    
+    res.json({ 
+      status: 'ok', 
+      message: '清除成功',
+      deletedSummaries: deleteResult.deletedCount,
+      resetLogs: updateResult.modifiedCount
+    });
+  } catch (error) {
+    console.error('❌ 清除AI分析结果失败:', error);
+    res.status(500).json({ error: '清除失败：' + error.message });
+  }
+});
+
 // 手动触发 AI 分析
 app.post('/api/ai/analyze-now', authMiddleware, async (req, res) => {
   try {
@@ -1807,6 +1979,34 @@ app.post('/api/internal/message-notify', async (req, res) => {
     
     // 推送统计更新事件（只推送给该用户）
     broadcastEvent('stats_updated', { userId: userId }, userId);
+    
+    // 如果启用了消息数量阈值触发，立即检查是否达到阈值
+    if (userId) {
+      try {
+        const userConfig = await loadUserConfig(userId);
+        const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+        
+        if (config.ai_analysis?.enabled && config.ai_analysis.analysis_trigger_type === 'count') {
+          const threshold = config.ai_analysis.message_count_threshold || 50;
+          const userIdObj = new mongoose.Types.ObjectId(userId);
+          const unanalyzedCount = await Log.countDocuments({ 
+            userId: userIdObj,
+            ai_analyzed: false 
+          });
+          
+          if (unanalyzedCount >= threshold) {
+            console.log(`📊 用户 ${userId} 未分析消息达到阈值 ${threshold}（当前: ${unanalyzedCount}），立即触发 AI 分析`);
+            // 异步触发，不阻塞响应
+            performAIAnalysis('count', null, userId).catch(err => {
+              console.error(`触发 AI 分析失败:`, err.message);
+            });
+          }
+        }
+      } catch (err) {
+        // 静默失败，不影响消息通知
+        console.error('检查消息数量阈值失败:', err.message);
+      }
+    }
     
     // 清除统计缓存（如果有userId，只清除该用户的缓存；否则清除所有）
     if (userId) {
@@ -2928,8 +3128,8 @@ async function restartTelethonService() {
     } else if (state.Running) {
       // 如果容器正在运行，直接重启
       await container.restart({ t: 10 });
-      console.log('✅ Telethon 服务已重启');
-      return true;
+    console.log('✅ Telethon 服务已重启');
+    return true;
     }
     
     // 启动容器
@@ -3194,15 +3394,15 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       
       if (result.success) {
         if (result.logged_in) {
-          res.json({
+        res.json({
             logged_in: true,
             message: '已登录',
-            user: result.user || null
-          });
-        } else {
+          user: result.user || null
+        });
+      } else {
           // session 文件存在但未登录，可能文件已损坏或无效
-          res.json({
-            logged_in: false,
+        res.json({
+          logged_in: false,
             message: 'session 文件存在但未登录，可能需要重新登录'
           });
         }
@@ -3227,8 +3427,8 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
         error.message.includes('容器不存在') ||
         error.message.includes('已退出')
       )) {
-        res.json({
-          logged_in: false,
+      res.json({
+        logged_in: false,
           message: 'session 文件存在，但无法验证登录状态（Telethon 容器未运行）。可以尝试重新登录或启动容器'
         });
       } else {
@@ -3483,6 +3683,31 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
   }
 });
 
+// 内部 API：发送 Telegram 消息（供AI分析告警使用，Telethon服务会监听并发送）
+app.post('/api/internal/telegram/send', async (req, res) => {
+  try {
+    const { target, message, userId } = req.body;
+    
+    if (!target || !message) {
+      return res.status(400).json({ error: '缺少必要字段：target 和 message' });
+    }
+    
+    // 这个端点主要用于记录日志，实际发送由Telethon服务在monitor.py中处理
+    // 因为Telethon服务可以直接通过client.send_message发送消息
+    // 这里只记录日志，实际的Telegram消息发送已经在monitor.py中实现
+    console.log(`📱 Telegram消息发送请求: target=${target}, userId=${userId || 'N/A'}`);
+    
+    // 注意：实际的Telegram消息发送应该在Telethon服务的monitor.py中通过client.send_message完成
+    // 由于Telethon服务已经有了直接发送消息的能力（在关键词告警中已经实现），
+    // AI分析的Telegram告警也应该通过类似的机制完成
+    
+    res.json({ status: 'ok', message: 'Telegram发送请求已记录（实际发送由Telethon服务处理）' });
+  } catch (error) {
+    console.error('❌ Telegram发送请求处理失败:', error);
+    res.status(500).json({ error: '处理失败：' + error.message });
+  }
+});
+
 // 内部 API：Telethon 服务调用的 AI 分析接口（不需要认证）
 app.post('/api/internal/ai/analyze-now', async (req, res) => {
   try {
@@ -3720,11 +3945,20 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
     if (aiSendTelegram || aiSendEmail || aiSendWebhook) {
       const alertMessage = `🤖 AI 分析完成\n\n总分析消息数: ${unanalyzedMessages.length}\n情感倾向: ${analysisResult.analysis.sentiment}\n风险等级: ${analysisResult.analysis.risk_level}\n\n摘要:\n${analysisResult.analysis.summary}\n\n关键词: ${(analysisResult.analysis.keywords || []).join(', ')}`;
       
-      // 发送 Telegram 告警
+      // 发送 Telegram 告警（直接通过Telethon服务发送）
       if (aiSendTelegram && config.alert_target) {
         try {
-          // 这里需要通过监听服务发送，暂时记录日志
-          console.log('📱 AI 分析结果将通过 Telegram 发送至:', config.alert_target);
+          // 直接调用Telethon服务的HTTP接口发送消息
+          await axios.post(`${process.env.TELETHON_URL || 'http://telethon:8888'}/api/internal/telegram/send`, {
+            target: config.alert_target,
+            message: alertMessage
+          }, {
+            timeout: 10000,
+            headers: {
+              'Content-Type': 'application/json'
+            }
+          });
+          console.log('📱 AI 分析结果已通过 Telegram 发送到:', config.alert_target);
         } catch (error) {
           console.error('❌ Telegram 发送失败:', error.message);
         }

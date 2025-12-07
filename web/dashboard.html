@@ -957,6 +957,14 @@
                     <span id="aiPageInfo">第 1 页 / 共 1 页</span>
                     <button id="aiNextPage" onclick="loadAISummaries(currentAIPage + 1)">下一页</button>
                 </div>
+                <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center;">
+                    <button class="btn btn-danger" onclick="clearAIAnalysis()" style="background: #e74c3c; border-color: #e74c3c;">
+                        🗑️ 清除所有分析结果
+                    </button>
+                    <div class="hint" style="margin-top: 8px; color: #666;">
+                        此操作将删除所有AI分析结果，并重置所有消息的分析标记，不可恢复
+                    </div>
+                </div>
             </div>
             
             <div class="card">
@@ -2475,6 +2483,42 @@
                 document.getElementById('aiPageInfo').textContent = `第 ${page} 页 / 共 ${data.totalPages || 1} 页`;
                 document.getElementById('aiPrevPage').disabled = page <= 1;
                 document.getElementById('aiNextPage').disabled = page >= (data.totalPages || 1);
+            }
+        }
+        
+        // 清除所有AI分析结果
+        async function clearAIAnalysis() {
+            if (!confirm('⚠️ 确定要清除所有AI分析结果吗？\n\n此操作将：\n- 删除所有AI分析摘要\n- 重置所有消息的AI分析标记\n- 此操作不可恢复！')) {
+                return;
+            }
+            
+            const confirmText = prompt('请输入 "清除" 以确认此操作：');
+            if (confirmText !== '清除') {
+                alert('操作已取消');
+                return;
+            }
+            
+            try {
+                const result = await apiRequest('/api/ai/summary/clear', {
+                    method: 'DELETE'
+                });
+                
+                if (result) {
+                    alert(`✅ 清除成功！\n\n已删除 ${result.deletedSummaries || 0} 条分析结果\n已重置 ${result.resetLogs || 0} 条消息的分析标记`);
+                    
+                    // 刷新所有相关数据
+                    loadAISummaries(1);
+                    if (typeof loadAIStats === 'function') {
+                        loadAIStats();
+                    }
+                    // 刷新统计
+                    if (typeof loadStats === 'function') {
+                        loadStats();
+                    }
+                }
+            } catch (error) {
+                console.error('清除失败:', error);
+                alert('❌ 清除失败：' + (error.message || '未知错误'));
             }
         }
         
