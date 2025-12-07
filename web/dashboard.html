@@ -673,7 +673,7 @@
                                 </p>
                                 <p id="telegramUserInfo" style="margin: 5px 0 0 0; color: #666; font-size: 13px;"></p>
                             </div>
-                            <button class="btn btn-secondary" onclick="checkTelegramLoginStatus()" style="margin-top: 10px;">🔄 刷新状态</button>
+                            <button class="btn btn-secondary" onclick="checkTelegramLoginStatus(true)" style="margin-top: 10px;">🔄 刷新状态</button>
                         </div>
                         
                         <!-- 未登录状态 -->
@@ -1256,11 +1256,10 @@
                     throw new Error('SSE连接失败: ' + response.status);
                 }
                 
-                // SSE连接成功
-                sseConnected = true;
-                updateSSEStatus('connected', '实时推送已连接');
-                stopFallbackRefresh(); // 停止降级刷新
-                console.log('✅ SSE实时推送已连接');
+                // SSE HTTP连接成功（但流可能还没开始）
+                // 先不设置 sseConnected = true，等收到第一条消息后再设置
+                // 这样可以避免在连接过程中被误判为超时
+                console.log('✅ SSE HTTP连接已建立，等待流数据...');
                 
                 return response.body.getReader();
             }).catch(err => {
@@ -1284,8 +1283,18 @@
                 // 保存 reader 引用以便清理
                 eventSource.reader = reader;
                 
+                // 标记连接已建立（在获取到reader时）
+                // 注意：sseConnected 已经在 response.then 中设置为 true
+                // 这里只是确保状态正确
+                if (!sseConnected) {
+                    sseConnected = true;
+                    updateSSEStatus('connected', '实时推送已连接');
+                    stopFallbackRefresh();
+                }
+                
                 const decoder = new TextDecoder();
                 let buffer = '';
+                let hasReceivedFirstMessage = false; // 标记是否收到第一条消息
                 
                 function readStream() {
                     reader.read().then(({ done, value }) => {
@@ -1304,6 +1313,12 @@
                                 setTimeout(() => connectSSE(), 5000);
                             }
                             return;
+                        }
+                        
+                        // 标记已收到数据（连接真正建立）
+                        if (!hasReceivedFirstMessage) {
+                            hasReceivedFirstMessage = true;
+                            console.log('✅ SSE流开始接收数据');
                         }
                         
                         buffer += decoder.decode(value, { stream: true });
@@ -1339,7 +1354,11 @@
                 
                 readStream();
             }).catch(err => {
-            }).catch(err => {
+                // 忽略主动中止的错误
+                if (err.name === 'AbortError') {
+                    console.log('SSE连接已中止');
+                    return;
+                }
                 console.error('SSE连接失败:', err);
                 sseConnected = false;
                 updateSSEStatus('disconnected', '连接失败（定期刷新模式）');
@@ -1593,9 +1612,7 @@
                 loadRecentLogs();
             } else if (tabName === 'config') {
                 loadConfig();
-                setTimeout(() => {
-                    checkTelegramLoginStatus(); // 切换到配置页面时检查登录状态
-                }, 500);
+                // loadConfig 内部会调用 checkTelegramLoginStatus，这里不需要重复调用
             } else if (tabName === 'ai') {
                 loadAIStats();
                 loadAISummaries();
@@ -1779,10 +1796,10 @@
                     toggleAITriggerConfig();
                 }
                 
-                // 加载配置后自动检查 Telegram 登录状态
+                // 加载配置后自动检查 Telegram 登录状态（确保配置已完全加载）
                 setTimeout(() => {
-                    checkTelegramLoginStatus();
-                }, 500);
+                    checkTelegramLoginStatus(true); // 强制刷新
+                }, 800); // 增加延迟，确保配置已完全加载
             } catch (error) {
                 console.error('加载配置失败:', error);
                 showToast('❌ 加载配置失败：' + (error.message || '未知错误'), false);
@@ -1858,7 +1875,7 @@
                     
                     // 如果配置了 API_ID 和 API_HASH，自动检查登录状态
                     setTimeout(() => {
-                        checkTelegramLoginStatus();
+                        checkTelegramLoginStatus(true); // 强制刷新
                     }, 1500);
                 } else {
                     showToast('✅ 配置保存成功！', true);
@@ -2223,9 +2240,7 @@
                     await loadRecentLogs();
                 } else if (activeTab === 'config') {
                     await loadConfig();
-                    setTimeout(() => {
-                        checkTelegramLoginStatus();
-                    }, 500);
+                    // loadConfig 内部会调用 checkTelegramLoginStatus，这里不需要重复调用
                 } else if (activeTab === 'ai') {
                     await loadAIStats();
                     await loadAISummaries();
@@ -2681,7 +2696,7 @@
                             loadRecentLogs();
                         } else if (activeTab === 'config') {
                             loadConfig();
-                            setTimeout(() => checkTelegramLoginStatus(), 500);
+                            // loadConfig 内部会调用 checkTelegramLoginStatus，这里不需要重复调用
                         } else if (activeTab === 'ai') {
                             loadAIStats();
                             loadAISummaries();
@@ -2801,18 +2816,20 @@
         // 连接 SSE 实时推送
         connectSSE();
         
-        // 如果3秒后SSE仍未连接，启动降级刷新
+        // 如果8秒后SSE仍未连接，启动降级刷新（增加超时时间，给连接更多时间）
         setTimeout(() => {
-            if (!sseConnected && refreshInterval > 0) {
-                console.warn('⚠️ SSE连接超时，启用定期刷新模式');
-                if (!sseConnected) {
+            if (!sseConnected) {
+                if (refreshInterval > 0) {
+                    console.warn('⚠️ SSE连接超时，启用定期刷新模式');
                     updateSSEStatus('disconnected', '连接超时（定期刷新模式）');
+                    startFallbackRefresh();
+                } else {
+                    updateSSEStatus('disconnected', '连接超时');
+                    // 即使未启用定期刷新，也继续尝试重连
+                    setTimeout(() => connectSSE(), 5000);
                 }
-                startFallbackRefresh();
-            } else if (!sseConnected) {
-                updateSSEStatus('disconnected', '连接失败');
             }
-        }, 3000);
+        }, 8000); // 从3秒增加到8秒
         
         // 页面卸载时断开 SSE 连接
         window.addEventListener('beforeunload', () => {
@@ -2826,16 +2843,44 @@
         let telegramLoginInProgress = false; // 登录进行中标志，防止重复点击
         let telegramLoginAbortController = null; // 用于取消正在进行的登录请求
         
-        // 检查 Telegram 登录状态
-        async function checkTelegramLoginStatus() {
+        // 检查 Telegram 登录状态（添加防抖和状态管理）
+        let telegramStatusCheckInProgress = false;
+        let telegramStatusCheckTimer = null;
+        
+        async function checkTelegramLoginStatus(force = false) {
             const statusDiv = document.getElementById('telegramLoginStatus');
             const loggedInDiv = document.getElementById('telegramLoggedIn');
             const notLoggedInDiv = document.getElementById('telegramNotLoggedIn');
             
             if (!statusDiv || !loggedInDiv || !notLoggedInDiv) return;
             
+            // 防抖：如果正在检查中，且不是强制刷新，则取消之前的检查
+            if (telegramStatusCheckInProgress && !force) {
+                return;
+            }
+            
+            // 清除之前的定时器
+            if (telegramStatusCheckTimer) {
+                clearTimeout(telegramStatusCheckTimer);
+                telegramStatusCheckTimer = null;
+            }
+            
+            // 延迟执行，避免重复调用
+            if (!force) {
+                telegramStatusCheckTimer = setTimeout(() => {
+                    checkTelegramLoginStatus(true);
+                }, 100);
+                return;
+            }
+            
+            telegramStatusCheckInProgress = true;
+            
             try {
+                // 显示检查状态
+                statusDiv.style.display = 'block';
                 statusDiv.innerHTML = '<p style="color: #666; margin-bottom: 10px;">检查登录状态中...</p>';
+                loggedInDiv.style.display = 'none';
+                notLoggedInDiv.style.display = 'none';
                 
                 const response = await apiRequest('/telegram/login/status');
                 
@@ -2848,7 +2893,10 @@
                     if (response.user) {
                         const userInfo = response.user;
                         const userInfoText = `用户：${userInfo.first_name || '未知'}${userInfo.username ? ' (@' + userInfo.username + ')' : ''}`;
-                        document.getElementById('telegramUserInfo').textContent = userInfoText;
+                        const userInfoEl = document.getElementById('telegramUserInfo');
+                        if (userInfoEl) {
+                            userInfoEl.textContent = userInfoText;
+                        }
                     }
                 } else {
                     // 未登录
@@ -2858,9 +2906,13 @@
                 }
             } catch (error) {
                 console.error('检查 Telegram 登录状态失败:', error);
+                // 显示错误信息，但不隐藏状态区域
+                statusDiv.style.display = 'block';
                 statusDiv.innerHTML = `<p style="color: #e74c3c; margin-bottom: 10px;">检查失败：${error.message || '未知错误'}</p>`;
                 loggedInDiv.style.display = 'none';
-                notLoggedInDiv.style.display = 'block';
+                notLoggedInDiv.style.display = 'none';
+            } finally {
+                telegramStatusCheckInProgress = false;
             }
         }
         
@@ -3068,7 +3120,7 @@
                     if (response.success) {
                         // 登录成功
                         closeTelegramLoginModal();
-                        await checkTelegramLoginStatus();
+                        await checkTelegramLoginStatus(true); // 强制刷新状态
                         showToast('✅ ' + (response.message || '登录成功！'), true);
                     } else if (response.password_required) {
                         // 需要两步验证密码
@@ -3135,7 +3187,7 @@
                     if (response.success) {
                         // 登录成功
                         closeTelegramLoginModal();
-                        await checkTelegramLoginStatus();
+                        await checkTelegramLoginStatus(true); // 强制刷新状态
                         showToast('✅ ' + (response.message || '登录成功！'), true);
                     } else {
                         errorDiv.textContent = response.error || '登录失败';
