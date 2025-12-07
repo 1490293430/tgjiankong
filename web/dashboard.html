@@ -574,11 +574,11 @@
     
     <div class="container">
         <div class="nav-tabs">
-            <button class="nav-tab active" onclick="switchTab('dashboard')">📊 仪表盘</button>
-            <button class="nav-tab" onclick="switchTab('ai')">🤖 AI 分析</button>
-            <button class="nav-tab" onclick="switchTab('logs')">📝 日志</button>
-            <button class="nav-tab" onclick="switchTab('config')">⚙️ 配置</button>
-            <button class="nav-tab" onclick="switchTab('settings')">⚙️ 设置</button>
+            <button class="nav-tab active" onclick="switchTab('dashboard', this)">📊 仪表盘</button>
+            <button class="nav-tab" onclick="switchTab('ai', this)">🤖 AI 分析</button>
+            <button class="nav-tab" onclick="switchTab('logs', this)">📝 日志</button>
+            <button class="nav-tab" onclick="switchTab('config', this)">⚙️ 配置</button>
+            <button class="nav-tab" onclick="switchTab('settings', this)">⚙️ 设置</button>
         </div>
         
         <!-- 仪表盘 -->
@@ -1114,6 +1114,17 @@
         let refreshIntervalTimer = null; // 定期刷新定时器
         let refreshInterval = 30; // 默认刷新间隔（秒）
         
+        // 立即隐藏所有模态框（在页面加载时）
+        (function() {
+            document.querySelectorAll('.modal-overlay').forEach(modal => {
+                modal.style.display = 'none';
+                modal.style.visibility = 'hidden';
+                modal.style.opacity = '0';
+                modal.style.pointerEvents = 'none';
+                modal.classList.remove('show');
+            });
+        })();
+        
         // 显示底部全宽提示条
         function showToast(message, isSuccess = true) {
             const toast = document.getElementById('toastNotification');
@@ -1470,11 +1481,23 @@
         }
         
         // 切换标签
-        function switchTab(tabName) {
+        function switchTab(tabName, eventElement) {
             document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
             
-            event.target.classList.add('active');
+            // 如果有传入的元素，激活它；否则通过tabName查找对应的按钮
+            if (eventElement) {
+                eventElement.classList.add('active');
+            } else {
+                // 通过按钮的onclick属性查找对应的标签按钮
+                document.querySelectorAll('.nav-tab').forEach(tab => {
+                    const onclickAttr = tab.getAttribute('onclick');
+                    if (onclickAttr && onclickAttr.includes(`switchTab('${tabName}'`)) {
+                        tab.classList.add('active');
+                    }
+                });
+            }
+            
             const tabContent = document.getElementById(tabName);
             if (tabContent) {
                 tabContent.classList.add('active');
@@ -2776,16 +2799,14 @@
                         errorDiv.style.display = 'block';
                     }
                 } catch (error) {
-                    console.error('发送验证码失败:', error);
-                    errorDiv.textContent = `发送验证码失败：${error.message || '未知错误'}`;
-                    errorDiv.style.display = 'block';
-                } catch (error) {
                     // 如果是因为取消请求导致的错误，不显示错误信息
                     if (error.name === 'AbortError') {
                         console.log('请求已取消');
                         return;
                     }
-                    throw error; // 重新抛出其他错误
+                    console.error('发送验证码失败:', error);
+                    errorDiv.textContent = `发送验证码失败：${error.message || '未知错误'}`;
+                    errorDiv.style.display = 'block';
                 } finally {
                     telegramLoginInProgress = false;
                     confirmBtn.disabled = false;
