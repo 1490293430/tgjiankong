@@ -24,6 +24,23 @@ const app = express();
 // SSE 客户端连接池
 const sseClients = new Set();
 
+// 临时登录容器管理（userId -> { containerName, createdAt, container }）
+const tempLoginContainers = new Map();
+
+// 清理超时的临时容器（30分钟后自动清理）
+const TEMP_CONTAINER_TIMEOUT = 30 * 60 * 1000; // 30分钟
+setInterval(() => {
+  const now = Date.now();
+  for (const [userId, info] of tempLoginContainers.entries()) {
+    if (now - info.createdAt > TEMP_CONTAINER_TIMEOUT) {
+      console.log(`🧹 清理超时的临时登录容器: ${info.containerName} (用户: ${userId})`);
+      cleanupTempLoginContainer(userId).catch(err => {
+        console.error(`清理临时容器失败:`, err);
+      });
+    }
+  }
+}, 5 * 60 * 1000); // 每5分钟检查一次
+
 // 🔒 信任反向代理（用于 X-Forwarded-For 头部，在 Docker + Nginx 环境中必需）
 app.set('trust proxy', 1);
 
@@ -1716,6 +1733,128 @@ async function waitForContainerReady(container, maxWaitSeconds = 30) {
   ));
 }
 
+// 清理临时登录容器
+async function cleanupTempLoginContainer(userId) {
+  const containerInfo = tempLoginContainers.get(userId);
+  if (!containerInfo) {
+    return; // 没有临时容器
+  }
+  
+  try {
+    const Docker = require('dockerode');
+    const dockerSocketPaths = [
+      '/var/run/docker.sock',
+      process.env.DOCKER_HOST?.replace('unix://', '') || null
+    ].filter(Boolean);
+    
+    let docker = null;
+    for (const socketPath of dockerSocketPaths) {
+      if (fs.existsSync(socketPath)) {
+        try {
+          docker = new Docker({ socketPath });
+          await docker.ping();
+          break;
+        } catch (e) {
+          docker = null;
+        }
+      }
+    }
+    
+    if (!docker) {
+      console.warn('⚠️  无法连接到 Docker daemon，跳过容器清理');
+      tempLoginContainers.delete(userId);
+      return;
+    }
+    
+    try {
+      const container = docker.getContainer(containerInfo.containerName);
+      const containerInfo_check = await container.inspect();
+      
+      // 停止并删除容器
+      if (containerInfo_check.State.Running) {
+        await container.stop({ t: 5 });
+      }
+      await container.remove({ force: true });
+      console.log(`✅ 已清理临时登录容器: ${containerInfo.containerName}`);
+    } catch (err) {
+      if (err.statusCode !== 404) {
+        console.warn(`⚠️  清理容器 ${containerInfo.containerName} 失败:`, err.message);
+      }
+      // 容器可能已经不存在了，忽略404错误
+    }
+    
+    tempLoginContainers.delete(userId);
+  } catch (error) {
+    console.error('清理临时容器时出错:', error);
+    tempLoginContainers.delete(userId); // 即使出错也删除记录
+  }
+}
+
+// 创建或获取临时登录容器
+async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHostPath, containerImage, networkName) {
+  const Docker = require('dockerode');
+  const dockerSocketPaths = [
+    '/var/run/docker.sock',
+    process.env.DOCKER_HOST?.replace('unix://', '') || null
+  ].filter(Boolean);
+  
+  let docker = null;
+  for (const socketPath of dockerSocketPaths) {
+    if (fs.existsSync(socketPath)) {
+      try {
+        docker = new Docker({ socketPath });
+        await docker.ping();
+        break;
+      } catch (e) {
+        docker = null;
+      }
+    }
+  }
+  
+  if (!docker) {
+    throw new Error('无法连接到 Docker daemon');
+  }
+  
+  const containerName = `tg_login_${userId}_${Date.now()}`;
+  
+  // 创建容器配置（长期运行，用于多次执行命令）
+  const containerConfig = {
+    Image: containerImage,
+    name: containerName,
+    Cmd: ['sleep', '3600'], // 让容器保持运行（1小时）
+    Env: [
+      'PYTHONUNBUFFERED=1'
+    ],
+    HostConfig: {
+      Binds: [
+        `${configHostPath}:/app/config.json:ro`,
+        `${sessionHostPath}:/app/session`
+      ],
+      AutoRemove: false // 不自动删除，我们手动管理
+    },
+    NetworkMode: networkName || 'bridge',
+    AttachStdout: true,
+    AttachStderr: true
+  };
+  
+  // 创建容器
+  const container = await docker.createContainer(containerConfig);
+  
+  // 启动容器
+  await container.start();
+  
+  console.log(`✅ 创建临时登录容器: ${containerName}`);
+  
+  // 保存容器信息
+  tempLoginContainers.set(userId, {
+    containerName: containerName,
+    createdAt: Date.now(),
+    container: container
+  });
+  
+  return containerName;
+}
+
 // 检查本地 session 文件是否存在（不依赖容器）
 function checkSessionFileExists(sessionPath) {
   try {
@@ -1973,7 +2112,7 @@ async function getDockerAndContainer(checkReady = false, allowCreateTemp = false
 }
 
 // 使用 Docker SDK 创建临时容器执行登录脚本（当主容器未运行时使用）
-async function execLoginScriptWithDockerRun(command, args) {
+async function execLoginScriptWithDockerRun(command, args, userId = null, reuseContainer = false) {
   const Docker = require('dockerode');
   const dockerSocketPaths = [
     '/var/run/docker.sock',
@@ -1999,23 +2138,47 @@ async function execLoginScriptWithDockerRun(command, args) {
   }
   
   const projectRoot = process.cwd();
-  const timeout = 60000; // 60秒超时
+  const timeout = 30000; // 30秒超时（登录操作应该很快）
   
-  // 尝试获取现有容器的配置信息，以复用相同的镜像和配置
+  // 如果指定了 userId 且需要复用容器，尝试使用已有容器
+  let tempContainerName = null;
+  let isReusingContainer = false;
+  
+  if (userId && reuseContainer) {
+    const existing = tempLoginContainers.get(userId);
+    if (existing) {
+      try {
+        const container = docker.getContainer(existing.containerName);
+        const containerInfo = await container.inspect();
+        if (containerInfo.State.Running) {
+          tempContainerName = existing.containerName;
+          isReusingContainer = true;
+          console.log(`♻️  复用临时登录容器: ${tempContainerName}`);
+        }
+      } catch (e) {
+        // 容器不存在，继续创建新的
+        tempLoginContainers.delete(userId);
+      }
+    }
+  }
+  
+  // 如果需要创建新容器，先获取镜像信息
   let containerImage = null;
   let existingContainerInfo = null;
   
-  try {
-    const existingContainer = docker.getContainer('tg_listener');
-    existingContainerInfo = await existingContainer.inspect();
-    if (existingContainerInfo && existingContainerInfo.Config && existingContainerInfo.Config.Image) {
-      containerImage = existingContainerInfo.Config.Image;
-      console.log(`✅ 找到现有容器镜像: ${containerImage}`);
+  if (!tempContainerName) {
+    // 尝试获取现有容器的配置信息，以复用相同的镜像和配置
+    try {
+      const existingContainer = docker.getContainer('tg_listener');
+      existingContainerInfo = await existingContainer.inspect();
+      if (existingContainerInfo && existingContainerInfo.Config && existingContainerInfo.Config.Image) {
+        containerImage = existingContainerInfo.Config.Image;
+        console.log(`✅ 找到现有容器镜像: ${containerImage}`);
+      }
+    } catch (e) {
+      // 容器不存在，尝试查找镜像
+      console.log('⚠️  容器不存在，尝试查找 Telethon 镜像...');
     }
-  } catch (e) {
-    // 容器不存在，尝试查找镜像
-    console.log('⚠️  容器不存在，尝试查找 Telethon 镜像...');
-  }
   
   // 如果没找到容器，查找镜像
   if (!containerImage) {
@@ -2086,20 +2249,99 @@ async function execLoginScriptWithDockerRun(command, args) {
     }
   }
   
-  // 创建临时容器配置
-  const tempContainerName = `tg_login_temp_${Date.now()}`;
+    // 如果需要创建可复用的容器
+    if (!tempContainerName && userId && reuseContainer) {
+      // 创建可重用的临时容器（长期运行，用于多次执行命令）
+      tempContainerName = await getOrCreateTempLoginContainer(userId, configHostPath, sessionHostPath, containerImage, networkName);
+      isReusingContainer = true;
+    } else if (!tempContainerName) {
+      // 创建一次性临时容器
+      tempContainerName = `tg_login_temp_${Date.now()}`;
+    }
+  }
+  
   // 使用 -u 参数禁用 Python 输出缓冲，确保输出立即刷新
   const execArgs = ['python3', '-u', '/app/login_helper.py', command, ...args];
   
-  console.log(`🐳 使用 Docker SDK 创建临时容器执行登录脚本: ${command}`);
-  console.log(`   镜像: ${containerImage}`);
-  console.log(`   配置路径: ${configHostPath}`);
-  console.log(`   Session 路径: ${sessionHostPath}`);
+  console.log(`🐳 使用 Docker SDK 执行登录脚本: ${command}`);
+  console.log(`   容器: ${tempContainerName}`);
   console.log(`   执行命令: ${execArgs.join(' ')}`);
   
   try {
-    // 创建容器
-    const container = await docker.createContainer({
+    let container;
+    let shouldRemoveContainer = false;
+    
+    // 如果容器已存在（复用场景），在容器中使用 exec 执行命令
+    if (isReusingContainer && tempContainerName) {
+      container = docker.getContainer(tempContainerName);
+      // 在已有容器中执行命令（使用 exec）
+      console.log(`♻️  在已有容器中执行命令: ${tempContainerName}`);
+      
+      // 创建 exec 实例
+      const exec = await container.exec({
+        Cmd: execArgs,
+        AttachStdout: true,
+        AttachStderr: true,
+        Env: ['PYTHONUNBUFFERED=1']
+      });
+      
+      // 启动 exec 并获取输出
+      const execStream = await exec.start({
+        hijack: true,
+        stdin: false
+      });
+      
+      let stdout = '';
+      let stderr = '';
+      
+      return new Promise((resolve, reject) => {
+        execStream.on('data', (chunk) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          let offset = 0;
+          
+          while (offset < buffer.length) {
+            if (buffer.length - offset < 8) break;
+            
+            const streamType = buffer[offset];
+            const payloadLength = buffer.readUInt32BE(offset + 4);
+            
+            if (buffer.length - offset < 8 + payloadLength) break;
+            
+            const payload = buffer.slice(offset + 8, offset + 8 + payloadLength);
+            
+            if (streamType === 1) {
+              stdout += payload.toString();
+            } else if (streamType === 2) {
+              stderr += payload.toString();
+            }
+            
+            offset += 8 + payloadLength;
+          }
+        });
+        
+        execStream.on('end', () => {
+          try {
+            const outputText = stdout.trim() || stderr.trim();
+            let jsonText = outputText;
+            const jsonMatch = outputText.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              jsonText = jsonMatch[0];
+            }
+            const result = JSON.parse(jsonText);
+            resolve(result);
+          } catch (parseError) {
+            reject(new Error(`解析输出失败: ${parseError.message}, 输出: ${stdout || stderr}`));
+          }
+        });
+        
+        execStream.on('error', (err) => {
+          reject(new Error(`执行失败: ${err.message}`));
+        });
+      });
+    }
+    
+    // 创建新的一次性容器
+    container = await docker.createContainer({
       Image: containerImage,
       name: tempContainerName,
       Cmd: execArgs,
@@ -2115,7 +2357,7 @@ async function execLoginScriptWithDockerRun(command, args) {
           `${configHostPath}:/app/config.json:ro`,
           `${sessionHostPath}:/app/session`
         ],
-        AutoRemove: true // 容器退出后自动删除
+        AutoRemove: !(userId && reuseContainer) // 如果是复用容器，不自动删除
       },
       NetworkMode: networkName || 'bridge' // 登录脚本不需要访问内部网络
     });
@@ -2534,7 +2776,7 @@ async function restartTelethonService() {
 
 // 安全执行 Docker 命令调用登录脚本（使用 Docker SDK）
 // allowCreateTemp: 如果为 true，当容器未运行时，创建临时容器执行脚本
-async function execTelethonLoginScript(command, args = [], retryCount = 0, allowCreateTemp = true) {
+async function execTelethonLoginScript(command, args = [], retryCount = 0, allowCreateTemp = true, userId = null, reuseContainer = false) {
   const maxRetries = 3;
   const retryDelay = 1000; // 1秒（减少重试延迟）
   const timeout = 30000; // 30秒超时（减少超时时间，登录操作通常很快）
@@ -2555,7 +2797,7 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0, allow
         console.log('📦 容器未运行，使用 docker run 执行登录脚本...');
         // 直接使用 docker run 执行脚本，不需要容器运行
         try {
-          return await execLoginScriptWithDockerRun(command, args);
+          return await execLoginScriptWithDockerRun(command, args, userId, reuseContainer);
         } catch (runError) {
           // 如果 docker run 也失败，抛出原始错误
           throw new Error(`容器未运行，且 docker run 执行失败: ${runError.message}`);
@@ -2870,16 +3112,18 @@ app.post('/api/telegram/login/send-code', authMiddleware, async (req, res) => {
       : '/app/session/telegram';
     
     try {
-      // 使用安全的脚本调用方式
+      // 使用安全的脚本调用方式，首次登录时创建可复用的临时容器
       const result = await execTelethonLoginScript('send_code', [
         validatedPhone,
         sessionPath,
         validatedApiId.toString(),
         validatedApiHash
-      ]);
+      ], 0, true, userId, true); // allowCreateTemp=true, reuseContainer=true
       
       if (result.success) {
         if (result.already_logged_in) {
+          // 已登录，清理临时容器
+          await cleanupTempLoginContainer(userId);
           return res.json({
             success: true,
             already_logged_in: true,
@@ -2895,6 +3139,8 @@ app.post('/api/telegram/login/send-code', authMiddleware, async (req, res) => {
           session_id: `${userId}_${validatedPhone}_${Date.now()}`
         });
       } else {
+        // 发送验证码失败，清理临时容器
+        await cleanupTempLoginContainer(userId);
         // 处理 FloodWait 错误
         if (result.flood_wait) {
           return res.status(429).json({ 
@@ -2907,13 +3153,34 @@ app.post('/api/telegram/login/send-code', authMiddleware, async (req, res) => {
       }
     } catch (error) {
       console.error('发送验证码失败:', error);
+      // 出错时清理临时容器
+      await cleanupTempLoginContainer(userId).catch(() => {});
       res.status(500).json({ 
         error: '发送验证码失败：' + error.message 
       });
     }
   } catch (error) {
     console.error('发送验证码请求失败:', error);
+    // 出错时清理临时容器
+    if (req.user?.userId) {
+      await cleanupTempLoginContainer(req.user.userId).catch(() => {});
+    }
     res.status(500).json({ error: '发送验证码失败：' + error.message });
+  }
+});
+
+// 取消登录（清理临时容器）
+app.post('/api/telegram/login/cancel', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    await cleanupTempLoginContainer(userId);
+    res.json({
+      success: true,
+      message: '已取消登录，临时容器已清理'
+    });
+  } catch (error) {
+    console.error('取消登录失败:', error);
+    res.status(500).json({ error: '取消登录失败：' + error.message });
   }
 });
 
@@ -2966,7 +3233,7 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
       : '/app/session/telegram';
     
     try {
-      // 使用安全的脚本调用方式
+      // 使用安全的脚本调用方式，复用已创建的临时容器
       const result = await execTelethonLoginScript('sign_in', [
         validatedPhone,
         validatedCode,
@@ -2975,9 +3242,11 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
         sessionPath,
         validatedApiId.toString(),
         validatedApiHash
-      ]);
+      ], 0, true, userId, true); // allowCreateTemp=true, reuseContainer=true
       
       if (result.success) {
+        // 登录成功，清理临时容器
+        await cleanupTempLoginContainer(userId);
         // Telegram 登录成功后，同步用户配置并重启 Telethon 服务
         // 异步执行，不阻塞响应
         setTimeout(async () => {
@@ -3012,6 +3281,7 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
         });
       } else {
         if (result.password_required) {
+          // 需要密码，不清理容器（用户可能还要输入密码）
           return res.json({
             success: false,
             password_required: true,
@@ -3019,12 +3289,16 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
           });
         }
         
+        // 登录失败，清理临时容器
+        await cleanupTempLoginContainer(userId);
         res.status(500).json({ 
           error: result.error || '登录失败' 
         });
       }
     } catch (error) {
       console.error('验证登录失败:', error);
+      // 出错时清理临时容器
+      await cleanupTempLoginContainer(userId).catch(() => {});
       res.status(500).json({ 
         error: '验证失败：' + error.message 
       });
