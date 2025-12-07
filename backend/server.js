@@ -827,6 +827,34 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
     targetUser.last_login = new Date();
     await targetUser.save();
     
+    // 更新全局配置文件中的 user_id，使 Telethon 服务能正确关联日志到新用户
+    try {
+      const globalConfig = loadConfig();
+      globalConfig.user_id = targetUser._id.toString();
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
+      console.log(`✅ 已更新全局配置文件中的 user_id 为: ${targetUser._id}`);
+      
+      // 同步用户配置到全局配置文件（keywords, channels, alert_keywords, alert_regex, log_all_messages）
+      const userConfig = await loadUserConfig(targetUser._id.toString());
+      if (userConfig) {
+        const configToSync = {
+          keywords: userConfig.keywords || [],
+          channels: userConfig.channels || [],
+          alert_keywords: userConfig.alert_keywords || [],
+          alert_regex: userConfig.alert_regex || [],
+          log_all_messages: userConfig.log_all_messages || false
+        };
+        
+        // 更新全局配置，保留其他字段（如 telegram, alert_actions 等）
+        Object.assign(globalConfig, configToSync);
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
+        console.log(`✅ 已同步用户配置到全局配置文件 (userId: ${targetUser._id})`);
+      }
+    } catch (configError) {
+      console.error('⚠️  更新全局配置文件失败（不影响切换用户）:', configError);
+      // 不阻止切换用户，即使配置文件更新失败
+    }
+    
     console.log(`✅ 用户 ${currentUser.username} 切换到用户: ${targetUser.username} (userId: ${targetUser._id})`);
     
     res.json({ 

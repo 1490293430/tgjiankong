@@ -2082,9 +2082,10 @@
             if (!token) return;
             
             const currentUsername = localStorage.getItem('username');
+            const currentUserId = localStorage.getItem('userId');
             
             // 如果切换到自己，无需操作
-            if (currentUsername === username) {
+            if (currentUserId === userId || currentUsername === username) {
                 showToast('您已经是当前用户', false);
                 // 关闭菜单
                 const menu = document.querySelector('div[style*="z-index: 10000"]');
@@ -2102,18 +2103,76 @@
                     method: 'POST'
                 });
                 
+                if (!data || !data.token) {
+                    throw new Error('切换用户失败：未收到有效的响应');
+                }
+                
+                // 清除旧的缓存数据
+                config = {}; // 清除配置缓存
+                currentPage = 1; // 重置分页
+                currentAIPage = 1;
+                
+                // 断开 SSE 连接
+                disconnectSSE();
+                
+                // 保存旧的用户ID用于检测切换
+                const oldUserId = localStorage.getItem('userId');
+                
                 // 保存新的token和用户信息
                 localStorage.setItem('token', data.token);
                 localStorage.setItem('username', data.username);
                 localStorage.setItem('userId', data.userId);
                 
+                // 保存旧用户ID到 lastUserId，用于页面重新加载时检测用户切换
+                if (oldUserId && oldUserId !== data.userId) {
+                    localStorage.setItem('lastUserId', oldUserId);
+                    // 设置用户切换标记
+                    localStorage.setItem('userSwitched', 'true');
+                }
+                
+                // 清除当前标签页缓存，强制重新加载
+                localStorage.removeItem('currentTab');
+                
                 showToast(`已切换到用户: ${data.displayName || data.username}`, true);
                 
-                // 刷新页面以加载新用户的数据
+                // 关闭用户菜单
+                const menu = document.querySelector('div[style*="z-index: 10000"]');
+                if (menu) menu.remove();
+                
+                // 重新加载当前用户信息
+                await loadCurrentUser();
+                
+                // 重新连接 SSE（使用新 token）
+                disconnectSSE();
                 setTimeout(() => {
-                    window.location.reload();
+                    connectSSE();
                 }, 500);
+                
+                // 获取当前激活的标签页并重新加载数据
+                const activeTab = document.querySelector('.tab-content.active')?.id || 'dashboard';
+                
+                // 强制重新加载当前标签页的所有数据
+                if (activeTab === 'dashboard') {
+                    await loadStats();
+                    await loadRecentLogs();
+                } else if (activeTab === 'config') {
+                    await loadConfig();
+                    setTimeout(() => {
+                        checkTelegramLoginStatus();
+                    }, 500);
+                } else if (activeTab === 'ai') {
+                    await loadAIStats();
+                    await loadAISummaries();
+                } else if (activeTab === 'logs') {
+                    await loadLogs();
+                } else if (activeTab === 'settings') {
+                    await loadUsers();
+                }
+                
+                // 重新检查用户管理权限
+                await checkAndShowUserManagement();
             } catch (error) {
+                console.error('切换用户失败:', error);
                 showToast('切换用户失败: ' + (error.message || '未知错误'), false);
             }
         }
@@ -2531,7 +2590,48 @@
             try {
                 const userInfo = await apiRequest('/auth/me');
                 if (userInfo) {
-                    localStorage.setItem('userId', userInfo.userId || '');
+                    // 检测用户是否切换
+                    const lastUserId = localStorage.getItem('lastUserId');
+                    const currentUserId = userInfo.userId || '';
+                    
+                    // 如果用户切换了，清除所有缓存并强制重新加载数据
+                    const userSwitched = localStorage.getItem('userSwitched') === 'true';
+                    if ((lastUserId && lastUserId !== currentUserId) || userSwitched) {
+                        console.log('检测到用户切换，清除缓存并重新加载数据');
+                        config = {}; // 清除配置缓存
+                        currentPage = 1;
+                        currentAIPage = 1;
+                        
+                        // 清除标签页缓存，强制重新加载
+                        localStorage.removeItem('currentTab');
+                        
+                        // 清除切换标记
+                        localStorage.removeItem('userSwitched');
+                        
+                        // 强制重新加载当前标签页的数据
+                        const activeTab = document.querySelector('.tab-content.active')?.id || localStorage.getItem('currentTab') || 'dashboard';
+                        if (activeTab === 'dashboard') {
+                            loadStats();
+                            loadRecentLogs();
+                        } else if (activeTab === 'config') {
+                            loadConfig();
+                            setTimeout(() => checkTelegramLoginStatus(), 500);
+                        } else if (activeTab === 'ai') {
+                            loadAIStats();
+                            loadAISummaries();
+                        } else if (activeTab === 'logs') {
+                            loadLogs();
+                        } else if (activeTab === 'settings') {
+                            loadUsers();
+                        }
+                        
+                        // 重新检查用户管理权限
+                        checkAndShowUserManagement();
+                    }
+                    
+                    // 保存当前用户ID用于下次比较
+                    localStorage.setItem('lastUserId', currentUserId);
+                    localStorage.setItem('userId', currentUserId);
                     localStorage.setItem('username', userInfo.username || '');
                     document.getElementById('username').textContent = userInfo.displayName || userInfo.username || 'Admin';
                 } else {
