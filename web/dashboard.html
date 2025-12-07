@@ -459,14 +459,20 @@
             right: 0;
             bottom: 0;
             background: rgba(0, 0, 0, 0.5);
-            display: none;
+            display: none !important;
             align-items: center;
             justify-content: center;
             z-index: 100000;
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
         }
         
         .modal-overlay.show {
-            display: flex;
+            display: flex !important;
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
         }
         
         .modal-dialog {
@@ -1034,7 +1040,7 @@
     <div id="toastNotification" class="toast-notification"></div>
     
     <!-- Telegram 登录模态弹窗 -->
-    <div id="telegramLoginModal" class="modal-overlay">
+    <div id="telegramLoginModal" class="modal-overlay" style="display: none !important; visibility: hidden; opacity: 0; pointer-events: none;">
         <div class="modal-dialog">
             <div class="modal-header">
                 <h3>📱 Telegram 首次登录</h3>
@@ -1077,7 +1083,7 @@
     </div>
     
     <!-- 清除日志确认模态框 -->
-    <div id="clearLogsModal" class="modal-overlay">
+    <div id="clearLogsModal" class="modal-overlay" style="display: none !important; visibility: hidden; opacity: 0; pointer-events: none;">
         <div class="modal-dialog">
             <div class="modal-header">
                 <h3>⚠️ 确认清除日志</h3>
@@ -1837,6 +1843,10 @@
             const modal = document.getElementById('clearLogsModal');
             if (modal) {
                 modal.classList.add('show');
+                modal.style.display = 'flex';
+                modal.style.visibility = 'visible';
+                modal.style.opacity = '1';
+                modal.style.pointerEvents = 'auto';
                 // 隐藏错误信息
                 const errorDiv = document.getElementById('clearLogsModalError');
                 if (errorDiv) {
@@ -1851,6 +1861,10 @@
             const modal = document.getElementById('clearLogsModal');
             if (modal) {
                 modal.classList.remove('show');
+                modal.style.display = 'none';
+                modal.style.visibility = 'hidden';
+                modal.style.opacity = '0';
+                modal.style.pointerEvents = 'none';
             }
         }
         
@@ -2496,6 +2510,15 @@
         
         restoreCardStates(); // 恢复卡片折叠状态
         
+        // 确保所有模态框在页面初始化时都是隐藏的
+        document.querySelectorAll('.modal-overlay').forEach(modal => {
+            modal.classList.remove('show');
+            modal.style.display = 'none';
+            modal.style.visibility = 'hidden';
+            modal.style.opacity = '0';
+            modal.style.pointerEvents = 'none';
+        });
+        
         // 加载前端设置
         loadRefreshInterval();
         
@@ -2643,7 +2666,13 @@
             
             // 显示模态弹窗
             const modal = document.getElementById('telegramLoginModal');
-            modal.classList.add('show');
+            if (modal) {
+                modal.classList.add('show');
+                modal.style.display = 'flex';
+                modal.style.visibility = 'visible';
+                modal.style.opacity = '1';
+                modal.style.pointerEvents = 'auto';
+            }
             
             // 聚焦到输入框
             setTimeout(() => {
@@ -2662,6 +2691,10 @@
             const modal = document.getElementById('telegramLoginModal');
             if (modal) {
                 modal.classList.remove('show');
+                modal.style.display = 'none';
+                modal.style.visibility = 'hidden';
+                modal.style.opacity = '0';
+                modal.style.pointerEvents = 'none';
             }
             
             // 重置状态
@@ -2880,6 +2913,15 @@
         
         // 模态弹窗点击背景关闭
         document.addEventListener('DOMContentLoaded', () => {
+            // 确保所有模态框在页面加载时都是隐藏的
+            document.querySelectorAll('.modal-overlay').forEach(modal => {
+                modal.classList.remove('show');
+                modal.style.display = 'none';
+                modal.style.visibility = 'hidden';
+                modal.style.opacity = '0';
+                modal.style.pointerEvents = 'none';
+            });
+            
             const modal = document.getElementById('telegramLoginModal');
             if (modal) {
                 modal.addEventListener('click', (e) => {
