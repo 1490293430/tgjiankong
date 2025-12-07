@@ -659,6 +659,7 @@ async def main():
     logger.info("📱 使用 API_ID: %s", cfg_api_id)
 
     # create telethon client
+    session_file = None
     if SESSION_STRING:
         client = TelegramClient(StringSession(SESSION_STRING), cfg_api_id, cfg_api_hash)
     else:
@@ -668,9 +669,95 @@ async def main():
             logger.info("使用用户专属 Session 文件: %s", session_file)
             client = TelegramClient(session_file, cfg_api_id, cfg_api_hash)
         else:
+            session_file = SESSION_PATH
             client = TelegramClient(SESSION_PATH, cfg_api_id, cfg_api_hash)
+    
+    # 检查 session 文件是否存在（如果使用文件 session）
+    if session_file and not SESSION_STRING:
+        # Telethon 使用 .session 扩展名
+        # 如果传入路径是 /app/session/telegram_xxx，实际文件是 /app/session/telegram_xxx.session
+        session_path_with_ext = f"{session_file}.session"
+        session_exists = os.path.exists(session_file) or os.path.exists(session_path_with_ext)
+        
+        if not session_exists:
+            logger.error("")
+            logger.error("=" * 60)
+            logger.error("❌ Session 文件不存在")
+            logger.error("   预期路径: %s", session_file)
+            logger.error("   或: %s", session_path_with_ext)
+            logger.error("")
+            logger.error("📱 请通过 Web 界面完成 Telegram 首次登录：")
+            logger.error("   1. 访问 Web 界面")
+            logger.error("   2. 进入 '设置' 标签")
+            logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+            logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
+            logger.error("   5. 登录成功后，重启 Telethon 服务：")
+            logger.error("      docker compose restart telethon")
+            logger.error("")
+            logger.error("⚠️  服务将退出，请完成登录后重启服务")
+            logger.error("=" * 60)
+            logger.error("")
+            # 使用 sys.exit(0) 正常退出
+            import sys
+            sys.exit(0)
 
-    await client.start()
+    # 启动客户端（使用安全的方式避免交互式输入）
+    try:
+        # 先连接（不触发交互式输入）
+        await client.connect()
+        
+        # 检查是否已登录（如果未登录，不会触发交互式输入，只是返回 False）
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            logger.error("")
+            logger.error("=" * 60)
+            logger.error("❌ Telegram 客户端未授权，Session 文件无效或不存在")
+            logger.error("")
+            logger.error("📱 请通过 Web 界面完成 Telegram 首次登录：")
+            logger.error("   1. 访问 Web 界面")
+            logger.error("   2. 进入 '设置' 标签")
+            logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+            logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
+            logger.error("   5. 登录成功后，重启 Telethon 服务：")
+            logger.error("      docker compose restart telethon")
+            logger.error("")
+            logger.error("⚠️  服务将退出，请完成登录后重启服务")
+            logger.error("=" * 60)
+            logger.error("")
+            import sys
+            sys.exit(0)
+        
+        # 如果已授权，直接使用客户端（不需要重新启动）
+        # 注意：如果已授权，client.start() 不会触发交互式输入
+        if not client.is_connected():
+            await client.connect()
+        await client.start()
+    except EOFError:
+        # 如果遇到 EOFError，说明尝试了交互式输入（session 无效或不存在）
+        logger.error("=" * 60)
+        logger.error("❌ Session 文件无效，无法启动服务（EOFError）")
+        logger.error("📱 请通过 Web 界面完成 Telegram 首次登录：")
+        logger.error("   1. 访问 Web 界面")
+        logger.error("   2. 进入 '设置' 标签")
+        logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+        logger.error("   4. 按照提示完成登录")
+        logger.error("   5. 登录成功后，重启 Telethon 服务：docker compose restart telethon")
+        logger.error("=" * 60)
+        import sys
+        sys.exit(0)
+    except Exception as e:
+        logger.error("=" * 60)
+        logger.error("❌ 启动 Telegram 客户端失败: %s", str(e))
+        logger.error("📱 如果这是首次登录，请通过 Web 界面完成登录")
+        logger.error("   1. 访问 Web 界面")
+        logger.error("   2. 进入 '设置' 标签")
+        logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+        logger.error("   4. 按照提示完成登录")
+        logger.error("   5. 登录成功后，重启 Telethon 服务：docker compose restart telethon")
+        logger.error("=" * 60)
+        import sys
+        sys.exit(0)
+    
     client.add_event_handler(lambda e: message_handler(e, client), events.NewMessage())
     me = await client.get_me()
     logger.info("已登录为: %s (ID: %s)", getattr(me, "username", None) or getattr(me, "first_name", None), me.id)

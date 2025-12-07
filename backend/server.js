@@ -1675,8 +1675,48 @@ function validateInput(input, type = 'string') {
   return str;
 }
 
+// 等待容器就绪（运行中且不在重启状态）
+async function waitForContainerReady(container, maxWaitSeconds = 30) {
+  const startTime = Date.now();
+  const waitInterval = 1000; // 每秒检查一次
+  
+  while (Date.now() - startTime < maxWaitSeconds * 1000) {
+    try {
+      const info = await container.inspect();
+      const state = info.State;
+      
+      if (state.Running && !state.Restarting) {
+        // 容器正在运行且不在重启状态
+        return true;
+      }
+      
+      if (state.Restarting) {
+        // 容器正在重启，等待
+        console.log(`⏳ 容器 ${info.Name} 正在重启，等待就绪... (已等待 ${Math.floor((Date.now() - startTime) / 1000)} 秒)`);
+        await new Promise(resolve => setTimeout(resolve, waitInterval));
+        continue;
+      }
+      
+      if (!state.Running) {
+        // 容器未运行
+        return Promise.reject(new Error(
+          `容器 ${info.Name} 未运行。状态: ${state.Status}。请检查容器日志: docker logs ${info.Name}`
+        ));
+      }
+    } catch (e) {
+      // 检查失败，继续等待
+      await new Promise(resolve => setTimeout(resolve, waitInterval));
+      continue;
+    }
+  }
+  
+  return Promise.reject(new Error(
+    `容器未在 ${maxWaitSeconds} 秒内就绪。请检查容器状态: docker ps -a`
+  ));
+}
+
 // 获取 Docker 连接和 Telethon 容器
-async function getDockerAndContainer() {
+async function getDockerAndContainer(checkReady = false) {
   const Docker = require('dockerode');
   const fs = require('fs');
   
@@ -1715,30 +1755,68 @@ async function getDockerAndContainer() {
   // 尝试多个容器名称
   const containerNames = ['tg_listener', 'telethon'];
   let container = null;
+  let containerInfo = null;
   
   for (const name of containerNames) {
     try {
       container = docker.getContainer(name);
       // 检查容器是否存在
       const info = await container.inspect();
-      if (info && info.State && info.State.Running) {
-        break;
+      
+      if (!info) {
+        container = null;
+        continue;
       }
-      container = null;
+      
+      const state = info.State;
+      
+      // 检查容器状态
+      if (state.Restarting) {
+        // 容器正在重启
+        if (checkReady) {
+          console.log(`⏳ 检测到容器 ${name} 正在重启，等待就绪...`);
+          try {
+            await waitForContainerReady(container, 30);
+            containerInfo = await container.inspect();
+          } catch (waitError) {
+            return Promise.reject(new Error(
+              `容器 ${name} 正在重启中，无法执行命令。请等待容器启动完成后再试。\n` +
+              `如果容器持续重启，请检查日志: docker logs ${name}\n` +
+              `错误详情: ${waitError.message}`
+            ));
+          }
+        } else {
+          return Promise.reject(new Error(
+            `容器 ${name} 正在重启中，无法执行命令。请等待容器启动完成（通常需要 10-30 秒）后再试。\n` +
+            `如果容器持续重启，请检查日志: docker logs ${name}`
+          ));
+        }
+      } else if (state.Running) {
+        // 容器正在运行
+        containerInfo = info;
+        break;
+      } else {
+        // 容器未运行
+        container = null;
+        continue;
+      }
     } catch (e) {
-      // 容器不存在或未运行，尝试下一个
+      // 容器不存在或查询失败，尝试下一个
       container = null;
       continue;
     }
   }
   
-  if (!container) {
+  if (!container || !containerInfo) {
     return Promise.reject(new Error(
-      `无法找到运行中的容器。请检查容器名称是否为 tg_listener 或 telethon，并确保容器正在运行。`
+      `无法找到运行中的 Telethon 容器。请检查：\n` +
+      `1. 容器名称是否为 tg_listener 或 telethon\n` +
+      `2. 容器是否正在运行: docker ps -a | grep -E 'tg_listener|telethon'\n` +
+      `3. 如果容器未运行，请启动: docker compose up -d telethon`
     ));
   }
   
-  return { docker, container };
+  return { docker, container, containerInfo };
 }
 
 // 同步用户配置到全局配置文件并重启 Telethon 服务
@@ -1805,87 +1883,129 @@ async function restartTelethonService() {
 }
 
 // 安全执行 Docker 命令调用登录脚本（使用 Docker SDK）
-async function execTelethonLoginScript(command, args = []) {
-  const { container } = await getDockerAndContainer();
+async function execTelethonLoginScript(command, args = [], retryCount = 0) {
+  const maxRetries = 3;
+  const retryDelay = 2000; // 2秒
   
-  // 执行命令
-  const execArgs = ['python3', '/app/login_helper.py', command, ...args];
-  
-  return new Promise((resolve, reject) => {
-    // 创建 exec 实例
-    container.exec({
-      Cmd: execArgs,
-      AttachStdout: true,
-      AttachStderr: true
-    }, (err, exec) => {
-      if (err) {
-        return reject(new Error(`创建 exec 实例失败: ${err.message}`));
-      }
-      
-      // 启动 exec
-      exec.start({ hijack: true, stdin: false }, (err, stream) => {
+  try {
+    // 获取容器并等待就绪（如果正在重启）
+    const { container } = await getDockerAndContainer(true);
+    
+    // 执行命令
+    const execArgs = ['python3', '/app/login_helper.py', command, ...args];
+    
+    return new Promise((resolve, reject) => {
+      // 创建 exec 实例
+      container.exec({
+        Cmd: execArgs,
+        AttachStdout: true,
+        AttachStderr: true
+      }, (err, exec) => {
         if (err) {
-          return reject(new Error(`启动 exec 失败: ${err.message}`));
+          // 检查是否是容器重启相关的错误
+          if (err.message && (
+            err.message.includes('restarting') ||
+            err.message.includes('stopped/paused') ||
+            err.message.includes('409')
+          )) {
+            // 如果是重启相关错误，且还有重试机会，则重试
+            if (retryCount < maxRetries) {
+              console.log(`⚠️  容器正在重启，${retryDelay/1000}秒后重试 (${retryCount + 1}/${maxRetries})...`);
+              setTimeout(() => {
+                execTelethonLoginScript(command, args, retryCount + 1)
+                  .then(resolve)
+                  .catch(reject);
+              }, retryDelay);
+              return;
+            } else {
+              return reject(new Error(
+                `创建 exec 实例失败：容器正在重启或暂停。已重试 ${maxRetries} 次。\n` +
+                `请等待容器启动完成（通常需要 10-30 秒）后再试。\n` +
+                `如果容器持续重启，请检查日志: docker logs tg_listener\n` +
+                `原始错误: ${err.message}`
+              ));
+            }
+          }
+          return reject(new Error(`创建 exec 实例失败: ${err.message}`));
         }
         
-        let stdout = '';
-        let stderr = '';
-        let output = Buffer.alloc(0);
-        
-        stream.on('data', (chunk) => {
-          output = Buffer.concat([output, chunk]);
-        });
-        
-        stream.on('end', () => {
-          // 解析 Docker 的流格式
-          let buffer = output;
-          let offset = 0;
-          
-          while (offset < buffer.length) {
-            if (buffer.length - offset < 8) break;
-            
-            const header = buffer.slice(offset, offset + 8);
-            const streamType = header[0];
-            const payloadLength = header.readUInt32BE(4);
-            
-            if (buffer.length - offset < 8 + payloadLength) break;
-            
-            const payload = buffer.slice(offset + 8, offset + 8 + payloadLength);
-            
-            if (streamType === 1) { // stdout
-              stdout += payload.toString();
-            } else if (streamType === 2) { // stderr
-              stderr += payload.toString();
-            }
-            
-            offset += 8 + payloadLength;
+        // 启动 exec
+        exec.start({ hijack: true, stdin: false }, (err, stream) => {
+          if (err) {
+            return reject(new Error(`启动 exec 失败: ${err.message}`));
           }
           
-          // 检查执行结果
-          exec.inspect((err, data) => {
-            if (err) {
-              return reject(new Error(`检查 exec 状态失败: ${err.message}`));
+          let stdout = '';
+          let stderr = '';
+          let output = Buffer.alloc(0);
+          
+          stream.on('data', (chunk) => {
+            output = Buffer.concat([output, chunk]);
+          });
+          
+          stream.on('end', () => {
+            // 解析 Docker 的流格式
+            let buffer = output;
+            let offset = 0;
+            
+            while (offset < buffer.length) {
+              if (buffer.length - offset < 8) break;
+              
+              const header = buffer.slice(offset, offset + 8);
+              const streamType = header[0];
+              const payloadLength = header.readUInt32BE(4);
+              
+              if (buffer.length - offset < 8 + payloadLength) break;
+              
+              const payload = buffer.slice(offset + 8, offset + 8 + payloadLength);
+              
+              if (streamType === 1) { // stdout
+                stdout += payload.toString();
+              } else if (streamType === 2) { // stderr
+                stderr += payload.toString();
+              }
+              
+              offset += 8 + payloadLength;
             }
             
-            if (data.ExitCode === 0) {
-              try {
-                const result = JSON.parse(stdout.trim());
-                resolve(result);
-              } catch (e) {
-                resolve({ success: false, error: `解析结果失败: ${stdout.trim() || stderr.trim() || '无输出'}` });
+            // 检查执行结果
+            exec.inspect((err, data) => {
+              if (err) {
+                return reject(new Error(`检查 exec 状态失败: ${err.message}`));
               }
-            } else {
-              reject(new Error(`脚本执行失败 (退出码: ${data.ExitCode}): ${stderr || stdout || '无输出'}`));
-            }
+              
+              if (data.ExitCode === 0) {
+                try {
+                  const result = JSON.parse(stdout.trim());
+                  resolve(result);
+                } catch (e) {
+                  resolve({ success: false, error: `解析结果失败: ${stdout.trim() || stderr.trim() || '无输出'}` });
+                }
+              } else {
+                reject(new Error(`脚本执行失败 (退出码: ${data.ExitCode}): ${stderr || stdout || '无输出'}`));
+              }
+            });
           });
-        });
-        
-        stream.on('error', (err) => {
-          reject(new Error(`流错误: ${err.message}`));
+          
+          stream.on('error', (err) => {
+            reject(new Error(`流错误: ${err.message}`));
+          });
         });
       });
     });
-  });
+  } catch (error) {
+    // 如果是容器重启错误，且还有重试机会，则重试
+    if (error.message && (
+      error.message.includes('restarting') ||
+      error.message.includes('stopped/paused') ||
+      error.message.includes('重启')
+    ) && retryCount < maxRetries) {
+      console.log(`⚠️  容器状态异常，${retryDelay/1000}秒后重试 (${retryCount + 1}/${maxRetries})...`);
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+      return execTelethonLoginScript(command, args, retryCount + 1);
+    }
+    throw error;
+  }
 }
 
 // 检查 Telegram 登录状态

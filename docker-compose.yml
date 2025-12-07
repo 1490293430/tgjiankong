@@ -50,7 +50,7 @@ services:
   telethon:
     build: ./telethon
     container_name: tg_listener
-    restart: always
+    restart: unless-stopped  # 除非手动停止，否则自动重启（避免 session 不存在时不断重启）
     depends_on:
       - mongo
       - api
