@@ -1890,94 +1890,257 @@ async function getDockerAndContainer(checkReady = false, allowCreateTemp = false
   return { docker, container, containerInfo };
 }
 
-// 使用 docker run 执行登录脚本（当主容器未运行时使用）
+// 使用 Docker SDK 创建临时容器执行登录脚本（当主容器未运行时使用）
 async function execLoginScriptWithDockerRun(command, args) {
-  return new Promise((resolve, reject) => {
-    const projectRoot = process.cwd();
-    const timeout = 60000; // 60秒超时
-    
-    // 尝试获取现有容器的镜像名称
-    let containerImage = 'tg_listener';
-    try {
-      const Docker = require('dockerode');
-      const dockerSocketPaths = [
-        '/var/run/docker.sock',
-        process.env.DOCKER_HOST?.replace('unix://', '') || null
-      ].filter(Boolean);
-      
-      for (const socketPath of dockerSocketPaths) {
-        if (fs.existsSync(socketPath)) {
-          try {
-            const docker = new Docker({ socketPath });
-            const container = docker.getContainer('tg_listener');
-            container.inspect().then(info => {
-              if (info && info.Config && info.Config.Image) {
-                containerImage = info.Config.Image;
-              }
-            }).catch(() => {});
-          } catch (e) {
-            // 忽略错误，使用默认镜像名称
-          }
-          break;
-        }
+  const Docker = require('dockerode');
+  const dockerSocketPaths = [
+    '/var/run/docker.sock',
+    process.env.DOCKER_HOST?.replace('unix://', '') || null
+  ].filter(Boolean);
+  
+  let docker = null;
+  for (const socketPath of dockerSocketPaths) {
+    if (fs.existsSync(socketPath)) {
+      try {
+        docker = new Docker({ socketPath });
+        await docker.ping();
+        break;
+      } catch (e) {
+        console.error(`无法连接到 Docker socket ${socketPath}:`, e.message);
+        docker = null;
       }
-    } catch (e) {
-      // 忽略错误，使用默认镜像名称
     }
-    
-    // 构建 docker run 命令
-    // 登录脚本只需要访问 Telegram 服务器，不需要内部网络
-    const dockerArgs = [
-      'run',
-      '--rm', // 执行完后自动删除容器
-      '-v', `${projectRoot}/backend/config.json:/app/config.json:ro`, // 挂载配置文件
-      '-v', `${projectRoot}/data/session:/app/session`, // 挂载 session 目录
-      containerImage, // 使用主容器镜像
-      'python3', '/app/login_helper.py', command, ...args
+  }
+  
+  if (!docker) {
+    throw new Error('无法连接到 Docker daemon');
+  }
+  
+  const projectRoot = process.cwd();
+  const timeout = 60000; // 60秒超时
+  
+  // 尝试获取现有容器的配置信息，以复用相同的镜像和配置
+  let containerImage = null;
+  let existingContainerInfo = null;
+  
+  try {
+    const existingContainer = docker.getContainer('tg_listener');
+    existingContainerInfo = await existingContainer.inspect();
+    if (existingContainerInfo && existingContainerInfo.Config && existingContainerInfo.Config.Image) {
+      containerImage = existingContainerInfo.Config.Image;
+      console.log(`✅ 找到现有容器镜像: ${containerImage}`);
+    }
+  } catch (e) {
+    // 容器不存在，尝试查找镜像
+    console.log('⚠️  容器不存在，尝试查找 Telethon 镜像...');
+  }
+  
+  // 如果没找到容器，查找镜像
+  if (!containerImage) {
+    try {
+      const images = await docker.listImages();
+      // 查找包含 telethon 或 tg_listener 的镜像
+      const telethonImage = images.find(img => {
+        if (!img.RepoTags || img.RepoTags.length === 0) return false;
+        return img.RepoTags.some(tag => 
+          (tag.includes('tg_listener') || tag.includes('telethon')) && !tag.includes('<none>')
+        );
+      });
+      if (telethonImage && telethonImage.RepoTags && telethonImage.RepoTags.length > 0) {
+        // 使用第一个标签（通常是完整的镜像名称）
+        containerImage = telethonImage.RepoTags.find(tag => !tag.includes('<none>')) || telethonImage.RepoTags[0];
+        console.log(`✅ 找到 Telethon 镜像: ${containerImage}`);
+      }
+    } catch (imgError) {
+      console.warn('⚠️  无法查找 Telethon 镜像:', imgError.message);
+    }
+  }
+  
+  // 如果还是没找到，尝试使用常见的命名格式
+  if (!containerImage) {
+    // docker-compose 默认命名格式：项目名_服务名
+    const possibleNames = [
+      'tgjiankong-telethon',
+      'tgjiankong-tg_listener', 
+      'telethon-tgjiankong',
+      'tg_listener'
     ];
     
-    console.log(`🐳 使用 docker run 执行登录脚本: ${command}`);
-    
-    const dockerProcess = spawn('docker', dockerArgs, {
-      cwd: projectRoot,
-      stdio: ['ignore', 'pipe', 'pipe']
+    for (const name of possibleNames) {
+      try {
+        const testImage = docker.getImage(name);
+        await testImage.inspect();
+        containerImage = name;
+        console.log(`✅ 使用镜像: ${containerImage}`);
+        break;
+      } catch (e) {
+        // 继续尝试下一个
+      }
+    }
+  }
+  
+  if (!containerImage) {
+    throw new Error('无法找到 Telethon 镜像。请确保 Telethon 容器镜像已构建。可以运行: docker compose build telethon');
+  }
+  
+  // 获取网络名称（从现有容器或使用默认值）
+  let networkName = null;
+  if (existingContainerInfo && existingContainerInfo.NetworkSettings && existingContainerInfo.NetworkSettings.Networks) {
+    networkName = Object.keys(existingContainerInfo.NetworkSettings.Networks)[0];
+  }
+  
+  // 获取主机路径（从现有容器的挂载配置或使用默认值）
+  let configHostPath = path.resolve(projectRoot, 'backend', 'config.json');
+  let sessionHostPath = path.resolve(projectRoot, 'data', 'session');
+  
+  if (existingContainerInfo && existingContainerInfo.Mounts) {
+    // 从现有容器的挂载信息中获取主机路径
+    for (const mount of existingContainerInfo.Mounts) {
+      if (mount.Destination === '/app/config.json') {
+        configHostPath = mount.Source;
+      } else if (mount.Destination === '/app/session') {
+        sessionHostPath = mount.Source;
+      }
+    }
+  }
+  
+  // 创建临时容器配置
+  const tempContainerName = `tg_login_temp_${Date.now()}`;
+  const execArgs = ['python3', '/app/login_helper.py', command, ...args];
+  
+  console.log(`🐳 使用 Docker SDK 创建临时容器执行登录脚本: ${command}`);
+  console.log(`   镜像: ${containerImage}`);
+  console.log(`   配置路径: ${configHostPath}`);
+  console.log(`   Session 路径: ${sessionHostPath}`);
+  
+  try {
+    // 创建容器
+    const container = await docker.createContainer({
+      Image: containerImage,
+      name: tempContainerName,
+      Cmd: execArgs,
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: false,
+      OpenStdin: false,
+      HostConfig: {
+        Binds: [
+          `${configHostPath}:/app/config.json:ro`,
+          `${sessionHostPath}:/app/session`
+        ],
+        AutoRemove: true // 容器退出后自动删除
+      },
+      NetworkMode: networkName || 'bridge' // 登录脚本不需要访问内部网络
     });
     
+    // 启动容器
+    await container.start();
+    
+    // 等待容器执行完成（最多等待 timeout 毫秒）
+    const waitPromise = container.wait();
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`容器执行超时（${timeout/1000}秒）`)), timeout);
+    });
+    
+    await Promise.race([waitPromise, timeoutPromise]);
+    
+    // 获取容器输出（在容器退出后）
+    const logs = await container.logs({
+      follow: false,
+      stdout: true,
+      stderr: true,
+      timestamps: false
+    });
+    
+    // 解析 Docker 日志格式（Docker 使用特殊格式：8字节头部 + 数据）
     let stdout = '';
     let stderr = '';
-    let timeoutId = setTimeout(() => {
-      dockerProcess.kill('SIGKILL');
-      reject(new Error(`docker run 执行超时（${timeout/1000}秒）`));
-    }, timeout);
+    const buffer = Buffer.isBuffer(logs) ? logs : Buffer.from(logs);
+    let offset = 0;
     
-    dockerProcess.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-    
-    dockerProcess.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-    
-    dockerProcess.on('close', (code) => {
-      clearTimeout(timeoutId);
+    while (offset < buffer.length) {
+      if (buffer.length - offset < 8) break;
       
-      if (code === 0) {
-        try {
-          const result = JSON.parse(stdout.trim());
-          resolve(result);
-        } catch (e) {
-          reject(new Error(`解析结果失败: ${stdout.trim() || stderr.trim() || '无输出'}`));
-        }
-      } else {
-        reject(new Error(`docker run 执行失败 (退出码: ${code}): ${stderr || stdout || '无输出'}`));
+      const streamType = buffer[offset];
+      const payloadLength = buffer.readUInt32BE(offset + 4);
+      
+      if (buffer.length - offset < 8 + payloadLength) break;
+      
+      const payload = buffer.slice(offset + 8, offset + 8 + payloadLength);
+      
+      if (streamType === 1) { // stdout
+        stdout += payload.toString();
+      } else if (streamType === 2) { // stderr
+        stderr += payload.toString();
       }
-    });
+      
+      offset += 8 + payloadLength;
+    }
     
-    dockerProcess.on('error', (err) => {
-      clearTimeout(timeoutId);
-      reject(new Error(`启动 docker run 失败: ${err.message}`));
-    });
-  });
+    // 清理容器（AutoRemove 应该已经删除，但为了安全还是尝试清理）
+    try {
+      await container.remove({ force: true });
+    } catch (cleanupError) {
+      // 忽略清理错误，容器可能已经自动删除
+    }
+    
+    // 解析结果
+    const resultText = stdout.trim() || stderr.trim();
+    if (!resultText) {
+      throw new Error('脚本执行无输出');
+    }
+    
+    try {
+      // 尝试从 stdout 或 stderr 中解析 JSON（login_helper.py 输出到 stdout）
+      const outputText = stdout.trim() || stderr.trim();
+      const result = JSON.parse(outputText);
+      return result;
+    } catch (parseError) {
+      // 如果无法解析为 JSON，返回错误信息
+      const errorMsg = stderr.trim() || stdout.trim() || '未知错误';
+      throw new Error(`脚本执行失败: ${errorMsg.substring(0, 500)}`);
+    }
+    
+  } catch (error) {
+    // 确保清理临时容器
+    try {
+      const tempContainer = docker.getContainer(tempContainerName);
+      const containerInfo = await tempContainer.inspect();
+      if (containerInfo.State.Running) {
+        await tempContainer.stop();
+      }
+      await tempContainer.remove({ force: true });
+    } catch (cleanupError) {
+      // 忽略清理错误
+    }
+    
+    // 提供更详细的错误信息
+    if (error.message && error.message.includes('超时')) {
+      throw error;
+    }
+    
+    if (error.message && error.message.includes('No such image')) {
+      throw new Error(
+        `无法找到 Telethon 镜像: ${containerImage}\n\n` +
+        `请执行以下操作：\n` +
+        `1. 确保 Telethon 容器镜像已构建：docker compose build telethon\n` +
+        `2. 检查镜像是否存在：docker images | grep telethon\n` +
+        `3. 如果镜像不存在，重新构建：docker compose build --no-cache telethon`
+      );
+    }
+    
+    if (error.message && error.message.includes('Cannot connect to the Docker daemon')) {
+      throw new Error(
+        `无法连接到 Docker daemon\n\n` +
+        `请确保：\n` +
+        `1. Docker socket 已挂载到容器：/var/run/docker.sock\n` +
+        `2. 容器有权限访问 Docker socket\n` +
+        `3. 在 docker-compose.yml 中已添加挂载配置`
+      );
+    }
+    
+    throw new Error(`创建临时容器执行脚本失败: ${error.message}`);
+  }
 }
 
 // 同步用户配置到全局配置文件并重启 Telethon 服务
