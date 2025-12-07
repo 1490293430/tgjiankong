@@ -2006,12 +2006,14 @@ async function execLoginScriptWithDockerRun(command, args) {
   
   // 创建临时容器配置
   const tempContainerName = `tg_login_temp_${Date.now()}`;
-  const execArgs = ['python3', '/app/login_helper.py', command, ...args];
+  // 使用 -u 参数禁用 Python 输出缓冲，确保输出立即刷新
+  const execArgs = ['python3', '-u', '/app/login_helper.py', command, ...args];
   
   console.log(`🐳 使用 Docker SDK 创建临时容器执行登录脚本: ${command}`);
   console.log(`   镜像: ${containerImage}`);
   console.log(`   配置路径: ${configHostPath}`);
   console.log(`   Session 路径: ${sessionHostPath}`);
+  console.log(`   执行命令: ${execArgs.join(' ')}`);
   
   try {
     // 创建容器
@@ -2023,6 +2025,9 @@ async function execLoginScriptWithDockerRun(command, args) {
       AttachStderr: true,
       Tty: false,
       OpenStdin: false,
+      Env: [
+        'PYTHONUNBUFFERED=1'  // 禁用 Python 输出缓冲
+      ],
       HostConfig: {
         Binds: [
           `${configHostPath}:/app/config.json:ro`,
@@ -2035,47 +2040,152 @@ async function execLoginScriptWithDockerRun(command, args) {
     
     // 启动容器
     await container.start();
+    console.log(`✅ 临时容器已启动: ${tempContainerName}`);
+    
+    // 使用 attach 方式实时获取输出（必须在容器启动后）
+    let stdout = '';
+    let stderr = '';
+    let attachResolved = false;
+    
+    // 创建 attach 流来实时获取输出
+    const attachPromise = new Promise((resolve, reject) => {
+      container.attach({ stream: true, stdout: true, stderr: true }, (err, stream) => {
+        if (err) {
+          console.warn(`⚠️  Attach 失败，将使用 logs 方式: ${err.message}`);
+          attachResolved = true;
+          return resolve(); // 不阻塞，继续使用 logs 方式
+        }
+        
+        // 解析 Docker 流格式
+        stream.on('data', (chunk) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          let offset = 0;
+          
+          while (offset < buffer.length) {
+            if (buffer.length - offset < 8) break;
+            
+            const streamType = buffer[offset];
+            const payloadLength = buffer.readUInt32BE(offset + 4);
+            
+            if (buffer.length - offset < 8 + payloadLength) break;
+            
+            const payload = buffer.slice(offset + 8, offset + 8 + payloadLength);
+            
+            if (streamType === 1) { // stdout
+              const text = payload.toString();
+              stdout += text;
+              // 实时输出调试信息（只显示前100字符）
+              if (text.trim()) {
+                console.log(`📤 容器输出: ${text.substring(0, 100).replace(/\n/g, '\\n')}`);
+              }
+            } else if (streamType === 2) { // stderr
+              const text = payload.toString();
+              stderr += text;
+              // 实时输出错误信息
+              if (text.trim()) {
+                console.log(`📥 容器错误: ${text.substring(0, 100).replace(/\n/g, '\\n')}`);
+              }
+            }
+            
+            offset += 8 + payloadLength;
+          }
+        });
+        
+        stream.on('end', () => {
+          console.log('✅ Attach 流结束');
+          attachResolved = true;
+          resolve();
+        });
+        
+        stream.on('error', (err) => {
+          console.warn(`⚠️  Attach 流错误: ${err.message}`);
+          attachResolved = true;
+          resolve(); // 不阻塞，继续使用 logs 方式
+        });
+      });
+    });
+    
+    // 开始监听输出（不等待完成，在后台运行）
+    const attachTask = attachPromise.catch(err => {
+      console.warn(`⚠️  Attach Promise 错误: ${err.message}`);
+      attachResolved = true;
+    });
     
     // 等待容器执行完成（最多等待 timeout 毫秒）
-    const waitPromise = container.wait();
+    const waitPromise = container.wait().then(async (data) => {
+      console.log(`📋 容器已退出，退出码: ${data.StatusCode}`);
+      
+      // 等待 attach 完成或超时（最多等待 2 秒）
+      const attachTimeout = new Promise(resolve => setTimeout(() => {
+        console.log('⏱️  Attach 等待超时，使用 logs 获取输出');
+        resolve();
+      }, 2000));
+      
+      await Promise.race([attachTask, attachTimeout]);
+      
+      // 如果 attach 没有获取到输出，或者输出为空，尝试从 logs 获取
+      if ((!stdout.trim() && !stderr.trim()) || !attachResolved) {
+        console.log('📋 从 logs 获取容器输出...');
+        try {
+          const logs = await container.logs({
+            follow: false,
+            stdout: true,
+            stderr: true,
+            timestamps: false
+          });
+          
+          // 解析日志
+          const buffer = Buffer.isBuffer(logs) ? logs : Buffer.from(logs);
+          let offset = 0;
+          
+          while (offset < buffer.length) {
+            if (buffer.length - offset < 8) break;
+            
+            const streamType = buffer[offset];
+            const payloadLength = buffer.readUInt32BE(offset + 4);
+            
+            if (buffer.length - offset < 8 + payloadLength) break;
+            
+            const payload = buffer.slice(offset + 8, offset + 8 + payloadLength);
+            const text = payload.toString();
+            
+            if (streamType === 1) {
+              if (!stdout.includes(text)) { // 避免重复添加
+                stdout += text;
+              }
+            } else if (streamType === 2) {
+              if (!stderr.includes(text)) { // 避免重复添加
+                stderr += text;
+              }
+            }
+            
+            offset += 8 + payloadLength;
+          }
+          
+          console.log(`📋 从 logs 获取到 stdout: ${stdout.length} 字节, stderr: ${stderr.length} 字节`);
+        } catch (logError) {
+          console.warn(`⚠️  获取日志失败: ${logError.message}`);
+        }
+      }
+      
+      return data;
+    });
+    
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error(`容器执行超时（${timeout/1000}秒）`)), timeout);
     });
     
     await Promise.race([waitPromise, timeoutPromise]);
     
-    // 获取容器输出（在容器退出后）
-    const logs = await container.logs({
-      follow: false,
-      stdout: true,
-      stderr: true,
-      timestamps: false
-    });
+    // 等待 attach 任务完成
+    await attachTask;
     
-    // 解析 Docker 日志格式（Docker 使用特殊格式：8字节头部 + 数据）
-    let stdout = '';
-    let stderr = '';
-    const buffer = Buffer.isBuffer(logs) ? logs : Buffer.from(logs);
-    let offset = 0;
+    // 检查容器退出码
+    const containerInfo = await container.inspect();
+    const exitCode = containerInfo.State.ExitCode;
     
-    while (offset < buffer.length) {
-      if (buffer.length - offset < 8) break;
-      
-      const streamType = buffer[offset];
-      const payloadLength = buffer.readUInt32BE(offset + 4);
-      
-      if (buffer.length - offset < 8 + payloadLength) break;
-      
-      const payload = buffer.slice(offset + 8, offset + 8 + payloadLength);
-      
-      if (streamType === 1) { // stdout
-        stdout += payload.toString();
-      } else if (streamType === 2) { // stderr
-        stderr += payload.toString();
-      }
-      
-      offset += 8 + payloadLength;
-    }
+    console.log(`📋 容器执行完成，退出码: ${exitCode}`);
+    console.log(`📋 stdout 长度: ${stdout.length}, stderr 长度: ${stderr.length}`);
     
     // 清理容器（AutoRemove 应该已经删除，但为了安全还是尝试清理）
     try {
@@ -2086,19 +2196,54 @@ async function execLoginScriptWithDockerRun(command, args) {
     
     // 解析结果
     const resultText = stdout.trim() || stderr.trim();
+    
     if (!resultText) {
-      throw new Error('脚本执行无输出');
+      // 如果没有任何输出，检查容器状态和可能的错误
+      const errorDetails = [];
+      if (exitCode !== 0) {
+        errorDetails.push(`容器退出码: ${exitCode}`);
+      }
+      if (containerInfo.State.Error) {
+        errorDetails.push(`容器错误: ${containerInfo.State.Error}`);
+      }
+      
+      throw new Error(
+        `脚本执行无输出。${errorDetails.length > 0 ? errorDetails.join('; ') : ''}\n\n` +
+        `可能原因：\n` +
+        `1. Python 脚本执行出错但没有输出错误信息\n` +
+        `2. 脚本路径或参数错误\n` +
+        `3. 容器镜像配置问题\n\n` +
+        `建议检查：\n` +
+        `- 容器日志: docker logs ${tempContainerName}\n` +
+        `- 镜像是否正确: docker images | grep telethon\n` +
+        `- 脚本文件是否存在: docker exec ${tempContainerName} ls -la /app/login_helper.py`
+      );
+    }
+    
+    // 输出调试信息
+    if (stderr.trim()) {
+      console.log(`⚠️  stderr 输出: ${stderr.substring(0, 200)}`);
     }
     
     try {
       // 尝试从 stdout 或 stderr 中解析 JSON（login_helper.py 输出到 stdout）
       const outputText = stdout.trim() || stderr.trim();
-      const result = JSON.parse(outputText);
+      
+      // 尝试提取 JSON（可能包含其他输出）
+      let jsonText = outputText;
+      const jsonMatch = outputText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        jsonText = jsonMatch[0];
+      }
+      
+      const result = JSON.parse(jsonText);
       return result;
     } catch (parseError) {
       // 如果无法解析为 JSON，返回错误信息
       const errorMsg = stderr.trim() || stdout.trim() || '未知错误';
-      throw new Error(`脚本执行失败: ${errorMsg.substring(0, 500)}`);
+      console.error(`❌ 解析 JSON 失败: ${parseError.message}`);
+      console.error(`❌ 输出内容: ${errorMsg.substring(0, 500)}`);
+      throw new Error(`脚本输出不是有效的 JSON: ${errorMsg.substring(0, 500)}`);
     }
     
   } catch (error) {
