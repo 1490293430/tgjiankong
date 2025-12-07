@@ -303,6 +303,17 @@
             background: #e0e0e0;
         }
         
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #d32f2f;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(244, 67, 54, 0.3);
+        }
+        
         .log-table {
             width: 100%;
             border-collapse: collapse;
@@ -439,6 +450,106 @@
             padding: 40px;
             color: #999;
         }
+        
+        /* 模态弹窗样式 */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 100000;
+        }
+        
+        .modal-overlay.show {
+            display: flex;
+        }
+        
+        .modal-dialog {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 450px;
+            width: 90%;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            animation: modalSlideIn 0.3s ease-out;
+        }
+        
+        @keyframes modalSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .modal-header {
+            margin-bottom: 20px;
+        }
+        
+        .modal-header h3 {
+            margin: 0;
+            color: #333;
+            font-size: 20px;
+        }
+        
+        .modal-body {
+            margin-bottom: 20px;
+        }
+        
+        .modal-body .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .modal-body .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+        }
+        
+        .modal-body .form-group input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        
+        .modal-body .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .modal-body .hint {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+        
+        .modal-footer {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+        
+        .modal-error {
+            padding: 10px;
+            background: #f8d7da;
+            border-radius: 6px;
+            color: #721c24;
+            margin-bottom: 15px;
+            font-size: 13px;
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -506,63 +617,33 @@
                         <label>API_HASH</label>
                         <input type="text" id="tgApiHash" placeholder="例如：abcd1234efgh5678">
                     </div>
-                </div>
-            </div>
-            
-            <!-- Telegram 登录 -->
-            <div class="card">
-                <div class="card-header" onclick="toggleCard(this)" data-card-id="telegram-login">
-                    <h2>📱 Telegram 登录</h2>
-                    <span class="card-toggle collapsed">▼</span>
-                </div>
-                <div class="card-content collapsed">
-                    <div id="telegramLoginStatus" style="margin-bottom: 20px;">
-                        <p style="color: #666;">检查登录状态中...</p>
-                    </div>
                     
-                    <!-- 已登录状态 -->
-                    <div id="telegramLoggedIn" style="display: none;">
-                        <div style="padding: 15px; background: #d4edda; border-radius: 8px; margin-bottom: 15px;">
-                            <p style="margin: 0; color: #155724; font-weight: 500;">
-                                ✅ 已登录 Telegram
-                            </p>
-                            <p id="telegramUserInfo" style="margin: 5px 0 0 0; color: #666; font-size: 14px;"></p>
-                        </div>
-                        <button class="btn btn-secondary" onclick="checkTelegramLoginStatus()">🔄 刷新状态</button>
-                    </div>
-                    
-                    <!-- 未登录状态 - 登录表单 -->
-                    <div id="telegramLoginForm" style="display: none;">
-                        <div style="padding: 15px; background: #fff3cd; border-radius: 8px; margin-bottom: 15px;">
-                            <p style="margin: 0; color: #856404;">
-                                ⚠️ 未登录 Telegram，请先登录才能开始监控消息
-                            </p>
+                    <!-- Telegram 登录状态和按钮 -->
+                    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e0e0e0;">
+                        <div id="telegramLoginStatus" style="margin-bottom: 15px;">
+                            <p style="color: #666; margin-bottom: 10px;">检查登录状态中...</p>
                         </div>
                         
-                        <div class="form-group">
-                            <label>手机号</label>
-                            <input type="text" id="telegramPhone" placeholder="例如：+8613800138000">
-                            <div class="hint">请输入完整的手机号，包括国家代码（如 +86）</div>
+                        <!-- 已登录状态 -->
+                        <div id="telegramLoggedIn" style="display: none; margin-bottom: 15px;">
+                            <div style="padding: 12px; background: #d4edda; border-radius: 8px;">
+                                <p style="margin: 0; color: #155724; font-weight: 500;">
+                                    ✅ 已登录 Telegram
+                                </p>
+                                <p id="telegramUserInfo" style="margin: 5px 0 0 0; color: #666; font-size: 13px;"></p>
+                            </div>
+                            <button class="btn btn-secondary" onclick="checkTelegramLoginStatus()" style="margin-top: 10px;">🔄 刷新状态</button>
                         </div>
                         
-                        <div id="telegramCodeGroup" class="form-group" style="display: none;">
-                            <label>验证码</label>
-                            <input type="text" id="telegramCode" placeholder="请输入收到的验证码">
-                            <div class="hint">验证码已发送到您的 Telegram 应用，请输入验证码</div>
+                        <!-- 未登录状态 -->
+                        <div id="telegramNotLoggedIn" style="display: none;">
+                            <div style="padding: 12px; background: #fff3cd; border-radius: 8px; margin-bottom: 15px;">
+                                <p style="margin: 0; color: #856404; font-size: 14px;">
+                                    ⚠️ 未登录 Telegram，请先登录才能开始监控消息
+                                </p>
+                            </div>
+                            <button id="telegramLoginBtn" class="btn btn-primary" onclick="startTelegramLogin()">📱 Telegram 首次登录</button>
                         </div>
-                        
-                        <div id="telegramPasswordGroup" class="form-group" style="display: none;">
-                            <label>两步验证密码</label>
-                            <input type="password" id="telegramPassword" placeholder="请输入两步验证密码">
-                            <div class="hint">如果您的账号启用了两步验证，请输入密码</div>
-                        </div>
-                        
-                        <div style="margin-top: 15px;">
-                            <button id="telegramSendCodeBtn" class="btn btn-primary" onclick="sendTelegramCode()">📤 发送验证码</button>
-                            <button id="telegramVerifyBtn" class="btn btn-primary" onclick="verifyTelegramLogin()" style="display: none;">✅ 登录</button>
-                        </div>
-                        
-                        <div id="telegramLoginError" style="margin-top: 15px; display: none; padding: 10px; background: #f8d7da; border-radius: 6px; color: #721c24;"></div>
                     </div>
                 </div>
             </div>
@@ -879,7 +960,10 @@
         <!-- 日志 -->
         <div id="logs" class="tab-content">
             <div class="card">
-                <h2>日志记录</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="margin: 0;">日志记录</h2>
+                    <button class="btn btn-danger" onclick="showClearLogsConfirm()">🗑️ 清除日志</button>
+                </div>
                 <div class="form-group">
                     <input type="text" id="searchKeyword" placeholder="搜索关键词...">
                 </div>
@@ -948,6 +1032,71 @@
 
     <!-- 浮动提示框 -->
     <div id="toastNotification" class="toast-notification"></div>
+    
+    <!-- Telegram 登录模态弹窗 -->
+    <div id="telegramLoginModal" class="modal-overlay">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3>📱 Telegram 首次登录</h3>
+            </div>
+            <div class="modal-body">
+                <div id="telegramModalError" class="modal-error"></div>
+                
+                <!-- 步骤1: 输入手机号 -->
+                <div id="telegramModalStep1">
+                    <div class="form-group">
+                        <label>手机号</label>
+                        <input type="text" id="modalTelegramPhone" placeholder="例如：+8613800138000" autocomplete="off">
+                        <div class="hint">请输入完整的手机号，包括国家代码（如 +86）</div>
+                    </div>
+                </div>
+                
+                <!-- 步骤2: 输入验证码 -->
+                <div id="telegramModalStep2" style="display: none;">
+                    <div class="form-group">
+                        <label>验证码</label>
+                        <input type="text" id="modalTelegramCode" placeholder="请输入收到的验证码" autocomplete="off">
+                        <div class="hint">验证码已发送到您的 Telegram 应用，请输入验证码</div>
+                    </div>
+                </div>
+                
+                <!-- 步骤3: 输入两步验证密码 -->
+                <div id="telegramModalStep3" style="display: none;">
+                    <div class="form-group">
+                        <label>两步验证密码</label>
+                        <input type="password" id="modalTelegramPassword" placeholder="请输入两步验证密码" autocomplete="off">
+                        <div class="hint">如果您的账号启用了两步验证，请输入密码</div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeTelegramLoginModal()">取消</button>
+                <button id="telegramModalConfirmBtn" class="btn btn-primary" onclick="handleTelegramLoginStep()">确认</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 清除日志确认模态框 -->
+    <div id="clearLogsModal" class="modal-overlay">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3>⚠️ 确认清除日志</h3>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 15px; color: #333; line-height: 1.6;">
+                    此操作将<strong style="color: #f44336;">永久删除</strong>您的所有日志记录，此操作<strong style="color: #f44336;">不可恢复</strong>！
+                </p>
+                <p style="margin-bottom: 15px; color: #666; font-size: 14px; line-height: 1.6;">
+                    清除日志可以释放数据库空间，但您将无法再查看已删除的日志记录。请确认是否继续？
+                </p>
+                <div id="clearLogsModalError" class="modal-error"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeClearLogsModal()">取消</button>
+                <button class="btn btn-danger" onclick="confirmClearLogs()">确认清除</button>
+            </div>
+        </div>
+    </div>
 
     <script>
         const API_URL = '/api';
@@ -1287,10 +1436,14 @@
                 ...options.headers
             };
             
+            // 提取 signal 以便传递给 fetch
+            const { signal, ...fetchOptions } = options;
+            
             try {
                 const response = await fetch(`${API_URL}${endpoint}`, {
-                    ...options,
-                    headers
+                    ...fetchOptions,
+                    headers,
+                    signal: signal // 支持 AbortController
                 });
                 
                 if (response.status === 401) {
@@ -1301,6 +1454,10 @@
                 
                 return await response.json();
             } catch (error) {
+                // 如果是取消请求，直接抛出错误以便上层处理
+                if (error.name === 'AbortError') {
+                    throw error;
+                }
                 console.error('API Error:', error);
                 return null;
             }
@@ -1325,7 +1482,9 @@
                 loadRecentLogs();
             } else if (tabName === 'config') {
                 loadConfig();
-                checkTelegramLoginStatus(); // 切换到配置页面时检查登录状态
+                setTimeout(() => {
+                    checkTelegramLoginStatus(); // 切换到配置页面时检查登录状态
+                }, 500);
             } else if (tabName === 'ai') {
                 loadAIStats();
                 loadAISummaries();
@@ -1504,6 +1663,11 @@
                     toggleAnalysisTriggerOptions();
                     toggleAITriggerConfig();
                 }
+                
+                // 加载配置后自动检查 Telegram 登录状态
+                setTimeout(() => {
+                    checkTelegramLoginStatus();
+                }, 500);
             }
         }
         
@@ -1577,7 +1741,7 @@
                     // 如果配置了 API_ID 和 API_HASH，自动检查登录状态
                     setTimeout(() => {
                         checkTelegramLoginStatus();
-                    }, 1000);
+                    }, 1500);
                 } else {
                     showToast('✅ 配置保存成功！', true);
                 }
@@ -1666,6 +1830,82 @@
             currentPage += delta;
             if (currentPage < 1) currentPage = 1;
             loadLogs();
+        }
+        
+        // 显示清除日志确认对话框
+        function showClearLogsConfirm() {
+            const modal = document.getElementById('clearLogsModal');
+            if (modal) {
+                modal.classList.add('show');
+                // 隐藏错误信息
+                const errorDiv = document.getElementById('clearLogsModalError');
+                if (errorDiv) {
+                    errorDiv.style.display = 'none';
+                    errorDiv.textContent = '';
+                }
+            }
+        }
+        
+        // 关闭清除日志确认对话框
+        function closeClearLogsModal() {
+            const modal = document.getElementById('clearLogsModal');
+            if (modal) {
+                modal.classList.remove('show');
+            }
+        }
+        
+        // 确认清除日志
+        async function confirmClearLogs() {
+            const errorDiv = document.getElementById('clearLogsModalError');
+            const confirmBtn = document.querySelector('#clearLogsModal .btn-danger');
+            
+            // 禁用确认按钮，防止重复点击
+            if (confirmBtn) {
+                confirmBtn.disabled = true;
+                confirmBtn.textContent = '清除中...';
+            }
+            
+            try {
+                const result = await apiRequest('/logs', {
+                    method: 'DELETE',
+                    body: JSON.stringify({})
+                });
+                
+                if (result && result.status === 'ok') {
+                    // 关闭模态框
+                    closeClearLogsModal();
+                    
+                    // 显示成功消息
+                    showToast(`✅ ${result.message || '日志清除成功'} (已删除 ${result.deletedCount || 0} 条)`, true);
+                    
+                    // 重置页码并重新加载日志
+                    currentPage = 1;
+                    await loadLogs();
+                    
+                    // 刷新统计信息
+                    await loadStats();
+                } else {
+                    // 显示错误信息
+                    const errorMsg = result?.error || '清除日志失败';
+                    if (errorDiv) {
+                        errorDiv.textContent = errorMsg;
+                        errorDiv.style.display = 'block';
+                    }
+                }
+            } catch (error) {
+                console.error('清除日志失败:', error);
+                const errorMsg = `清除日志失败：${error.message || '未知错误'}`;
+                if (errorDiv) {
+                    errorDiv.textContent = errorMsg;
+                    errorDiv.style.display = 'block';
+                }
+            } finally {
+                // 恢复确认按钮
+                if (confirmBtn) {
+                    confirmBtn.disabled = false;
+                    confirmBtn.textContent = '确认清除';
+                }
+            }
         }
         
         // 修改密码
@@ -2324,25 +2564,29 @@
         });
         
         // ===== Telegram 登录相关功能 =====
+        let telegramLoginStep = 0; // 当前登录步骤：0=未开始，1=手机号，2=验证码，3=密码
         let telegramPhoneCodeHash = null; // 存储验证码哈希
+        let telegramLoginPhone = null; // 存储手机号
+        let telegramLoginInProgress = false; // 登录进行中标志，防止重复点击
+        let telegramLoginAbortController = null; // 用于取消正在进行的登录请求
         
         // 检查 Telegram 登录状态
         async function checkTelegramLoginStatus() {
             const statusDiv = document.getElementById('telegramLoginStatus');
             const loggedInDiv = document.getElementById('telegramLoggedIn');
-            const loginFormDiv = document.getElementById('telegramLoginForm');
+            const notLoggedInDiv = document.getElementById('telegramNotLoggedIn');
             
-            if (!statusDiv || !loggedInDiv || !loginFormDiv) return;
+            if (!statusDiv || !loggedInDiv || !notLoggedInDiv) return;
             
             try {
-                statusDiv.innerHTML = '<p style="color: #666;">检查登录状态中...</p>';
+                statusDiv.innerHTML = '<p style="color: #666; margin-bottom: 10px;">检查登录状态中...</p>';
                 
                 const response = await apiRequest('/telegram/login/status');
                 
                 if (response.logged_in) {
                     // 已登录
                     loggedInDiv.style.display = 'block';
-                    loginFormDiv.style.display = 'none';
+                    notLoggedInDiv.style.display = 'none';
                     statusDiv.style.display = 'none';
                     
                     if (response.user) {
@@ -2353,145 +2597,336 @@
                 } else {
                     // 未登录
                     loggedInDiv.style.display = 'none';
-                    loginFormDiv.style.display = 'block';
+                    notLoggedInDiv.style.display = 'block';
                     statusDiv.style.display = 'none';
-                    
-                    // 重置表单
-                    document.getElementById('telegramPhone').value = '';
-                    document.getElementById('telegramCode').value = '';
-                    document.getElementById('telegramPassword').value = '';
-                    document.getElementById('telegramCodeGroup').style.display = 'none';
-                    document.getElementById('telegramPasswordGroup').style.display = 'none';
-                    document.getElementById('telegramSendCodeBtn').style.display = 'inline-block';
-                    document.getElementById('telegramVerifyBtn').style.display = 'none';
-                    document.getElementById('telegramLoginError').style.display = 'none';
-                    telegramPhoneCodeHash = null;
                 }
             } catch (error) {
                 console.error('检查 Telegram 登录状态失败:', error);
-                statusDiv.innerHTML = `<p style="color: #e74c3c;">检查失败：${error.message || '未知错误'}</p>`;
+                statusDiv.innerHTML = `<p style="color: #e74c3c; margin-bottom: 10px;">检查失败：${error.message || '未知错误'}</p>`;
                 loggedInDiv.style.display = 'none';
-                loginFormDiv.style.display = 'block';
+                notLoggedInDiv.style.display = 'block';
             }
         }
         
-        // 发送验证码
-        async function sendTelegramCode() {
-            const phone = document.getElementById('telegramPhone').value.trim();
-            const errorDiv = document.getElementById('telegramLoginError');
-            const sendCodeBtn = document.getElementById('telegramSendCodeBtn');
-            
-            if (!phone) {
-                errorDiv.textContent = '请输入手机号';
-                errorDiv.style.display = 'block';
+        // 打开 Telegram 登录模态弹窗
+        function startTelegramLogin() {
+            // 防止重复点击
+            if (telegramLoginInProgress) {
+                showToast('⚠️ 登录流程正在进行中，请稍候...', false);
                 return;
             }
             
-            try {
-                sendCodeBtn.disabled = true;
-                sendCodeBtn.textContent = '发送中...';
+            // 检查是否已配置 API_ID 和 API_HASH
+            const apiId = document.getElementById('tgApiId').value.trim();
+            const apiHash = document.getElementById('tgApiHash').value.trim();
+            
+            if (!apiId || (!apiHash && !document.getElementById('tgApiHash').placeholder.includes('已隐藏'))) {
+                showToast('⚠️ 请先配置 API_ID 和 API_HASH', false);
+                return;
+            }
+            
+            // 重置登录状态
+            telegramLoginStep = 1;
+            telegramPhoneCodeHash = null;
+            telegramLoginPhone = null;
+            
+            // 显示步骤1：输入手机号
+            document.getElementById('telegramModalStep1').style.display = 'block';
+            document.getElementById('telegramModalStep2').style.display = 'none';
+            document.getElementById('telegramModalStep3').style.display = 'none';
+            document.getElementById('telegramModalError').style.display = 'none';
+            document.getElementById('modalTelegramPhone').value = '';
+            document.getElementById('modalTelegramCode').value = '';
+            document.getElementById('modalTelegramPassword').value = '';
+            document.getElementById('telegramModalConfirmBtn').textContent = '确认';
+            document.getElementById('telegramModalConfirmBtn').disabled = false;
+            
+            // 显示模态弹窗
+            const modal = document.getElementById('telegramLoginModal');
+            modal.classList.add('show');
+            
+            // 聚焦到输入框
+            setTimeout(() => {
+                document.getElementById('modalTelegramPhone').focus();
+            }, 100);
+        }
+        
+        // 关闭 Telegram 登录模态弹窗
+        function closeTelegramLoginModal() {
+            // 如果有正在进行的请求，取消它
+            if (telegramLoginAbortController) {
+                telegramLoginAbortController.abort();
+                telegramLoginAbortController = null;
+            }
+            
+            const modal = document.getElementById('telegramLoginModal');
+            if (modal) {
+                modal.classList.remove('show');
+            }
+            
+            // 重置状态
+            telegramLoginStep = 0;
+            telegramPhoneCodeHash = null;
+            telegramLoginPhone = null;
+            telegramLoginInProgress = false;
+            
+            // 重置按钮状态
+            const confirmBtn = document.getElementById('telegramModalConfirmBtn');
+            if (confirmBtn) {
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = '确认';
+            }
+            
+            // 隐藏错误信息
+            const errorDiv = document.getElementById('telegramModalError');
+            if (errorDiv) {
                 errorDiv.style.display = 'none';
+            }
+        }
+        
+        // 处理 Telegram 登录步骤
+        async function handleTelegramLoginStep() {
+            if (telegramLoginInProgress) {
+                return; // 防止重复点击
+            }
+            
+            const errorDiv = document.getElementById('telegramModalError');
+            const confirmBtn = document.getElementById('telegramModalConfirmBtn');
+            
+            errorDiv.style.display = 'none';
+            
+            if (telegramLoginStep === 1) {
+                // 步骤1：发送验证码
+                const phone = document.getElementById('modalTelegramPhone').value.trim();
                 
-                const response = await apiRequest('/telegram/login/send-code', {
-                    method: 'POST',
-                    body: JSON.stringify({ phone })
-                });
+                if (!phone) {
+                    errorDiv.textContent = '请输入手机号';
+                    errorDiv.style.display = 'block';
+                    return;
+                }
                 
-                if (response.success) {
-                    if (response.already_logged_in) {
-                        // 已经登录了
-                        await checkTelegramLoginStatus();
+                telegramLoginInProgress = true;
+                confirmBtn.disabled = true;
+                confirmBtn.textContent = '发送中...';
+                
+                // 创建 AbortController 用于取消请求
+                telegramLoginAbortController = new AbortController();
+                
+                try {
+                    const response = await apiRequest('/telegram/login/send-code', {
+                        method: 'POST',
+                        body: JSON.stringify({ phone }),
+                        signal: telegramLoginAbortController.signal
+                    });
+                    
+                    if (response.success) {
+                        if (response.already_logged_in) {
+                            // 已经登录了
+                            closeTelegramLoginModal();
+                            await checkTelegramLoginStatus();
+                            showToast('✅ 您已登录 Telegram', true);
+                            return;
+                        }
+                        
+                        telegramPhoneCodeHash = response.phone_code_hash;
+                        telegramLoginPhone = phone;
+                        
+                        // 进入步骤2：输入验证码
+                        telegramLoginStep = 2;
+                        document.getElementById('telegramModalStep1').style.display = 'none';
+                        document.getElementById('telegramModalStep2').style.display = 'block';
+                        document.getElementById('modalTelegramCode').focus();
+                        confirmBtn.textContent = '确认';
+                        showToast('✅ 验证码已发送到您的 Telegram 应用', true);
+                    } else {
+                        errorDiv.textContent = response.error || '发送验证码失败';
+                        errorDiv.style.display = 'block';
+                    }
+                } catch (error) {
+                    console.error('发送验证码失败:', error);
+                    errorDiv.textContent = `发送验证码失败：${error.message || '未知错误'}`;
+                    errorDiv.style.display = 'block';
+                } catch (error) {
+                    // 如果是因为取消请求导致的错误，不显示错误信息
+                    if (error.name === 'AbortError') {
+                        console.log('请求已取消');
                         return;
                     }
-                    
-                    telegramPhoneCodeHash = response.phone_code_hash;
-                    document.getElementById('telegramCodeGroup').style.display = 'block';
-                    document.getElementById('telegramSendCodeBtn').style.display = 'none';
-                    document.getElementById('telegramVerifyBtn').style.display = 'inline-block';
-                    errorDiv.style.display = 'none';
-                    showToast('✅ 验证码已发送到您的 Telegram 应用', true);
-                } else {
-                    errorDiv.textContent = response.error || '发送验证码失败';
-                    errorDiv.style.display = 'block';
+                    throw error; // 重新抛出其他错误
+                } finally {
+                    telegramLoginInProgress = false;
+                    confirmBtn.disabled = false;
+                    telegramLoginAbortController = null;
                 }
-            } catch (error) {
-                console.error('发送验证码失败:', error);
-                errorDiv.textContent = `发送验证码失败：${error.message || '未知错误'}`;
-                errorDiv.style.display = 'block';
-            } finally {
-                sendCodeBtn.disabled = false;
-                sendCodeBtn.textContent = '📤 发送验证码';
-            }
-        }
-        
-        // 验证登录
-        async function verifyTelegramLogin() {
-            const phone = document.getElementById('telegramPhone').value.trim();
-            const code = document.getElementById('telegramCode').value.trim();
-            const password = document.getElementById('telegramPassword').value.trim();
-            const errorDiv = document.getElementById('telegramLoginError');
-            const verifyBtn = document.getElementById('telegramVerifyBtn');
-            
-            if (!phone || !code) {
-                errorDiv.textContent = '请输入手机号和验证码';
-                errorDiv.style.display = 'block';
-                return;
-            }
-            
-            if (!telegramPhoneCodeHash) {
-                errorDiv.textContent = '请先发送验证码';
-                errorDiv.style.display = 'block';
-                return;
-            }
-            
-            try {
-                verifyBtn.disabled = true;
-                verifyBtn.textContent = '登录中...';
-                errorDiv.style.display = 'none';
                 
-                const response = await apiRequest('/telegram/login/verify', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        phone,
-                        code,
-                        phone_code_hash: telegramPhoneCodeHash,
-                        password: password || null
-                    })
-                });
+            } else if (telegramLoginStep === 2) {
+                // 步骤2：验证登录（可能需要密码）
+                const code = document.getElementById('modalTelegramCode').value.trim();
                 
-                if (response.success) {
-                    showToast('✅ ' + (response.message || '登录成功！'), true);
+                if (!code) {
+                    errorDiv.textContent = '请输入验证码';
+                    errorDiv.style.display = 'block';
+                    return;
+                }
+                
+                telegramLoginInProgress = true;
+                confirmBtn.disabled = true;
+                confirmBtn.textContent = '验证中...';
+                
+                // 创建 AbortController 用于取消请求
+                telegramLoginAbortController = new AbortController();
+                
+                try {
+                    const response = await apiRequest('/telegram/login/verify', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            phone: telegramLoginPhone,
+                            code,
+                            phone_code_hash: telegramPhoneCodeHash,
+                            password: null
+                        }),
+                        signal: telegramLoginAbortController.signal
+                    });
                     
-                    // 清空表单
-                    document.getElementById('telegramPhone').value = '';
-                    document.getElementById('telegramCode').value = '';
-                    document.getElementById('telegramPassword').value = '';
-                    telegramPhoneCodeHash = null;
-                    
-                    // 刷新登录状态
-                    setTimeout(() => {
-                        checkTelegramLoginStatus();
-                    }, 1000);
-                } else {
-                    if (response.password_required) {
+                    if (response.success) {
+                        // 登录成功
+                        closeTelegramLoginModal();
+                        await checkTelegramLoginStatus();
+                        showToast('✅ ' + (response.message || '登录成功！'), true);
+                    } else if (response.password_required) {
                         // 需要两步验证密码
-                        document.getElementById('telegramPasswordGroup').style.display = 'block';
-                        errorDiv.textContent = response.message || '需要两步验证密码';
+                        telegramLoginStep = 3;
+                        document.getElementById('telegramModalStep2').style.display = 'none';
+                        document.getElementById('telegramModalStep3').style.display = 'block';
+                        document.getElementById('modalTelegramPassword').focus();
+                        confirmBtn.textContent = '确认';
+                        errorDiv.textContent = '需要两步验证密码';
                         errorDiv.style.display = 'block';
+                    } else {
+                        errorDiv.textContent = response.error || '验证失败';
+                        errorDiv.style.display = 'block';
+                    }
+                } catch (error) {
+                    // 如果是因为取消请求导致的错误，不显示错误信息
+                    if (error.name === 'AbortError') {
+                        console.log('请求已取消');
+                        return;
+                    }
+                    console.error('验证登录失败:', error);
+                    errorDiv.textContent = `验证失败：${error.message || '未知错误'}`;
+                    errorDiv.style.display = 'block';
+                } finally {
+                    telegramLoginInProgress = false;
+                    confirmBtn.disabled = false;
+                    telegramLoginAbortController = null;
+                }
+                
+            } else if (telegramLoginStep === 3) {
+                // 步骤3：输入两步验证密码
+                const password = document.getElementById('modalTelegramPassword').value.trim();
+                
+                if (!password) {
+                    errorDiv.textContent = '请输入两步验证密码';
+                    errorDiv.style.display = 'block';
+                    return;
+                }
+                
+                const code = document.getElementById('modalTelegramCode').value.trim();
+                
+                telegramLoginInProgress = true;
+                confirmBtn.disabled = true;
+                confirmBtn.textContent = '登录中...';
+                
+                // 创建 AbortController 用于取消请求
+                telegramLoginAbortController = new AbortController();
+                
+                try {
+                    const response = await apiRequest('/telegram/login/verify', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            phone: telegramLoginPhone,
+                            code,
+                            phone_code_hash: telegramPhoneCodeHash,
+                            password
+                        }),
+                        signal: telegramLoginAbortController.signal
+                    });
+                    
+                    if (response.success) {
+                        // 登录成功
+                        closeTelegramLoginModal();
+                        await checkTelegramLoginStatus();
+                        showToast('✅ ' + (response.message || '登录成功！'), true);
                     } else {
                         errorDiv.textContent = response.error || '登录失败';
                         errorDiv.style.display = 'block';
                     }
+                } catch (error) {
+                    // 如果是因为取消请求导致的错误，不显示错误信息
+                    if (error.name === 'AbortError') {
+                        console.log('请求已取消');
+                        return;
+                    }
+                    console.error('登录失败:', error);
+                    errorDiv.textContent = `登录失败：${error.message || '未知错误'}`;
+                    errorDiv.style.display = 'block';
+                } finally {
+                    telegramLoginInProgress = false;
+                    confirmBtn.disabled = false;
+                    telegramLoginAbortController = null;
                 }
-            } catch (error) {
-                console.error('验证登录失败:', error);
-                errorDiv.textContent = `登录失败：${error.message || '未知错误'}`;
-                errorDiv.style.display = 'block';
-            } finally {
-                verifyBtn.disabled = false;
-                verifyBtn.textContent = '✅ 登录';
             }
         }
+        
+        // 模态弹窗点击背景关闭
+        document.addEventListener('DOMContentLoaded', () => {
+            const modal = document.getElementById('telegramLoginModal');
+            if (modal) {
+                modal.addEventListener('click', (e) => {
+                    // 点击背景区域关闭弹窗（即使正在处理中也可以关闭，会自动取消请求）
+                    if (e.target === modal) {
+                        closeTelegramLoginModal();
+                    }
+                });
+                
+                // 点击取消按钮时关闭弹窗
+                const cancelBtn = modal.querySelector('.btn-secondary');
+                if (cancelBtn) {
+                    cancelBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        closeTelegramLoginModal();
+                    });
+                }
+                
+                // 支持回车键确认
+                document.getElementById('modalTelegramPhone')?.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter' && !telegramLoginInProgress) {
+                        handleTelegramLoginStep();
+                    }
+                });
+                document.getElementById('modalTelegramCode')?.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter' && !telegramLoginInProgress) {
+                        handleTelegramLoginStep();
+                    }
+                });
+                document.getElementById('modalTelegramPassword')?.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter' && !telegramLoginInProgress) {
+                        handleTelegramLoginStep();
+                    }
+                });
+            }
+            
+            // 清除日志模态框的事件监听
+            const clearLogsModal = document.getElementById('clearLogsModal');
+            if (clearLogsModal) {
+                clearLogsModal.addEventListener('click', (e) => {
+                    // 点击背景区域关闭弹窗
+                    if (e.target === clearLogsModal) {
+                        closeClearLogsModal();
+                    }
+                });
+            }
+        });
     </script>
 </body>
 </html>

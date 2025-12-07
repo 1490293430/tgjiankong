@@ -297,6 +297,11 @@ async function loadUserConfig(userId) {
 // 保存用户配置（每个用户独立配置，不共享）
 async function saveUserConfig(userId, configData) {
   try {
+    // 确保 MongoDB 连接正常
+    if (mongoose.connection.readyState !== 1) {
+      throw new Error('数据库未连接，请稍后重试');
+    }
+    
     // 确保userId是ObjectId类型
     const userIdObj = mongoose.Types.ObjectId.isValid(userId) 
       ? (userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId))
@@ -307,6 +312,14 @@ async function saveUserConfig(userId, configData) {
       { $set: { ...configData, userId: userIdObj } },
       { upsert: true, new: true }
     );
+    
+    // 验证配置是否真的保存成功
+    const savedConfig = await UserConfig.findOne({ userId: userIdObj });
+    if (!savedConfig) {
+      throw new Error('用户配置保存失败：保存后无法找到配置');
+    }
+    
+    console.log(`✅ 用户配置已保存到数据库 (userId: ${userId})`);
     return userConfig;
   } catch (error) {
     console.error('保存用户配置失败:', error);
@@ -345,6 +358,7 @@ mongoose.connect(MONGO_URL, {
 })
 .then(async () => {
   console.log('✅ MongoDB 已连接');
+  console.log(`📊 MongoDB 连接字符串: ${MONGO_URL.replace(/\/\/.*@/, '//***:***@')}`); // 隐藏密码
   // 初始化默认管理员
   await initDefaultAdmin();
 })
@@ -418,6 +432,11 @@ app.post('/api/auth/register', loginLimiter, async (req, res) => {
       return res.status(400).json({ error: '用户名已存在' });
     }
     
+    // 确保 MongoDB 连接正常
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: '数据库未连接，请稍后重试' });
+    }
+    
     // 创建主账号（parent_account_id为null）
     const passwordHash = await bcrypt.hash(password, 10);
     const user = new User({
@@ -427,10 +446,28 @@ app.post('/api/auth/register', loginLimiter, async (req, res) => {
       is_active: true,
       parent_account_id: null // 主账号
     });
+    
+    // 保存用户
     await user.save();
     
+    // 等待一小段时间确保数据写入
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // 验证用户是否真的保存成功
+    const savedUser = await User.findById(user._id);
+    if (!savedUser) {
+      throw new Error('用户保存失败：保存后无法找到用户');
+    }
+    
+    console.log(`✅ 用户已保存到数据库 (userId: ${user._id}, username: ${username})`);
+    
     // 创建用户时自动创建默认配置
-    await saveUserConfig(user._id.toString(), {});
+    try {
+      await saveUserConfig(user._id.toString(), {});
+    } catch (configError) {
+      console.error('⚠️  创建用户配置失败，但用户已创建:', configError);
+      // 配置创建失败不影响用户创建成功
+    }
     
     // 生成 JWT token
     const token = jwt.sign({ 
@@ -654,12 +691,33 @@ app.post('/api/users', authMiddleware, async (req, res) => {
       is_active: true,
       parent_account_id: accountIdObj // 设置为当前主账号的子账号
     });
+    
+    // 确保 MongoDB 连接正常
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: '数据库未连接，请稍后重试' });
+    }
+    
+    // 保存用户
     await user.save();
     
-    // 创建子账号时自动创建默认配置（每个账号独立配置）
-    await saveUserConfig(user._id.toString(), {});
+    // 等待一小段时间确保数据写入
+    await new Promise(resolve => setTimeout(resolve, 100));
     
-    console.log(`✅ 子账号创建成功 (username: ${username}, parent: ${currentUser.username})`);
+    // 验证用户是否真的保存成功
+    const savedUser = await User.findById(user._id);
+    if (!savedUser) {
+      throw new Error('用户保存失败：保存后无法找到用户');
+    }
+    
+    console.log(`✅ 子账号创建成功 (username: ${username}, parent: ${currentUser.username}, userId: ${user._id})`);
+    
+    // 创建子账号时自动创建默认配置（每个账号独立配置）
+    try {
+      await saveUserConfig(user._id.toString(), {});
+    } catch (configError) {
+      console.error('⚠️  创建用户配置失败，但用户已创建:', configError);
+      // 配置创建失败不影响用户创建成功
+    }
     
     res.json({ 
       status: 'ok', 
@@ -1010,6 +1068,66 @@ app.get('/api/logs', authMiddleware, async (req, res) => {
     } else {
       res.status(500).json({ error: '获取日志失败：' + error.message });
     }
+  }
+});
+
+// 删除日志（按用户删除，支持全部删除或按条件删除）
+app.delete('/api/logs', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const username = req.user.username;
+    const isAdmin = username === 'admin';
+    const userIdObj = new mongoose.Types.ObjectId(userId);
+    
+    // 构建删除查询条件：按用户ID过滤，每个用户只能删除自己的日志
+    const deleteQuery = isAdmin 
+      ? { $or: [{ userId: userIdObj }, { userId: { $exists: false } }, { userId: null }] }
+      : { userId: userIdObj };
+    
+    // 支持可选的条件删除（如按关键词、频道等）
+    const { keyword, channelId, beforeDate } = req.body;
+    
+    if (keyword) {
+      const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      deleteQuery.message = { $regex: escapedKeyword, $options: 'i' };
+    }
+    if (channelId) {
+      deleteQuery.channelId = channelId;
+    }
+    if (beforeDate) {
+      deleteQuery.time = { $lt: new Date(beforeDate) };
+    }
+    
+    // 先统计要删除的日志数量
+    const deleteCount = await Log.countDocuments(deleteQuery);
+    
+    if (deleteCount === 0) {
+      return res.json({ 
+        status: 'ok', 
+        message: '没有找到要删除的日志',
+        deletedCount: 0
+      });
+    }
+    
+    // 执行删除操作
+    const result = await Log.deleteMany(deleteQuery);
+    
+    // 同时删除相关的AI分析结果引用（如果日志被删除，相关的分析结果引用也需要清理）
+    // 注意：这里不删除AISummary本身，只是清理引用关系
+    
+    // 清除统计缓存，强制重新计算
+    statsCache.delete(userId);
+    
+    console.log(`✅ 用户 ${username} (${userId}) 删除了 ${result.deletedCount} 条日志`);
+    
+    res.json({ 
+      status: 'ok', 
+      message: `成功删除 ${result.deletedCount} 条日志`,
+      deletedCount: result.deletedCount
+    });
+  } catch (error) {
+    console.error('❌ 删除日志失败:', error);
+    res.status(500).json({ error: '删除日志失败：' + error.message });
   }
 });
 
