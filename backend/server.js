@@ -2432,7 +2432,6 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
     console.log('✅ [备份] 备份完成');
     
     // 获取备份文件列表
-    const backupDir = path.join(scriptDir, 'backups');
     const backups = [];
     
     if (fs.existsSync(backupDir)) {
