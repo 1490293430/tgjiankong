@@ -2750,6 +2750,13 @@
                 document.getElementById('lowRisk').textContent = low;
                 document.getElementById('mediumRisk').textContent = medium;
                 document.getElementById('highRisk').textContent = high;
+                }
+            } catch (error) {
+                console.error('加载AI统计失败:', error);
+                document.getElementById('aiTotalAnalyses').textContent = '-';
+                document.getElementById('aiTotalMessages').textContent = '-';
+                document.getElementById('aiUnanalyzedMessages').textContent = '-';
+                document.getElementById('aiModel').textContent = 'N/A';
             }
         }
         
