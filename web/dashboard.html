@@ -2734,17 +2734,17 @@
             }
             
             try {
+                // 立即清空列表显示，提供即时反馈
+                const list = document.getElementById('aiSummaryList');
+                if (list) {
+                    list.innerHTML = '<p style="text-align: center; color: #999;">正在清除...</p>';
+                }
+                
                 const result = await apiRequest('/ai/summary/clear', {
                     method: 'DELETE'
                 });
                 
                 if (result) {
-                    let message = `✅ 清除成功！\n\n已删除 ${result.deletedSummaries || 0} 条分析结果\n已重置 ${result.resetLogs || 0} 条已分析消息的标记`;
-                    if (result.remainingSummaries > 0 || result.stillAnalyzedLogs > 0 || result.stillHasSummaryId > 0) {
-                        message += `\n\n⚠️ 警告：仍有残留数据\n- 剩余分析结果: ${result.remainingSummaries}\n- 仍有已分析消息: ${result.stillAnalyzedLogs}\n- 仍有summary_id的消息: ${result.stillHasSummaryId || 0}`;
-                    }
-                    alert(message);
-                    
                     // 重置筛选条件
                     document.getElementById('filterSentiment').value = '';
                     document.getElementById('filterRisk').value = '';
@@ -2752,8 +2752,10 @@
                     // 重置分页
                     currentAIPage = 1;
                     
-                    // 刷新所有相关数据
+                    // 立即刷新列表（确保显示清空状态）
                     await loadAISummaries(1);
+                    
+                    // 刷新统计信息
                     if (typeof loadAIStats === 'function') {
                         await loadAIStats();
                     }
@@ -2763,12 +2765,25 @@
                     }
                     
                     // 显示成功提示
+                    let message = `✅ 清除成功！\n\n已删除 ${result.deletedSummaries || 0} 条分析结果\n已重置 ${result.resetLogs || 0} 条已分析消息的标记`;
+                    if (result.remainingSummaries > 0 || result.stillAnalyzedLogs > 0 || result.stillHasSummaryId > 0) {
+                        message += `\n\n⚠️ 警告：仍有残留数据\n- 剩余分析结果: ${result.remainingSummaries}\n- 仍有已分析消息: ${result.stillAnalyzedLogs}\n- 仍有summary_id的消息: ${result.stillHasSummaryId || 0}`;
+                    }
                     showToast('AI分析结果已清除', true);
+                    
+                    // 如果还有残留数据，显示警告
+                    if (result.remainingSummaries > 0 || result.stillAnalyzedLogs > 0 || result.stillHasSummaryId > 0) {
+                        setTimeout(() => {
+                            alert(message);
+                        }, 500);
+                    }
                 }
             } catch (error) {
                 console.error('清除失败:', error);
                 alert('❌ 清除失败：' + (error.message || '未知错误'));
                 showToast('清除失败：' + (error.message || '未知错误'), false);
+                // 清除失败时也要刷新列表
+                await loadAISummaries(currentAIPage);
             }
         }
         

@@ -39,6 +39,11 @@ const logSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'AISummary'
   },
+  // 记录AI分析被清除的时间戳（用于防止清除后立即被自动分析重新分析）
+  ai_cleared_at: {
+    type: Date,
+    default: null
+  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

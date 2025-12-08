@@ -2040,12 +2040,32 @@ app.get('/api/ai/summary', authMiddleware, async (req, res) => {
     const sentiment = req.query.sentiment || '';
     const riskLevel = req.query.riskLevel || '';
     
-    // admin用户可以查看旧数据（没有userId的）
+    // 获取主账号ID（用于查询可能使用account_id的数据）
+    const accountId = await getAccountId(userId);
     const userIdObj = new mongoose.Types.ObjectId(userId);
+    const accountIdObj = new mongoose.Types.ObjectId(accountId);
+    
+    // 构建查询条件：查询该用户的所有分析结果（包括使用userId和account_id的）
+    // admin用户可以查看旧数据（没有userId的）
     const isAdmin = username === 'admin';
-    const query = isAdmin 
-      ? { $or: [{ userId: userIdObj }, { userId: { $exists: false } }, { userId: null }] }
-      : { userId: userIdObj };
+    const baseQuery = isAdmin 
+      ? { 
+          $or: [
+            { userId: userIdObj },
+            { account_id: accountIdObj },
+            { userId: { $exists: false } }, 
+            { userId: null }
+          ] 
+        }
+      : { 
+          $or: [
+            { userId: userIdObj },
+            { account_id: accountIdObj }
+          ] 
+        };
+    
+    // 添加筛选条件
+    const query = { ...baseQuery };
     if (sentiment) {
       query['analysis_result.sentiment'] = sentiment;
     }
@@ -2144,6 +2164,8 @@ app.delete('/api/ai/summary/clear', authMiddleware, async (req, res) => {
     // 1. 重置所有ai_analyzed=true的消息
     // 2. 重置所有ai_summary_id不为null的消息（包括指向已删除分析结果的消息）
     // 3. 重置所有ai_summary_id在summaryIds列表中的消息
+    // 4. 设置 ai_cleared_at 时间戳，防止清除后立即被自动分析重新分析
+    const clearTimestamp = new Date();
     const updateResult = await Log.updateMany(
       { 
         $or: [
@@ -2153,7 +2175,7 @@ app.delete('/api/ai/summary/clear', authMiddleware, async (req, res) => {
           { account_id: accountIdObj, ai_summary_id: { $ne: null } }
         ]
       },
-      { $set: { ai_analyzed: false, ai_summary_id: null } }
+      { $set: { ai_analyzed: false, ai_summary_id: null, ai_cleared_at: clearTimestamp } }
     );
     
     console.log(`🗑️ [清除分析结果] 已重置 ${updateResult.modifiedCount} 条已分析消息的标记`);
@@ -2167,7 +2189,7 @@ app.delete('/api/ai/summary/clear', authMiddleware, async (req, res) => {
           { account_id: accountIdObj, ai_summary_id: { $ne: null } }
         ]
       },
-      { $set: { ai_analyzed: false, ai_summary_id: null } }
+      { $set: { ai_analyzed: false, ai_summary_id: null, ai_cleared_at: clearTimestamp } }
     );
     
     if (orphanedUpdateResult.modifiedCount > 0) {
@@ -4230,11 +4252,29 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
       const maxMessages = config.ai_analysis?.max_messages_per_analysis || 500;
       
       // 查询未分析的消息（不区分admin，因为这里是按userId查询的）
-      const query = Log.find({ userId: userIdObj, ai_analyzed: false }).sort({ time: -1 }).limit(maxMessages);
+      // 排除最近被清除的消息（清除后5分钟内不自动分析，防止清除后立即被重新分析）
+      const clearCooldownMinutes = 5; // 清除后5分钟内不自动分析
+      const clearCooldownTime = new Date(Date.now() - clearCooldownMinutes * 60 * 1000);
+      
+      const query = Log.find({ 
+        userId: userIdObj, 
+        ai_analyzed: false,
+        $or: [
+          { ai_cleared_at: null }, // 从未被清除过
+          { ai_cleared_at: { $lt: clearCooldownTime } } // 或者清除时间已经超过5分钟
+        ]
+      }).sort({ time: -1 }).limit(maxMessages);
       unanalyzedMessages = await query;
       
-      // 检查是否有更多未分析的消息
-      const totalUnanalyzed = await Log.countDocuments({ userId: userIdObj, ai_analyzed: false });
+      // 检查是否有更多未分析的消息（排除最近被清除的消息）
+      const totalUnanalyzed = await Log.countDocuments({ 
+        userId: userIdObj, 
+        ai_analyzed: false,
+        $or: [
+          { ai_cleared_at: null },
+          { ai_cleared_at: { $lt: clearCooldownTime } }
+        ]
+      });
       if (totalUnanalyzed > maxMessages) {
         console.log(`⚠️  未分析消息总数: ${totalUnanalyzed}，但只分析最近 ${maxMessages} 条（受最大消息数限制）`);
         console.log(`💡 提示：可以调整"最大消息数"配置，或分批手动分析`);
@@ -4296,10 +4336,11 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
     await summary.save();
 
     // 标记消息为已分析
+    // 同时清除 ai_cleared_at 标记，因为消息已经被重新分析
     const messageIds = unanalyzedMessages.map(log => log._id);
     await Log.updateMany(
       { _id: { $in: messageIds }, userId: userIdObj },
-      { $set: { ai_analyzed: true, ai_summary_id: summary._id } }
+      { $set: { ai_analyzed: true, ai_summary_id: summary._id, ai_cleared_at: null } }
     );
 
     console.log(`✅ AI 分析完成，情感: ${analysisResult.analysis.sentiment}, 风险: ${analysisResult.analysis.risk_level}`);
@@ -4464,9 +4505,18 @@ async function checkMessageCountTrigger() {
         
         const threshold = Number(config.ai_analysis.message_count_threshold) || 50;
         const userIdObj = new mongoose.Types.ObjectId(user._id);
+        
+        // 排除最近被清除的消息（清除后5分钟内不自动分析）
+        const clearCooldownMinutes = 5;
+        const clearCooldownTime = new Date(Date.now() - clearCooldownMinutes * 60 * 1000);
+        
         const unanalyzedCount = await Log.countDocuments({ 
           userId: userIdObj,
-          ai_analyzed: false 
+          ai_analyzed: false,
+          $or: [
+            { ai_cleared_at: null }, // 从未被清除过
+            { ai_cleared_at: { $lt: clearCooldownTime } } // 或者清除时间已经超过5分钟
+          ]
         });
         
         console.log(`🔍 [计数触发检查] 用户: ${user.username}, 阈值: ${threshold} (类型: ${typeof threshold}), 未分析数量: ${unanalyzedCount} (类型: ${typeof unanalyzedCount})`);
