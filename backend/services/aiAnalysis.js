@@ -106,7 +106,33 @@ class AIAnalysisService {
       );
 
       // 解析返回结果
-      const content = response.data.choices[0].message.content;
+      const content = response.data.choices?.[0]?.message?.content || '';
+      
+      // 检查内容是否为空
+      if (!content || content.trim().length === 0) {
+        console.error(`❌ [AI解析] API返回内容为空`);
+        console.error(`❌ [AI解析] 完整响应:`, JSON.stringify(response.data, null, 2));
+        
+        // 检查是否有 finish_reason
+        const finishReason = response.data.choices?.[0]?.finish_reason;
+        if (finishReason) {
+          console.error(`❌ [AI解析] finish_reason: ${finishReason}`);
+          
+          // 如果是长度限制，说明内容被截断
+          if (finishReason === 'length') {
+            throw new Error('AI 返回内容被截断（达到最大 token 限制），请增加 max_tokens 或减少消息数量');
+          }
+          
+          // 如果是内容过滤，说明内容被过滤
+          if (finishReason === 'content_filter') {
+            throw new Error('AI 返回内容被过滤（可能包含敏感内容）');
+          }
+        }
+        
+        throw new Error('AI API 返回内容为空，可能是 API 配置问题或模型响应异常');
+      }
+      
+      console.log(`✅ [AI解析] 收到内容，长度: ${content.length} 字符`);
       
       // 尝试解析 JSON
       let analysisResult;
@@ -295,7 +321,11 @@ class AIAnalysisService {
         
         // 如果还是没有摘要，使用默认值
         if (!extractedSummary || extractedSummary.trim().length === 0) {
-          extractedSummary = 'AI返回了内容，但格式无法解析。原始内容已保存。';
+          if (!content || content.trim().length === 0) {
+            extractedSummary = 'AI API 返回内容为空，可能是 API 配置问题、模型响应异常或达到 token 限制。';
+          } else {
+            extractedSummary = 'AI返回了内容，但格式无法解析。原始内容已保存。';
+          }
         }
         
         // 尝试从文本中提取情感和风险信息
