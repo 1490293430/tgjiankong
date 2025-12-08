@@ -907,32 +907,6 @@
                 </div>
             </div>
             
-            <div class="card" style="margin-top: 20px; border-left: 4px solid #9b59b6;">
-                <div class="card-header" onclick="toggleCard(this)" data-card-id="backup-restore">
-                    <h2>💾 数据备份与恢复</h2>
-                    <span class="card-toggle collapsed">▼</span>
-                </div>
-                <div class="card-content collapsed">
-                    <div style="margin-bottom: 20px;">
-                        <p style="color: #666; margin-bottom: 15px; line-height: 1.6;">
-                            数据备份功能可以备份您的配置文件、环境变量和数据目录。恢复功能可以将备份的数据还原到系统中。
-                        </p>
-                        <p style="color: #e74c3c; font-size: 13px; margin-bottom: 15px;">
-                            ⚠️ 注意：恢复操作将覆盖现有配置和数据，请谨慎操作！
-                        </p>
-                        
-                        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
-                            <button class="btn btn-primary" onclick="createBackup()">📦 创建备份</button>
-                            <button class="btn btn-secondary" onclick="loadBackupList()">🔄 刷新备份列表</button>
-                        </div>
-                        
-                        <div id="backupList" style="margin-top: 20px;">
-                            <p style="text-align: center; color: #999;">点击"刷新备份列表"查看可用备份</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
             <button class="btn btn-primary" onclick="saveConfig()">💾 保存配置</button>
         </div>
         
@@ -1122,6 +1096,32 @@
                     <div class="card-content collapsed">
                         <div id="userList" style="margin-top: 20px;">
                             <p style="text-align: center; color: #999;">加载中...</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card" style="margin-top: 20px; border-left: 4px solid #9b59b6;">
+                    <div class="card-header" onclick="toggleCard(this)" data-card-id="backup-restore">
+                        <h2>💾 数据备份与恢复</h2>
+                        <span class="card-toggle collapsed">▼</span>
+                    </div>
+                    <div class="card-content collapsed">
+                        <div style="margin-bottom: 20px;">
+                            <p style="color: #666; margin-bottom: 15px; line-height: 1.6;">
+                                数据备份功能可以备份您的配置文件、环境变量和数据目录。恢复功能可以将备份的数据还原到系统中。
+                            </p>
+                            <p style="color: #e74c3c; font-size: 13px; margin-bottom: 15px;">
+                                ⚠️ 注意：恢复操作将覆盖现有配置和数据，请谨慎操作！
+                            </p>
+                            
+                            <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                                <button class="btn btn-primary" onclick="createBackup()">📦 创建备份</button>
+                                <button class="btn btn-secondary" onclick="loadBackupList()">🔄 刷新备份列表</button>
+                            </div>
+                            
+                            <div id="backupList" style="margin-top: 20px;">
+                                <p style="text-align: center; color: #999;">点击"刷新备份列表"查看可用备份</p>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1996,12 +1996,12 @@
             const apiHash = document.getElementById('tgApiHash').value.trim();
             
             if (!apiId) {
-                showToast('⚠️ 请填写 API_ID', false);
+                alert('⚠️ 请填写 API_ID');
                 return;
             }
             
             if (!apiHash) {
-                showToast('⚠️ 请填写 API_HASH', false);
+                alert('⚠️ 请填写 API_HASH');
                 return;
             }
             
@@ -2028,14 +2028,14 @@
                 }
                 
                 if (result && result.status === 'ok') {
-                    showToast(`✅ Telegram 凭证保存成功！${result.message ? '\n' + result.message : ''}`, true);
+                    alert(`✅ Telegram 凭证保存成功！${result.message ? '\n' + result.message : ''}`);
                     
                     // 延迟刷新登录状态
                     setTimeout(() => {
                         checkTelegramLoginStatus(true);
                     }, 2000);
                 } else {
-                    showToast('❌ 保存失败：' + (result?.error || '未知错误'), false);
+                    alert('❌ 保存失败：' + (result?.error || '未知错误'));
                 }
             } catch (error) {
                 // 恢复按钮状态
@@ -2043,7 +2043,7 @@
                     saveButton.disabled = false;
                     saveButton.textContent = originalText;
                 }
-                showToast('❌ 保存失败：' + (error.message || '未知错误'), false);
+                alert('❌ 保存失败：' + (error.message || '未知错误'));
             }
         }
         
@@ -2116,11 +2116,11 @@
                     saveButton.textContent = originalText;
                 }
                 
-                // 使用横幅通知显示消息
+                // 使用原生弹窗显示消息
                 if (result && result.status === 'ok') {
-                    showToast('✅ 配置保存成功！', true);
+                    alert('✅ 配置保存成功！');
                 } else {
-                    showToast('❌ 保存失败：' + (result?.error || '未知错误'), false);
+                    alert('❌ 保存失败：' + (result?.error || '未知错误'));
                 }
             } catch (error) {
                 // 恢复按钮状态
@@ -2128,7 +2128,7 @@
                     saveButton.disabled = false;
                     saveButton.textContent = originalText;
                 }
-                showToast('❌ 保存失败：' + (error.message || '未知错误'), false);
+                alert('❌ 保存失败：' + (error.message || '未知错误'));
             }
         }
 
