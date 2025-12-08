@@ -120,24 +120,80 @@ class AIAnalysisService {
           .trim();
         
         // 尝试提取JSON对象（处理可能的额外文本）
-        // 使用更精确的正则，匹配完整的JSON对象
-        const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+        // 使用更精确的正则，匹配完整的JSON对象（支持嵌套）
+        let jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           cleanContent = jsonMatch[0];
+        } else {
+          // 如果正则匹配失败，尝试查找第一个 { 到最后一个 } 之间的内容
+          const firstBrace = cleanContent.indexOf('{');
+          const lastBrace = cleanContent.lastIndexOf('}');
+          if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            cleanContent = cleanContent.substring(firstBrace, lastBrace + 1);
+          }
         }
         
-        // 如果还是没有找到JSON，尝试查找第一个 { 到最后一个 } 之间的内容
-        const firstBrace = cleanContent.indexOf('{');
-        const lastBrace = cleanContent.lastIndexOf('}');
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-          cleanContent = cleanContent.substring(firstBrace, lastBrace + 1);
-        }
+        // 尝试修复常见的JSON格式问题
+        // 1. 修复末尾多余的逗号（在对象和数组的最后一个元素后）
+        cleanContent = cleanContent.replace(/,(\s*[}\]])/g, '$1');
+        
+        // 2. 修复未转义的控制字符（但保留换行符，因为可能在字符串中）
+        // 只移除真正的控制字符，保留 \n, \r, \t 等转义序列
+        cleanContent = cleanContent.replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '');
+        
+        // 3. 尝试修复单引号（只在键名和字符串值中使用，但要小心处理）
+        // 先尝试直接解析，如果失败再尝试修复单引号
         
         console.log(`🔍 [AI解析] 原始内容长度: ${content.length}, 清理后长度: ${cleanContent.length}`);
         console.log(`🔍 [AI解析] 清理后的内容前500字符: ${cleanContent.substring(0, 500)}`);
         
         // 尝试解析JSON
-        analysisResult = JSON.parse(cleanContent);
+        try {
+          analysisResult = JSON.parse(cleanContent);
+        } catch (innerParseError) {
+          // 如果第一次解析失败，尝试更激进的修复
+          console.warn(`⚠️  [AI解析] 第一次JSON解析失败，尝试修复: ${innerParseError.message}`);
+          
+          // 尝试找到最外层的JSON对象（通过括号匹配）
+          let braceCount = 0;
+          let startIdx = -1;
+          let endIdx = -1;
+          for (let i = 0; i < cleanContent.length; i++) {
+            if (cleanContent[i] === '{') {
+              if (braceCount === 0) startIdx = i;
+              braceCount++;
+            } else if (cleanContent[i] === '}') {
+              braceCount--;
+              if (braceCount === 0) {
+                endIdx = i;
+                break;
+              }
+            }
+          }
+          
+          if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+            let extractedJson = cleanContent.substring(startIdx, endIdx + 1);
+            
+            // 尝试修复单引号（只在键名和字符串值中使用）
+            // 使用更智能的方法：只在键名和字符串值中替换单引号
+            extractedJson = extractedJson.replace(/([{,]\s*)'([^']+)'(\s*:)/g, '$1"$2"$3'); // 键名
+            extractedJson = extractedJson.replace(/:\s*'([^']*)'/g, ': "$1"'); // 字符串值
+            
+            // 再次修复末尾逗号
+            extractedJson = extractedJson.replace(/,(\s*[}\]])/g, '$1');
+            
+            try {
+              analysisResult = JSON.parse(extractedJson);
+              console.log(`✅ [AI解析] 修复后JSON解析成功`);
+            } catch (secondParseError) {
+              // 如果还是失败，尝试最后一个方法：提取所有可能的字段
+              console.warn(`⚠️  [AI解析] 修复后仍然失败: ${secondParseError.message}`);
+              throw innerParseError; // 抛出原始错误，让外层catch处理
+            }
+          } else {
+            throw innerParseError; // 如果找不到JSON对象，抛出原始错误
+          }
+        }
         
         console.log(`✅ [AI解析] JSON解析成功，字段: ${Object.keys(analysisResult).join(', ')}`);
         
