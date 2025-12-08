@@ -101,8 +101,44 @@ class AIAnalysisService {
       let analysisResult;
       try {
         // 清理可能的代码块标记
-        const cleanContent = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        let cleanContent = content.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim();
+        
+        // 尝试提取JSON对象（处理可能的额外文本）
+        const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          cleanContent = jsonMatch[0];
+        }
+        
+        console.log(`🔍 [AI解析] 原始内容长度: ${content.length}, 清理后长度: ${cleanContent.length}`);
+        console.log(`🔍 [AI解析] 清理后的内容前500字符: ${cleanContent.substring(0, 500)}`);
+        
         analysisResult = JSON.parse(cleanContent);
+        
+        console.log(`✅ [AI解析] JSON解析成功，字段: ${Object.keys(analysisResult).join(', ')}`);
+        
+        // 标准化 sentiment 值（支持中英文）
+        if (analysisResult.sentiment) {
+          const sentimentLower = String(analysisResult.sentiment).toLowerCase();
+          if (sentimentLower.includes('积极') || sentimentLower.includes('positive')) {
+            analysisResult.sentiment = 'positive';
+          } else if (sentimentLower.includes('消极') || sentimentLower.includes('negative')) {
+            analysisResult.sentiment = 'negative';
+          } else {
+            analysisResult.sentiment = 'neutral';
+          }
+        }
+        
+        // 标准化 risk_level 值（支持中英文）
+        if (analysisResult.risk_level) {
+          const riskLower = String(analysisResult.risk_level).toLowerCase();
+          if (riskLower.includes('高') || riskLower.includes('high')) {
+            analysisResult.risk_level = 'high';
+          } else if (riskLower.includes('中') || riskLower.includes('medium')) {
+            analysisResult.risk_level = 'medium';
+          } else {
+            analysisResult.risk_level = 'low';
+          }
+        }
         
         // 确保 summary 字段有值
         if (!analysisResult.summary || analysisResult.summary.trim() === '') {
@@ -129,22 +165,65 @@ class AIAnalysisService {
         if (!analysisResult.topics) analysisResult.topics = [];
         if (!analysisResult.risk_level) analysisResult.risk_level = 'low';
         
+        // 确保数组字段是数组类型
+        if (!Array.isArray(analysisResult.categories)) {
+          analysisResult.categories = [String(analysisResult.categories || '未分类')];
+        }
+        if (!Array.isArray(analysisResult.keywords)) {
+          analysisResult.keywords = analysisResult.keywords ? [String(analysisResult.keywords)] : [];
+        }
+        if (!Array.isArray(analysisResult.topics)) {
+          analysisResult.topics = analysisResult.topics ? [String(analysisResult.topics)] : [];
+        }
+        
         // 保存原始响应
         analysisResult.raw_response = content;
+        
+        console.log(`✅ [AI解析] 解析结果 - sentiment: ${analysisResult.sentiment}, risk_level: ${analysisResult.risk_level}, summary长度: ${analysisResult.summary?.length || 0}`);
       } catch (parseError) {
         // 如果 JSON 解析失败，尝试从原始文本中提取摘要
-        const extractedSummary = content.length > 0 ? content.substring(0, 200).replace(/\n/g, ' ').trim() : '无法解析AI返回内容';
+        console.error(`❌ [AI解析] JSON解析失败: ${parseError.message}`);
+        console.error(`❌ [AI解析] 原始内容前1000字符: ${content.substring(0, 1000)}`);
+        
+        // 尝试从文本中提取结构化信息
+        let extractedSummary = content.length > 0 ? content.substring(0, 200).replace(/\n/g, ' ').trim() : '无法解析AI返回内容';
+        let extractedSentiment = 'neutral';
+        let extractedRisk = 'low';
+        let extractedKeywords = [];
+        
+        // 尝试从文本中提取情感和风险信息
+        const contentLower = content.toLowerCase();
+        if (contentLower.includes('积极') || contentLower.includes('positive') || contentLower.includes('正面')) {
+          extractedSentiment = 'positive';
+        } else if (contentLower.includes('消极') || contentLower.includes('negative') || contentLower.includes('负面')) {
+          extractedSentiment = 'negative';
+        }
+        
+        if (contentLower.includes('高风险') || contentLower.includes('high risk')) {
+          extractedRisk = 'high';
+        } else if (contentLower.includes('中风险') || contentLower.includes('medium risk') || contentLower.includes('中等风险')) {
+          extractedRisk = 'medium';
+        }
+        
+        // 尝试提取关键词（从原始内容中）
+        const keywordMatch = content.match(/关键词[：:]\s*([^\n]+)/i) || content.match(/keywords[：:]\s*([^\n]+)/i);
+        if (keywordMatch) {
+          extractedKeywords = keywordMatch[1].split(/[，,、]/).map(k => k.trim()).filter(k => k);
+        }
         
         analysisResult = {
-          sentiment: 'neutral',
+          sentiment: extractedSentiment,
           sentiment_score: 0,
           categories: ['未分类'],
           summary: extractedSummary,
-          keywords: [],
+          keywords: extractedKeywords,
           topics: [],
-          risk_level: 'low',
-          raw_response: content
+          risk_level: extractedRisk,
+          raw_response: content,
+          parse_error: parseError.message
         };
+        
+        console.warn(`⚠️  [AI解析] 使用降级解析 - sentiment: ${extractedSentiment}, risk_level: ${extractedRisk}, summary: ${extractedSummary.substring(0, 50)}...`);
       }
 
       return {

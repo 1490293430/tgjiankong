@@ -2316,17 +2316,49 @@
                 const list = document.getElementById('aiSummaryList');
                 if (data.summaries && data.summaries.length > 0) {
                     list.innerHTML = data.summaries.map(summary => {
-                        const sentiment = summary.analysis_result?.sentiment || 'neutral';
+                        // 标准化 sentiment 值（支持中英文）
+                        let sentiment = summary.analysis_result?.sentiment || 'neutral';
+                        const sentimentStr = String(sentiment).toLowerCase();
+                        if (sentimentStr.includes('积极') || sentimentStr.includes('positive')) {
+                            sentiment = 'positive';
+                        } else if (sentimentStr.includes('消极') || sentimentStr.includes('negative')) {
+                            sentiment = 'negative';
+                        } else {
+                            sentiment = 'neutral';
+                        }
                         const sentimentEmoji = sentiment === 'positive' ? '😊' : sentiment === 'negative' ? '😔' : '😐';
+                        const sentimentText = sentiment === 'positive' ? '积极' : sentiment === 'negative' ? '消极' : '中性';
                         const sentimentColor = sentiment === 'positive' ? '#27ae60' : sentiment === 'negative' ? '#e74c3c' : '#95a5a6';
                         
-                        const risk = summary.analysis_result?.risk_level || 'low';
+                        // 标准化 risk_level 值（支持中英文）
+                        let risk = summary.analysis_result?.risk_level || 'low';
+                        const riskStr = String(risk).toLowerCase();
+                        if (riskStr.includes('高') || riskStr.includes('high')) {
+                            risk = 'high';
+                        } else if (riskStr.includes('中') || riskStr.includes('medium')) {
+                            risk = 'medium';
+                        } else {
+                            risk = 'low';
+                        }
                         const riskEmoji = risk === 'low' ? '✅' : risk === 'medium' ? '⚠️' : '🚨';
+                        const riskText = risk === 'low' ? '低风险' : risk === 'medium' ? '中风险' : '高风险';
                         const riskColor = risk === 'low' ? '#27ae60' : risk === 'medium' ? '#f39c12' : '#e74c3c';
                         
                         const date = new Date(summary.analysis_time).toLocaleString('zh-CN');
-                        const keywords = (summary.analysis_result?.keywords || []).slice(0, 8);
-                        const summary_text = summary.analysis_result?.summary || '暂无摘要';
+                        // 确保 keywords 是数组
+                        let keywords = summary.analysis_result?.keywords || [];
+                        if (!Array.isArray(keywords)) {
+                            keywords = keywords ? [String(keywords)] : [];
+                        }
+                        keywords = keywords.slice(0, 8);
+                        // 确保 summary_text 是字符串
+                        let summary_text = summary.analysis_result?.summary || '';
+                        if (typeof summary_text !== 'string') {
+                            summary_text = String(summary_text || '暂无摘要');
+                        }
+                        if (!summary_text.trim()) {
+                            summary_text = '暂无摘要';
+                        }
                         
                         // 频道统计（简化显示，只显示前3个）
                         const topChannels = (summary.channel_stats || []).slice(0, 3);
@@ -2365,10 +2397,10 @@
                                     </div>
                                     <div style="display: flex; gap: 6px;">
                                         <span style="background: ${sentimentColor}; color: white; padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: 500;">
-                                            ${sentimentEmoji} ${sentiment}
+                                            ${sentimentEmoji} ${sentimentText}
                                         </span>
                                         <span style="background: ${riskColor}; color: white; padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: 500;">
-                                            ${riskEmoji} ${risk}
+                                            ${riskEmoji} ${riskText}
                                         </span>
                                     </div>
                                 </div>
