@@ -580,10 +580,17 @@ async def message_handler(event, client):
             sender_id = getattr(event, "sender_id", None)
 
         # ai trigger users normalize
-        ai_trigger_enabled = config.get("ai_analysis", {}).get("ai_trigger_enabled", False)
-        ai_trigger_users = config.get("ai_analysis", {}).get("ai_trigger_users", []) or []
+        ai_analysis_config = config.get("ai_analysis", {})
+        ai_trigger_enabled = ai_analysis_config.get("ai_trigger_enabled", False)
+        ai_trigger_users = ai_analysis_config.get("ai_trigger_users", []) or []
         if isinstance(ai_trigger_users, str):
             ai_trigger_users = [u.strip() for u in ai_trigger_users.splitlines() if u.strip()]
+
+        # 调试日志：显示AI触发配置状态
+        if ai_trigger_enabled:
+            logger.info("🔍 [AI触发] 功能已启用，触发用户列表: %s", ai_trigger_users)
+        else:
+            logger.debug("🔍 [AI触发] 功能未启用")
 
         is_trigger_user = False
         if ai_trigger_enabled and ai_trigger_users and sender_id:
@@ -599,10 +606,19 @@ async def message_handler(event, client):
                 full_name,
                 sender
             ]
-            sender_triggers = [str(s) for s in sender_triggers if s]
-            for trigger in ai_trigger_users:
-                if str(trigger).strip() in sender_triggers:
-                    is_trigger_user = True
+            sender_triggers = [str(s).strip() for s in sender_triggers if s]
+            
+            # 规范化触发用户列表（去除空白）
+            normalized_trigger_users = [str(u).strip() for u in ai_trigger_users]
+            
+            # 检查是否匹配（支持大小写不敏感匹配）
+            for trigger in normalized_trigger_users:
+                for sender_trigger in sender_triggers:
+                    if trigger.lower() == sender_trigger.lower() or trigger == sender_trigger:
+                        is_trigger_user = True
+                        logger.info("✅ 检测到触发用户匹配: %s (触发列表: %s, 发送者: %s)", trigger, normalized_trigger_users, sender_triggers)
+                        break
+                if is_trigger_user:
                     break
 
         # keyword checks (cheap)
@@ -645,28 +661,10 @@ async def message_handler(event, client):
                 asyncio.create_task(trigger_ai_analysis_async(sender_id, client, log_id))
 
             # send alert (async)
+            # 告警发送统一通过后端API处理，包括Telegram、邮件、Webhook等
             if alert_keyword:
+                logger.info("🔔 [告警触发] 检测到告警关键词: %s，准备发送告警 (频道: %s, 发送者: %s)", alert_keyword, channel_name, sender)
                 asyncio.create_task(send_alert_async(alert_keyword, text, sender, channel_name, channel_id, event.id))
-
-                # send telegram alert message (non-blocking)
-                try:
-                    target = (config.get("alert_target") or "me").strip() or "me"
-                    def _normalize_target(t):
-                        ts = str(t).strip()
-                        if (ts.isdigit()) or (ts.startswith("-") and ts[1:].isdigit()):
-                            try:
-                                return int(ts)
-                            except Exception:
-                                return ts
-                        return ts
-                    target_id = _normalize_target(target)
-                    alert_message = (
-                        f"⚠️ 关键词告警触发\n\n来源：{channel_name} ({channel_id})\n发送者：{sender}\n关键词：{alert_keyword}\n时间：{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}\n\n消息内容：\n{text[:500]}{'...' if len(text) > 500 else ''}\n"
-                    )
-                    await client.send_message(target_id, alert_message)
-                    logger.info("告警已发送到 Telegram: %s", target)
-                except Exception:
-                    logger.exception("发送 Telegram 告警失败")
     except Exception:
         logger.exception("处理消息失败")
     # 移除频繁的CPU监控调用，避免每条消息都触发CPU检查导致峰值

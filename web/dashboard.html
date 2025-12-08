@@ -1973,20 +1973,14 @@
             loadLogs();
         }
         
-        // 显示清除日志确认对话框（使用双重确认机制）
+        // 显示清除日志确认对话框
         async function showClearLogsConfirm() {
             if (!confirm('⚠️ 确定要清除所有日志记录吗？\n\n此操作将：\n- 永久删除所有日志记录\n- 此操作不可恢复！')) {
                 return;
             }
             
-            const confirmText = prompt('请输入 "清除" 以确认此操作：');
-            if (confirmText !== '清除') {
-                alert('操作已取消');
-                return;
-            }
-            
             try {
-                const result = await apiRequest('/api/logs', {
+                const result = await apiRequest('/logs', {
                     method: 'DELETE',
                     body: JSON.stringify({})
                 });
@@ -2438,14 +2432,8 @@
                 return;
             }
             
-            const confirmText = prompt('请输入 "清除" 以确认此操作：');
-            if (confirmText !== '清除') {
-                alert('操作已取消');
-                return;
-            }
-            
             try {
-                const result = await apiRequest('/api/ai/summary/clear', {
+                const result = await apiRequest('/ai/summary/clear', {
                     method: 'DELETE'
                 });
                 

@@ -949,17 +949,55 @@ app.post('/api/config', authMiddleware, async (req, res) => {
         // ✅ 如果前端没有发送 API Key（因为我们不返回），则保留原有值
         openai_api_key: incoming.ai_analysis.openai_api_key || existingAI.openai_api_key || ''
       };
+      
+      console.log(`📋 [配置保存] ai_analysis 配置 - enabled: ${incoming.ai_analysis.enabled}, trigger_type: ${incoming.ai_analysis.analysis_trigger_type}, count_threshold: ${incoming.ai_analysis.message_count_threshold}, trigger_enabled: ${incoming.ai_analysis.ai_trigger_enabled}`);
     } else if (currentConfig.ai_analysis) {
       // 如果前端没有发送 ai_analysis，保留原有配置
       incoming.ai_analysis = currentConfig.ai_analysis;
     }
     
-    // 校验并保留邮箱密码
-    if (incoming.alert_actions?.email) {
-      // ✅ 如果前端没有发送密码（因为我们不返回），则保留原有值
-      if (!incoming.alert_actions.email.password) {
-        incoming.alert_actions.email.password = (currentConfig.alert_actions?.email?.password || '').toString();
+    // 校验并保留 alert_actions 配置
+    if (incoming.alert_actions) {
+      // 合并原有配置，避免丢失未更新的字段
+      const existingActions = currentConfig.alert_actions || {};
+      incoming.alert_actions = {
+        ...existingActions,
+        ...incoming.alert_actions
+      };
+      
+      // 特殊处理 email 密码：如果前端没有发送密码（因为我们不返回），则保留原有值
+      if (incoming.alert_actions.email) {
+        if (!incoming.alert_actions.email.password) {
+          incoming.alert_actions.email.password = (existingActions.email?.password || '').toString();
+        }
+        // 确保 email 对象完整
+        incoming.alert_actions.email = {
+          enable: incoming.alert_actions.email.enable !== undefined ? incoming.alert_actions.email.enable : (existingActions.email?.enable || false),
+          smtp_host: incoming.alert_actions.email.smtp_host || existingActions.email?.smtp_host || '',
+          smtp_port: incoming.alert_actions.email.smtp_port || existingActions.email?.smtp_port || 465,
+          username: incoming.alert_actions.email.username || existingActions.email?.username || '',
+          password: incoming.alert_actions.email.password || '',
+          to: incoming.alert_actions.email.to || existingActions.email?.to || ''
+        };
       }
+      
+      // 确保 webhook 对象完整
+      if (incoming.alert_actions.webhook) {
+        incoming.alert_actions.webhook = {
+          enable: incoming.alert_actions.webhook.enable !== undefined ? incoming.alert_actions.webhook.enable : (existingActions.webhook?.enable || false),
+          url: incoming.alert_actions.webhook.url || existingActions.webhook?.url || ''
+        };
+      }
+      
+      // telegram 可以是布尔值或对象
+      if (incoming.alert_actions.telegram === undefined) {
+        incoming.alert_actions.telegram = existingActions.telegram !== undefined ? existingActions.telegram : true;
+      }
+      
+      console.log(`📋 [配置保存] alert_actions 配置:`, JSON.stringify(incoming.alert_actions, null, 2));
+    } else if (currentConfig.alert_actions) {
+      // 如果前端没有发送 alert_actions，保留原有配置
+      incoming.alert_actions = currentConfig.alert_actions;
     }
     
     // 检测 API_ID/API_HASH 是否变化（需要重启 Telethon 服务）
@@ -982,13 +1020,26 @@ app.post('/api/config', authMiddleware, async (req, res) => {
     };
     
     // 保存到数据库
+    console.log(`💾 [配置保存] 准备保存配置到数据库 (userId: ${userId})`);
     await saveUserConfig(userId, updateData);
+    console.log(`✅ [配置保存] 配置已保存到数据库`);
+    
+    // 同步配置到全局配置文件（用于Telethon服务读取）
+    try {
+      console.log(`🔄 [配置保存] 开始同步配置到全局文件并重启Telethon服务`);
+      await syncUserConfigAndRestartTelethon(userId);
+      console.log(`✅ [配置保存] 配置同步完成`);
+    } catch (syncError) {
+      console.warn('⚠️  [配置保存] 同步配置到全局文件失败（不影响配置保存）:', syncError.message);
+      console.error('错误堆栈:', syncError.stack);
+    }
     
     // 如果 AI 分析配置有变化，重启定时器
     if (incoming.ai_analysis) {
       setTimeout(async () => {
+        console.log('🔄 [配置保存] AI 分析配置已更新，重启定时器');
         await startAIAnalysisTimer();
-        console.log('🔄 AI 分析配置已更新，定时器已重启');
+        console.log('✅ [配置保存] AI 分析定时器已重启');
       }, 1000);
     }
     
@@ -1552,12 +1603,17 @@ app.post('/api/internal/alert/push', async (req, res) => {
     
     // 加载用户配置发送告警
     if (userIdObj) {
-      const userConfig = await loadUserConfig(userIdObj.toString());
-      const config = userConfig.toObject ? userConfig.toObject() : userConfig;
-      const actions = config.alert_actions;
-      
-      // 构建告警消息
-      const alertMessage = `⚠️ 关键词告警触发
+      try {
+        const userConfig = await loadUserConfig(userIdObj.toString());
+        const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+        const actions = config.alert_actions || {};
+        
+        console.log(`🔍 [告警处理] 加载配置 - userId: ${userIdObj.toString()}`);
+        console.log(`🔍 [告警处理] alert_target: ${config.alert_target || '未设置'}`);
+        console.log(`🔍 [告警处理] alert_actions:`, JSON.stringify(actions, null, 2));
+        
+        // 构建告警消息
+        const alertMessage = `⚠️ 关键词告警触发
 
 来源：${cleanChannel} (${channelId})
 发送者：${cleanFrom}
@@ -1568,53 +1624,76 @@ app.post('/api/internal/alert/push', async (req, res) => {
 ${cleanMessage}
 
 ${messageId ? `👉 跳转链接：t.me/c/${channelId}/${messageId}` : ''}`;
-      
-      // Telegram 推送（通过Telethon服务发送）
-      if (actions.telegram && config.alert_target) {
-        try {
-          // 调用Telethon服务的HTTP接口发送消息
-          await axios.post(`${process.env.TELETHON_URL || 'http://telethon:8888'}/api/internal/telegram/send`, {
-            target: config.alert_target,
-            message: alertMessage
-          }, {
-            timeout: 10000,
-            headers: {
-              'Content-Type': 'application/json'
+        
+        // Telegram 推送（通过Telethon服务发送）
+        // 检查 alert_actions.telegram 是否为 true（布尔值或对象）
+        const telegramEnabled = actions?.telegram === true || (typeof actions?.telegram === 'object' && actions.telegram?.enable !== false);
+        console.log(`📋 [告警处理] Telegram检查 - userId: ${userIdObj.toString()}, telegramEnabled: ${telegramEnabled}, alert_target: ${config.alert_target || '未设置'}`);
+        
+        if (telegramEnabled && config.alert_target) {
+          try {
+            console.log(`📱 [告警处理] 准备发送Telegram告警到: ${config.alert_target}`);
+            // 调用Telethon服务的HTTP接口发送消息
+            const telethonUrl = process.env.TELETHON_URL || 'http://telethon:8888';
+            const response = await axios.post(`${telethonUrl}/api/internal/telegram/send`, {
+              target: config.alert_target,
+              message: alertMessage
+            }, {
+              timeout: 10000,
+              headers: {
+                'Content-Type': 'application/json'
+              }
+            });
+            console.log(`✅ [告警处理] Telegram 告警已发送到: ${config.alert_target}, 响应:`, response.data);
+          } catch (error) {
+            console.error('❌ [告警处理] Telegram 发送失败:', error.message);
+            if (error.response) {
+              console.error('响应状态:', error.response.status, '响应数据:', error.response.data);
             }
-          });
-          console.log('📱 Telegram 告警已发送到:', config.alert_target);
-        } catch (error) {
-          console.error('❌ Telegram 发送失败:', error.message);
+            if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+              console.error('❌ 无法连接到Telethon服务，请检查服务是否运行: http://telethon:8888');
+            }
+          }
+        } else {
+          if (!telegramEnabled) {
+            console.log(`⚠️ [告警处理] Telegram告警未启用 - alert_actions.telegram: ${JSON.stringify(actions?.telegram)}`);
+          }
+          if (!config.alert_target) {
+            console.log('⚠️ [告警处理] Telegram告警目标未设置 (alert_target: 空)');
+          }
         }
-      }
       
-      // 邮件推送
-      if (actions.email && actions.email.enable) {
-        try {
-          await sendEmail(actions.email, '⚠️ Telegram 监控告警', alertMessage);
-          console.log('📧 邮件告警已发送');
-        } catch (error) {
-          console.error('❌ 邮件发送失败:', error.message);
+        // 邮件推送
+        if (actions.email && actions.email.enable) {
+          try {
+            await sendEmail(actions.email, '⚠️ Telegram 监控告警', alertMessage);
+            console.log('📧 [告警处理] 邮件告警已发送');
+          } catch (error) {
+            console.error('❌ [告警处理] 邮件发送失败:', error.message);
+          }
         }
-      }
-      
-      // Webhook 推送
-      if (actions.webhook && actions.webhook.enable && actions.webhook.url) {
-        try {
-          await axios.post(actions.webhook.url, {
-            type: 'telegram_alert',
-            keyword,
-            message,
-            from,
-            channel,
-            channelId,
-            messageId,
-            timestamp: new Date().toISOString()
-          });
-          console.log('🔗 Webhook 告警已发送');
-        } catch (error) {
-          console.error('❌ Webhook 发送失败:', error.message);
+        
+        // Webhook 推送
+        if (actions.webhook && actions.webhook.enable && actions.webhook.url) {
+          try {
+            await axios.post(actions.webhook.url, {
+              type: 'telegram_alert',
+              keyword,
+              message,
+              from,
+              channel,
+              channelId,
+              messageId,
+              timestamp: new Date().toISOString()
+            });
+            console.log('🔗 [告警处理] Webhook 告警已发送');
+          } catch (error) {
+            console.error('❌ [告警处理] Webhook 发送失败:', error.message);
+          }
         }
+      } catch (configError) {
+        console.error('❌ [告警处理] 加载用户配置失败:', configError.message);
+        console.error('错误堆栈:', configError.stack);
       }
     }
     
@@ -1695,10 +1774,36 @@ ${cleanMessage}
 
 ${messageId ? `👉 跳转链接：t.me/c/${channelId}/${messageId}` : ''}`;
     
-    // Telegram 推送
-    if (actions.telegram && config.alert_target) {
-      // 这里需要 Python 脚本配合发送
-      console.log('Telegram 告警已触发');
+    // Telegram 推送（通过Telethon服务发送）
+    // 检查 alert_actions.telegram 是否为 true（布尔值或对象）
+    const telegramEnabled = actions?.telegram === true || (typeof actions?.telegram === 'object' && actions.telegram?.enable !== false);
+    if (telegramEnabled && config.alert_target) {
+      try {
+        console.log(`📱 准备发送Telegram告警到: ${config.alert_target}`);
+        // 调用Telethon服务的HTTP接口发送消息
+        await axios.post(`${process.env.TELETHON_URL || 'http://telethon:8888'}/api/internal/telegram/send`, {
+          target: config.alert_target,
+          message: alertMessage
+        }, {
+          timeout: 10000,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        console.log('✅ Telegram 告警已发送到:', config.alert_target);
+      } catch (error) {
+        console.error('❌ Telegram 发送失败:', error.message);
+        if (error.response) {
+          console.error('响应状态:', error.response.status, '响应数据:', error.response.data);
+        }
+      }
+    } else {
+      if (!telegramEnabled) {
+        console.log('⚠️ Telegram告警未启用 (alert_actions.telegram:', actions?.telegram, ')');
+      }
+      if (!config.alert_target) {
+        console.log('⚠️ Telegram告警目标未设置 (alert_target: 空)');
+      }
     }
     
     // 邮件推送
@@ -1986,6 +2091,9 @@ app.post('/api/internal/message-notify', async (req, res) => {
         const userConfig = await loadUserConfig(userId);
         const config = userConfig.toObject ? userConfig.toObject() : userConfig;
         
+        // 添加调试日志
+        console.log(`🔍 [消息通知] 检查AI分析触发 - userId: ${userId}, enabled: ${config.ai_analysis?.enabled}, trigger_type: ${config.ai_analysis?.analysis_trigger_type}`);
+        
         if (config.ai_analysis?.enabled && config.ai_analysis.analysis_trigger_type === 'count') {
           const threshold = config.ai_analysis.message_count_threshold || 50;
           const userIdObj = new mongoose.Types.ObjectId(userId);
@@ -1993,6 +2101,8 @@ app.post('/api/internal/message-notify', async (req, res) => {
             userId: userIdObj,
             ai_analyzed: false 
           });
+          
+          console.log(`🔍 [消息通知] 消息计数检查 - userId: ${userId}, 阈值: ${threshold}, 未分析数量: ${unanalyzedCount}`);
           
           if (unanalyzedCount >= threshold) {
             console.log(`📊 用户 ${userId} 未分析消息达到阈值 ${threshold}（当前: ${unanalyzedCount}），立即触发 AI 分析`);
@@ -2003,8 +2113,9 @@ app.post('/api/internal/message-notify', async (req, res) => {
           }
         }
       } catch (err) {
-        // 静默失败，不影响消息通知
-        console.error('检查消息数量阈值失败:', err.message);
+        // 详细错误日志
+        console.error('❌ 检查消息数量阈值失败:', err.message);
+        console.error('错误堆栈:', err.stack);
       }
     }
     
@@ -3025,31 +3136,57 @@ async function syncUserConfigAndRestartTelethon(userId) {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
     console.log(`✅ 已更新全局配置文件中的 user_id 为: ${userId}`);
     
-    // 同步用户配置到全局配置文件
-    const userConfig = await loadUserConfig(userId.toString());
-    if (userConfig) {
-      const configToSync = {
-        keywords: userConfig.keywords || [],
-        channels: userConfig.channels || [],
-        alert_keywords: userConfig.alert_keywords || [],
-        alert_regex: userConfig.alert_regex || [],
-        log_all_messages: userConfig.log_all_messages || false
-      };
-      
-      // 如果用户配置中有 Telegram API 配置，也同步到全局配置
-      if (userConfig.telegram && userConfig.telegram.api_id && userConfig.telegram.api_hash) {
-        configToSync.telegram = {
-          api_id: userConfig.telegram.api_id,
-          api_hash: userConfig.telegram.api_hash
+      // 同步用户配置到全局配置文件
+      const userConfig = await loadUserConfig(userId.toString());
+      if (userConfig) {
+        const configObj = userConfig.toObject ? userConfig.toObject() : userConfig;
+        const configToSync = {
+          keywords: configObj.keywords || [],
+          channels: configObj.channels || [],
+          alert_keywords: configObj.alert_keywords || [],
+          alert_regex: configObj.alert_regex || [],
+          log_all_messages: configObj.log_all_messages || false,
+          alert_target: configObj.alert_target || ''
         };
-        console.log(`✅ 已同步用户的 Telegram API 配置到全局配置文件`);
+        
+        // 同步 alert_actions 配置（Telethon服务不需要，但后端API需要从数据库读取）
+        // 这里只是记录日志，实际使用时从数据库读取
+        if (configObj.alert_actions) {
+          console.log(`📋 [配置同步] alert_actions 配置:`, JSON.stringify(configObj.alert_actions, null, 2));
+        }
+        
+        // 如果用户配置中有 Telegram API 配置，也同步到全局配置
+        if (configObj.telegram && configObj.telegram.api_id && configObj.telegram.api_hash) {
+          configToSync.telegram = {
+            api_id: configObj.telegram.api_id,
+            api_hash: configObj.telegram.api_hash
+          };
+          console.log(`✅ [配置同步] 已同步用户的 Telegram API 配置到全局配置文件`);
+        }
+        
+        // 同步 AI 分析配置（包括触发相关配置）
+        if (configObj.ai_analysis) {
+          // 确保 ai_analysis 是一个完整的对象
+          configToSync.ai_analysis = {
+            enabled: configObj.ai_analysis.enabled || false,
+            ai_trigger_enabled: configObj.ai_analysis.ai_trigger_enabled || false,
+            ai_trigger_users: Array.isArray(configObj.ai_analysis.ai_trigger_users) 
+              ? configObj.ai_analysis.ai_trigger_users 
+              : (typeof configObj.ai_analysis.ai_trigger_users === 'string' 
+                  ? configObj.ai_analysis.ai_trigger_users.split('\n').map(u => u.trim()).filter(u => u)
+                  : []),
+            ai_trigger_prompt: configObj.ai_analysis.ai_trigger_prompt || '',
+            // 注意：openai_api_key、analysis_trigger_type、message_count_threshold 等不同步到文件
+            // 这些配置只在后端API中使用，Telethon服务不需要
+          };
+          console.log(`✅ [配置同步] 已同步用户的 AI 分析配置到全局配置文件 (ai_trigger_enabled: ${configToSync.ai_analysis.ai_trigger_enabled}, 触发用户数: ${configToSync.ai_analysis.ai_trigger_users?.length || 0})`);
+        }
+        
+        // 更新全局配置，保留其他字段（如 alert_actions 等）
+        Object.assign(globalConfig, configToSync);
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
+        console.log(`✅ [配置同步] 已同步用户配置到全局配置文件 (userId: ${userId}, alert_target: ${configToSync.alert_target || '未设置'}, alert_keywords: ${configToSync.alert_keywords?.length || 0})`);
       }
-      
-      // 更新全局配置，保留其他字段（如 alert_actions 等）
-      Object.assign(globalConfig, configToSync);
-      fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
-      console.log(`✅ 已同步用户配置到全局配置文件 (userId: ${userId})`);
-    }
     
     // 重启 Telethon 服务以应用新配置
     const restartSuccess = await restartTelethonService();
@@ -3683,7 +3820,7 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
   }
 });
 
-// 内部 API：发送 Telegram 消息（供AI分析告警使用，Telethon服务会监听并发送）
+// 内部 API：发送 Telegram 消息（转发到Telethon服务的HTTP服务器）
 app.post('/api/internal/telegram/send', async (req, res) => {
   try {
     const { target, message, userId } = req.body;
@@ -3692,16 +3829,24 @@ app.post('/api/internal/telegram/send', async (req, res) => {
       return res.status(400).json({ error: '缺少必要字段：target 和 message' });
     }
     
-    // 这个端点主要用于记录日志，实际发送由Telethon服务在monitor.py中处理
-    // 因为Telethon服务可以直接通过client.send_message发送消息
-    // 这里只记录日志，实际的Telegram消息发送已经在monitor.py中实现
-    console.log(`📱 Telegram消息发送请求: target=${target}, userId=${userId || 'N/A'}`);
-    
-    // 注意：实际的Telegram消息发送应该在Telethon服务的monitor.py中通过client.send_message完成
-    // 由于Telethon服务已经有了直接发送消息的能力（在关键词告警中已经实现），
-    // AI分析的Telegram告警也应该通过类似的机制完成
-    
-    res.json({ status: 'ok', message: 'Telegram发送请求已记录（实际发送由Telethon服务处理）' });
+    // 转发请求到Telethon服务的HTTP服务器
+    try {
+      await axios.post(`${process.env.TELETHON_URL || 'http://telethon:8888'}/api/internal/telegram/send`, {
+        target,
+        message
+      }, {
+        timeout: 10000,
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      console.log(`📱 Telegram消息已转发到Telethon服务: target=${target}, userId=${userId || 'N/A'}`);
+      res.json({ status: 'ok', message: 'Telegram消息已发送' });
+    } catch (error) {
+      console.error('❌ 转发到Telethon服务失败:', error.message);
+      // 如果Telethon服务不可用，返回错误但不阻塞
+      res.status(503).json({ error: 'Telegram发送失败：Telethon服务不可用' });
+    }
   } catch (error) {
     console.error('❌ Telegram发送请求处理失败:', error);
     res.status(500).json({ error: '处理失败：' + error.message });
@@ -3817,7 +3962,9 @@ app.get('/health', (req, res) => {
 });
 
 // ===== AI 分析功能 =====
-let aiAnalysisTimer = null;
+// AI分析定时器（保留以兼容性，但不再使用全局定时器，改为每个用户独立定时器）
+let aiAnalysisTimer = null; 
+const userAITimers = new Map(); // 存储每个用户的定时器
 
 // 执行 AI 批量分析
 async function performAIAnalysis(triggerType = 'manual', logId = null, userId = null) {
@@ -4021,40 +4168,62 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
 
 // 启动 AI 分析定时器（为所有启用了AI的用户执行）
 async function startAIAnalysisTimer() {
+  // 清除所有现有定时器（包括旧的全局定时器）
   if (aiAnalysisTimer) {
     clearInterval(aiAnalysisTimer);
+    aiAnalysisTimer = null;
   }
+  userAITimers.forEach((timer) => clearInterval(timer));
+  userAITimers.clear();
   
-  // 为所有用户执行定时分析
-  const performAnalysisForAllUsers = async () => {
-    try {
-      const users = await User.find({ is_active: true });
-      
-      for (const user of users) {
-        try {
-          const userConfig = await loadUserConfig(user._id);
-          const config = userConfig.toObject ? userConfig.toObject() : userConfig;
-          
-          if (!config.ai_analysis?.enabled || config.ai_analysis.analysis_trigger_type !== 'time') {
-            continue;
-          }
-          
-          console.log(`⏰ 为用户 ${user.username} 执行定时 AI 分析`);
-          await performAIAnalysis('time', null, user._id.toString());
-        } catch (err) {
-          console.error(`为用户 ${user.username} 执行AI分析失败:`, err.message);
+  try {
+    const users = await User.find({ is_active: true });
+    
+    for (const user of users) {
+      try {
+        const userConfig = await loadUserConfig(user._id);
+        const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+        
+        console.log(`🔍 [定时器启动] 用户: ${user.username}, enabled: ${config.ai_analysis?.enabled}, trigger_type: ${config.ai_analysis?.analysis_trigger_type}`);
+        
+        if (!config.ai_analysis?.enabled || config.ai_analysis.analysis_trigger_type !== 'time') {
+          console.log(`⏭️  [定时器启动] 用户 ${user.username} 未启用时间间隔触发的AI分析，跳过`);
+          continue;
         }
+        
+        // 使用用户配置的时间间隔
+        const intervalMinutes = config.ai_analysis.time_interval_minutes || 30;
+        const intervalMs = intervalMinutes * 60 * 1000;
+        
+        console.log(`🔍 [定时器启动] 用户: ${user.username}, 间隔: ${intervalMinutes} 分钟 (${intervalMs}ms)`);
+        
+        // 为每个用户创建独立的定时器
+        const timer = setInterval(async () => {
+          try {
+            console.log(`⏰ [定时触发] 为用户 ${user.username} 执行定时 AI 分析（间隔: ${intervalMinutes} 分钟）`);
+            await performAIAnalysis('time', null, user._id.toString());
+          } catch (err) {
+            console.error(`❌ [定时触发] 为用户 ${user.username} 执行AI分析失败:`, err.message);
+            console.error('错误堆栈:', err.stack);
+          }
+        }, intervalMs);
+        
+        userAITimers.set(user._id.toString(), timer);
+        console.log(`✅ [定时器启动] 为用户 ${user.username} 启动 AI 定时分析，间隔: ${intervalMinutes} 分钟`);
+      } catch (err) {
+        console.error(`❌ [定时器启动] 为用户 ${user.username} 启动AI分析定时器失败:`, err.message);
+        console.error('错误堆栈:', err.stack);
       }
-    } catch (err) {
-      console.error('执行定时AI分析失败:', err);
     }
-  };
-  
-  // 使用30分钟作为默认间隔（实际应该从每个用户的配置读取，这里简化处理）
-  const intervalMs = 30 * 60 * 1000; // 30分钟
-  aiAnalysisTimer = setInterval(performAnalysisForAllUsers, intervalMs);
-  
-  console.log(`✅ AI 定时分析已启动，间隔: 30 分钟（为所有启用AI的用户执行）`);
+    
+    if (userAITimers.size > 0) {
+      console.log(`✅ AI 定时分析已启动，共 ${userAITimers.size} 个用户的定时器`);
+    } else {
+      console.log(`ℹ️  没有用户启用时间间隔触发的AI分析`);
+    }
+  } catch (err) {
+    console.error('启动AI分析定时器失败:', err);
+  }
 }
 
 // 监听新消息（用于计数触发）
@@ -4067,6 +4236,8 @@ async function checkMessageCountTrigger() {
         const userConfig = await loadUserConfig(user._id);
         const config = userConfig.toObject ? userConfig.toObject() : userConfig;
         
+        console.log(`🔍 [计数触发检查] 用户: ${user.username}, enabled: ${config.ai_analysis?.enabled}, trigger_type: ${config.ai_analysis?.analysis_trigger_type}`);
+        
         if (!config.ai_analysis?.enabled || config.ai_analysis.analysis_trigger_type !== 'count') {
           continue;
         }
@@ -4078,16 +4249,20 @@ async function checkMessageCountTrigger() {
           ai_analyzed: false 
         });
         
+        console.log(`🔍 [计数触发检查] 用户: ${user.username}, 阈值: ${threshold}, 未分析数量: ${unanalyzedCount}`);
+        
         if (unanalyzedCount >= threshold) {
-          console.log(`📊 用户 ${user.username} 未分析消息达到阈值 ${threshold}，触发 AI 分析`);
+          console.log(`📊 [计数触发] 用户 ${user.username} 未分析消息达到阈值 ${threshold}，触发 AI 分析`);
           await performAIAnalysis('count', null, user._id.toString());
         }
       } catch (err) {
-        console.error(`检查用户 ${user.username} 消息计数触发失败:`, err.message);
+        console.error(`❌ [计数触发检查] 检查用户 ${user.username} 消息计数触发失败:`, err.message);
+        console.error('错误堆栈:', err.stack);
       }
     }
   } catch (err) {
-    console.error('检查消息计数触发失败:', err);
+    console.error('❌ [计数触发检查] 检查消息计数触发失败:', err);
+    console.error('错误堆栈:', err.stack);
   }
 }
 
