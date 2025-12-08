@@ -1216,7 +1216,7 @@
         })();
         
         // 显示底部全宽提示条
-        function showToast(message, isSuccess = true) {
+        function showToast(message, isSuccess = true, duration = null) {
             const toast = document.getElementById('toastNotification');
             if (!toast) return;
             
@@ -1255,8 +1255,8 @@
                 }
             }, 50);
             
-            // 自动隐藏（增加显示时间，让用户有足够时间看到）
-            const duration = isSuccess ? 4000 : 6000;
+            // 自动隐藏（如果指定了 duration 则使用，否则使用默认值）
+            const displayDuration = duration !== null ? duration : (isSuccess ? 4000 : 6000);
             toast._hideTimer = setTimeout(() => {
                 if (toast) {
                     // 淡出并向右滑出动画
@@ -1273,7 +1273,7 @@
                         }
                     }, 300);
                 }
-            }, duration);
+            }, displayDuration);
         }
         
         // 更新 SSE 连接状态显示
@@ -2197,11 +2197,11 @@
                     saveButton.textContent = originalText;
                 }
                 
-                // 使用原生弹窗显示消息
+                // 使用 Toast 通知显示消息（自动消失，显示1秒）
                 if (result && result.status === 'ok') {
-                    alert('✅ 配置保存成功！');
+                    showToast('✅ 配置保存成功！', true, 1000);
                 } else {
-                    alert('❌ 保存失败：' + (result?.error || '未知错误'));
+                    showToast('❌ 保存失败：' + (result?.error || '未知错误'), false);
                 }
             } catch (error) {
                 // 恢复按钮状态
@@ -2209,7 +2209,7 @@
                     saveButton.disabled = false;
                     saveButton.textContent = originalText;
                 }
-                alert('❌ 保存失败：' + (error.message || '未知错误'));
+                showToast('❌ 保存失败：' + (error.message || '未知错误'), false);
             }
         }
 
@@ -2250,18 +2250,27 @@
                             ${result.backups.map((backup, index) => {
                                 const date = new Date(backup.created).toLocaleString('zh-CN');
                                 const sizeMB = (backup.size / 1024 / 1024).toFixed(2);
+                                const backupPath = backup.path || '';
                                 return `
                                     <div style="border: 1px solid #e0e0e0; padding: 12px; margin-bottom: 10px; border-radius: 6px; background: #f9f9f9;">
-                                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                                        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
                                             <div style="flex: 1;">
                                                 <div style="font-weight: 500; margin-bottom: 4px;">${backup.name}</div>
-                                                <div style="font-size: 12px; color: #666;">
+                                                <div style="font-size: 12px; color: #666; margin-bottom: 4px;">
                                                     创建时间: ${date} | 大小: ${sizeMB} MB
                                                 </div>
+                                                <div style="font-size: 12px; color: #999;">
+                                                    存储位置: ${backupPath}
+                                                </div>
                                             </div>
-                                            <button class="btn btn-danger" onclick="restoreBackup('${backup.name}')" style="padding: 6px 12px; font-size: 13px; margin-left: 10px;">
-                                                🔄 恢复
-                                            </button>
+                                            <div style="display: flex; gap: 8px; margin-left: 10px;">
+                                                <button class="btn btn-danger" onclick="deleteBackup('${backup.name}')" style="padding: 6px 12px; font-size: 13px; background: #e74c3c; border-color: #e74c3c;">
+                                                    🗑️ 删除
+                                                </button>
+                                                <button class="btn btn-primary" onclick="restoreBackup('${backup.name}')" style="padding: 6px 12px; font-size: 13px;">
+                                                    🔄 恢复
+                                                </button>
+                                            </div>
                                         </div>
                                     </div>
                                 `;
@@ -2275,6 +2284,33 @@
                 console.error('加载备份列表失败:', error);
                 const backupList = document.getElementById('backupList');
                 backupList.innerHTML = '<p style="text-align: center; color: #e74c3c;">加载失败：' + (error.message || '未知错误') + '</p>';
+            }
+        }
+        
+        // 删除备份
+        async function deleteBackup(backupName) {
+            // 使用原生弹窗确认
+            if (!confirm(`⚠️ 确定要删除备份 "${backupName}" 吗？\n\n此操作不可恢复！`)) {
+                return;
+            }
+            
+            try {
+                showToast('🗑️ 正在删除备份，请稍候...', true);
+                
+                const result = await apiRequest(`/backup/${encodeURIComponent(backupName)}`, {
+                    method: 'DELETE'
+                });
+                
+                if (result && result.status === 'ok') {
+                    showToast('✅ 备份删除成功！', true);
+                    // 刷新备份列表
+                    await loadBackupList();
+                } else {
+                    showToast('❌ 删除失败：' + (result?.error || '未知错误'), false);
+                }
+            } catch (error) {
+                console.error('删除备份失败:', error);
+                showToast('❌ 删除失败：' + (error.message || '未知错误'), false);
             }
         }
         

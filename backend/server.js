@@ -974,26 +974,37 @@ app.post('/api/config', authMiddleware, async (req, res) => {
       
       // 特殊处理 email 密码：如果前端没有发送密码（因为我们不返回），则保留原有值
       if (incoming.alert_actions.email) {
-        if (!incoming.alert_actions.email.password) {
+        // 特殊处理密码：如果前端没有发送密码（因为我们不返回），则保留原有值
+        if (!incoming.alert_actions.email.password || incoming.alert_actions.email.password === '') {
           incoming.alert_actions.email.password = (existingActions.email?.password || '').toString();
         }
-        // 确保 email 对象完整
+        // 确保 email 对象完整，正确处理 false 值和空字符串
         incoming.alert_actions.email = {
-          enable: incoming.alert_actions.email.enable !== undefined ? incoming.alert_actions.email.enable : (existingActions.email?.enable || false),
-          smtp_host: incoming.alert_actions.email.smtp_host || existingActions.email?.smtp_host || '',
-          smtp_port: incoming.alert_actions.email.smtp_port || existingActions.email?.smtp_port || 465,
-          username: incoming.alert_actions.email.username || existingActions.email?.username || '',
+          // ✅ 关键修复：正确处理 false 值，不能使用 || 运算符
+          enable: incoming.alert_actions.email.enable !== undefined ? Boolean(incoming.alert_actions.email.enable) : (existingActions.email?.enable !== undefined ? existingActions.email.enable : false),
+          // ✅ 修复：正确处理空字符串，不能使用 || 运算符
+          smtp_host: incoming.alert_actions.email.smtp_host !== undefined ? String(incoming.alert_actions.email.smtp_host) : (existingActions.email?.smtp_host || ''),
+          smtp_port: incoming.alert_actions.email.smtp_port !== undefined ? Number(incoming.alert_actions.email.smtp_port) || 465 : (existingActions.email?.smtp_port || 465),
+          username: incoming.alert_actions.email.username !== undefined ? String(incoming.alert_actions.email.username) : (existingActions.email?.username || ''),
           password: incoming.alert_actions.email.password || '',
-          to: incoming.alert_actions.email.to || existingActions.email?.to || ''
+          to: incoming.alert_actions.email.to !== undefined ? String(incoming.alert_actions.email.to) : (existingActions.email?.to || '')
         };
+      } else if (existingActions.email) {
+        // ✅ 如果前端没有发送 email 对象，但数据库中有，保留原有配置
+        incoming.alert_actions.email = existingActions.email;
       }
       
-      // 确保 webhook 对象完整
+      // 确保 webhook 对象完整，正确处理 false 值和空字符串
       if (incoming.alert_actions.webhook) {
         incoming.alert_actions.webhook = {
-          enable: incoming.alert_actions.webhook.enable !== undefined ? incoming.alert_actions.webhook.enable : (existingActions.webhook?.enable || false),
-          url: incoming.alert_actions.webhook.url || existingActions.webhook?.url || ''
+          // ✅ 关键修复：正确处理 false 值
+          enable: incoming.alert_actions.webhook.enable !== undefined ? Boolean(incoming.alert_actions.webhook.enable) : (existingActions.webhook?.enable !== undefined ? existingActions.webhook.enable : false),
+          // ✅ 修复：正确处理空字符串
+          url: incoming.alert_actions.webhook.url !== undefined ? String(incoming.alert_actions.webhook.url) : (existingActions.webhook?.url || '')
         };
+      } else if (existingActions.webhook) {
+        // ✅ 如果前端没有发送 webhook 对象，但数据库中有，保留原有配置
+        incoming.alert_actions.webhook = existingActions.webhook;
       }
       
       // telegram 可以是布尔值或对象
@@ -1002,9 +1013,19 @@ app.post('/api/config', authMiddleware, async (req, res) => {
       }
       
       console.log(`📋 [配置保存] alert_actions 配置:`, JSON.stringify(incoming.alert_actions, null, 2));
+      // ✅ 验证邮件告警配置
+      if (incoming.alert_actions.email) {
+        console.log(`📧 [配置保存] 邮件告警配置 - enable: ${incoming.alert_actions.email.enable} (类型: ${typeof incoming.alert_actions.email.enable})`);
+        console.log(`📧 [配置保存] 邮件告警配置 - smtp_host: "${incoming.alert_actions.email.smtp_host}", username: "${incoming.alert_actions.email.username}", to: "${incoming.alert_actions.email.to}"`);
+      }
+      // ✅ 验证 Webhook 配置
+      if (incoming.alert_actions.webhook) {
+        console.log(`🔗 [配置保存] Webhook 配置 - enable: ${incoming.alert_actions.webhook.enable} (类型: ${typeof incoming.alert_actions.webhook.enable})`);
+      }
     } else if (currentConfig.alert_actions) {
       // 如果前端没有发送 alert_actions，保留原有配置
       incoming.alert_actions = currentConfig.alert_actions;
+      console.log(`📋 [配置保存] 前端未发送 alert_actions，保留原有配置`);
     }
     
     // 检测 API_ID/API_HASH 是否变化（需要重启 Telethon 服务）
@@ -1026,9 +1047,11 @@ app.post('/api/config', authMiddleware, async (req, res) => {
       ...incoming
     };
     
-    // 添加详细日志，检查告警关键词是否正确接收
+    // 添加详细日志，检查所有配置项是否正确接收
     console.log(`💾 [配置保存] 准备保存配置到数据库 (userId: ${userId})`);
     console.log(`📋 [配置保存] 接收到的配置字段:`, Object.keys(updateData).join(', '));
+    
+    // ✅ 验证基础配置项
     if (updateData.alert_keywords !== undefined) {
       console.log(`📋 [配置保存] alert_keywords 值:`, JSON.stringify(updateData.alert_keywords));
       console.log(`📋 [配置保存] alert_keywords 类型:`, typeof updateData.alert_keywords, Array.isArray(updateData.alert_keywords) ? '(数组)' : '(非数组)');
@@ -1039,6 +1062,12 @@ app.post('/api/config', authMiddleware, async (req, res) => {
     if (updateData.keywords !== undefined) {
       console.log(`📋 [配置保存] keywords 值:`, JSON.stringify(updateData.keywords));
       console.log(`📋 [配置保存] keywords 长度:`, Array.isArray(updateData.keywords) ? updateData.keywords.length : 'N/A');
+    }
+    if (updateData.log_all_messages !== undefined) {
+      console.log(`📋 [配置保存] log_all_messages 值: ${updateData.log_all_messages} (类型: ${typeof updateData.log_all_messages})`);
+    }
+    if (updateData.alert_target !== undefined) {
+      console.log(`📋 [配置保存] alert_target 值: "${updateData.alert_target}"`);
     }
     
     // 保存到数据库
@@ -1067,6 +1096,19 @@ app.post('/api/config', authMiddleware, async (req, res) => {
         const savedConfig = await loadUserConfig(userId);
         const savedObj = savedConfig.toObject ? savedConfig.toObject() : savedConfig;
         console.log(`✅ [配置保存] 验证保存结果 - alert_keywords:`, JSON.stringify(savedObj.alert_keywords || []), `(${(savedObj.alert_keywords || []).length} 个)`);
+        // ✅ 验证邮件告警配置
+        if (savedObj.alert_actions?.email) {
+          console.log(`✅ [配置保存] 验证邮件告警配置 - enable: ${savedObj.alert_actions.email.enable} (类型: ${typeof savedObj.alert_actions.email.enable})`);
+          console.log(`✅ [配置保存] 验证邮件告警配置 - smtp_host: "${savedObj.alert_actions.email.smtp_host}", username: "${savedObj.alert_actions.email.username}", to: "${savedObj.alert_actions.email.to}"`);
+        }
+        // ✅ 验证 Webhook 配置
+        if (savedObj.alert_actions?.webhook) {
+          console.log(`✅ [配置保存] 验证 Webhook 配置 - enable: ${savedObj.alert_actions.webhook.enable} (类型: ${typeof savedObj.alert_actions.webhook.enable})`);
+        }
+        // ✅ 验证 AI 分析配置
+        if (savedObj.ai_analysis) {
+          console.log(`✅ [配置保存] 验证 AI 分析配置 - enabled: ${savedObj.ai_analysis.enabled}, trigger_type: ${savedObj.ai_analysis.analysis_trigger_type}`);
+        }
       } catch (verifyError) {
         console.error(`❌ [配置保存] 验证保存结果失败:`, verifyError.message);
       }
@@ -2414,7 +2456,8 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
     if (fs.existsSync(backupDir)) {
       const files = fs.readdirSync(backupDir);
       for (const file of files) {
-        if (file.startsWith('backup_')) {
+        // 支持备份目录和 .tar.gz 压缩文件
+        if (file.startsWith('backup_') && (file.endsWith('.tar.gz') || !file.includes('.'))) {
           const filePath = path.join(backupDir, file);
           const stats = fs.statSync(filePath);
           allBackups.push({ name: file, path: filePath, created: stats.birthtime });
@@ -2438,7 +2481,8 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
       // 查找所有备份文件
       const files = fs.readdirSync(backupDir);
       for (const file of files) {
-        if (file.startsWith('backup_')) {
+        // 支持备份目录和 .tar.gz 压缩文件
+        if (file.startsWith('backup_') && (file.endsWith('.tar.gz') || !file.includes('.'))) {
           const filePath = path.join(backupDir, file);
           const stats = fs.statSync(filePath);
           
@@ -2507,7 +2551,8 @@ app.get('/api/backup/list', authMiddleware, async (req, res) => {
     if (fs.existsSync(backupDir)) {
       const files = fs.readdirSync(backupDir);
       for (const file of files) {
-        if (file.startsWith('backup_')) {
+        // 支持备份目录和 .tar.gz 压缩文件
+        if (file.startsWith('backup_') && (file.endsWith('.tar.gz') || !file.includes('.'))) {
           const filePath = path.join(backupDir, file);
           const stats = fs.statSync(filePath);
           
@@ -2695,6 +2740,51 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error('❌ [恢复] 恢复失败:', error);
     res.status(500).json({ error: '恢复失败：' + error.message });
+  }
+});
+
+// 删除备份
+app.delete('/api/backup/:backupName', authMiddleware, async (req, res) => {
+  try {
+    const username = req.user.username;
+    const { backupName } = req.params;
+    
+    // 只有admin用户可以删除备份
+    if (username !== 'admin') {
+      return res.status(403).json({ error: '权限不足：仅管理员可删除备份' });
+    }
+    
+    if (!backupName) {
+      return res.status(400).json({ error: '请指定要删除的备份文件名' });
+    }
+    
+    console.log(`🗑️  [删除备份] 开始删除备份: ${backupName}`);
+    
+    const scriptDir = path.resolve(__dirname, '..');
+    const backupDir = path.join(scriptDir, 'backups');
+    const backupPath = path.join(backupDir, backupName);
+    
+    // 检查备份文件是否存在
+    if (!fs.existsSync(backupPath)) {
+      return res.status(404).json({ error: '备份文件不存在' });
+    }
+    
+    // 删除备份文件或目录
+    try {
+      fs.rmSync(backupPath, { recursive: true, force: true });
+      console.log(`✅ [删除备份] 已删除备份: ${backupName}`);
+      
+      res.json({
+        status: 'ok',
+        message: '备份删除成功'
+      });
+    } catch (deleteError) {
+      console.error('❌ [删除备份] 删除失败:', deleteError);
+      res.status(500).json({ error: '删除失败：' + deleteError.message });
+    }
+  } catch (error) {
+    console.error('❌ [删除备份] 删除备份失败:', error);
+    res.status(500).json({ error: '删除备份失败：' + error.message });
   }
 });
 
