@@ -429,14 +429,14 @@
             border-radius: 8px;
         }
         
-        @keyframes slideInBottom {
+        @keyframes slideInRight {
             from {
                 opacity: 0;
-                transform: translateX(100%) translateY(-20px);
+                transform: translateX(100%);
             }
             to {
                 opacity: 1;
-                transform: translateX(0) translateY(0);
+                transform: translateX(0);
             }
         }
         
@@ -448,50 +448,6 @@
         .toast-notification.error {
             background: #f44336;
             color: white;
-        }
-        
-        /* 成功提示弹窗 */
-        .success-popup {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: white;
-            border-radius: 12px;
-            padding: 30px 40px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            z-index: 1000000;
-            display: none;
-            align-items: center;
-            gap: 15px;
-            min-width: 300px;
-            animation: popupFadeIn 0.3s ease-out;
-        }
-        
-        .success-popup.show {
-            display: flex;
-        }
-        
-        @keyframes popupFadeIn {
-            from {
-                opacity: 0;
-                transform: translate(-50%, -50%) scale(0.9);
-            }
-            to {
-                opacity: 1;
-                transform: translate(-50%, -50%) scale(1);
-            }
-        }
-        
-        .success-popup-icon {
-            font-size: 36px;
-            color: #4caf50;
-        }
-        
-        .success-popup-message {
-            font-size: 16px;
-            color: #333;
-            font-weight: 500;
         }
         
         .loading {
@@ -951,6 +907,32 @@
                 </div>
             </div>
             
+            <div class="card" style="margin-top: 20px; border-left: 4px solid #9b59b6;">
+                <div class="card-header" onclick="toggleCard(this)" data-card-id="backup-restore">
+                    <h2>💾 数据备份与恢复</h2>
+                    <span class="card-toggle collapsed">▼</span>
+                </div>
+                <div class="card-content collapsed">
+                    <div style="margin-bottom: 20px;">
+                        <p style="color: #666; margin-bottom: 15px; line-height: 1.6;">
+                            数据备份功能可以备份您的配置文件、环境变量和数据目录。恢复功能可以将备份的数据还原到系统中。
+                        </p>
+                        <p style="color: #e74c3c; font-size: 13px; margin-bottom: 15px;">
+                            ⚠️ 注意：恢复操作将覆盖现有配置和数据，请谨慎操作！
+                        </p>
+                        
+                        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                            <button class="btn btn-primary" onclick="createBackup()">📦 创建备份</button>
+                            <button class="btn btn-secondary" onclick="loadBackupList()">🔄 刷新备份列表</button>
+                        </div>
+                        
+                        <div id="backupList" style="margin-top: 20px;">
+                            <p style="text-align: center; color: #999;">点击"刷新备份列表"查看可用备份</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <button class="btn btn-primary" onclick="saveConfig()">💾 保存配置</button>
         </div>
         
@@ -1150,12 +1132,6 @@
     <!-- 浮动提示框 -->
     <div id="toastNotification" class="toast-notification"></div>
     
-    <!-- 成功提示弹窗 -->
-    <div id="successPopup" class="success-popup">
-        <div class="success-popup-icon">✅</div>
-        <div class="success-popup-message" id="successPopupMessage">操作成功</div>
-    </div>
-    
     <!-- Telegram 登录模态弹窗 -->
     <div id="telegramLoginModal" class="modal-overlay" style="display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; z-index: -1 !important;">
         <div class="modal-dialog">
@@ -1258,17 +1234,26 @@
             toast.className = 'toast-notification ' + (isSuccess ? 'success' : 'error');
             
             // 重置样式，确保动画能正常播放
-            toast.style.opacity = '1';
-            toast.style.transform = 'translateX(0) translateY(0)';
+            // 先设置为初始状态（在右侧外部）
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateX(100%)';
             toast.style.transition = '';
             toast.style.animation = 'none';
+            toast.style.display = 'block';
             
             // 强制重新计算样式，确保动画生效
             void toast.offsetWidth;
             
             // 显示提示框，从右上角滑入
-            toast.style.display = 'block';
-            toast.style.animation = 'slideInBottom 0.4s ease-out';
+            toast.style.animation = 'slideInRight 0.4s ease-out';
+            
+            // 等待动画完成后设置最终状态
+            setTimeout(() => {
+                if (toast) {
+                    toast.style.opacity = '1';
+                    toast.style.transform = 'translateX(0)';
+                }
+            }, 50);
             
             // 自动隐藏（增加显示时间，让用户有足够时间看到）
             const duration = isSuccess ? 4000 : 6000;
@@ -1277,7 +1262,7 @@
                     // 淡出并向右滑出动画
                     toast.style.transition = 'opacity 0.3s ease-out, transform 0.3s ease-out';
                     toast.style.opacity = '0';
-                    toast.style.transform = 'translateX(100%) translateY(-20px)';
+                    toast.style.transform = 'translateX(100%)';
                     setTimeout(() => {
                         if (toast) {
                             toast.style.display = 'none';
@@ -2005,21 +1990,6 @@
             }
         }
         
-        // 显示成功弹窗
-        function showSuccessPopup(message) {
-            const popup = document.getElementById('successPopup');
-            const messageEl = document.getElementById('successPopupMessage');
-            if (!popup || !messageEl) return;
-            
-            messageEl.textContent = message;
-            popup.classList.add('show');
-            
-            // 1秒后自动关闭
-            setTimeout(() => {
-                popup.classList.remove('show');
-            }, 1000);
-        }
-        
         // 保存 Telegram 凭证（需要重启Telethon）
         async function saveTelegramCredentials() {
             const apiId = parseInt(document.getElementById('tgApiId').value) || 0;
@@ -2032,11 +2002,6 @@
             
             if (!apiHash) {
                 showToast('⚠️ 请填写 API_HASH', false);
-                return;
-            }
-            
-            // 确认对话框
-            if (!confirm('⚠️ 确定要保存 Telegram 凭证吗？\n\n此操作将：\n- 更新 API_ID 和 API_HASH\n- 重启 Telethon 服务以应用新配置\n- 请确保凭证正确，否则可能导致登录失败')) {
                 return;
             }
             
@@ -2167,6 +2132,104 @@
             }
         }
 
+        // ===== 数据备份与恢复功能 =====
+        
+        // 创建备份
+        async function createBackup() {
+            try {
+                showToast('📦 正在创建备份，请稍候...', true);
+                
+                const result = await apiRequest('/backup', {
+                    method: 'POST'
+                });
+                
+                if (result && result.status === 'ok') {
+                    showToast('✅ 备份创建成功！', true);
+                    // 刷新备份列表
+                    await loadBackupList();
+                } else {
+                    showToast('❌ 备份失败：' + (result?.error || '未知错误'), false);
+                }
+            } catch (error) {
+                console.error('创建备份失败:', error);
+                showToast('❌ 备份失败：' + (error.message || '未知错误'), false);
+            }
+        }
+        
+        // 加载备份列表
+        async function loadBackupList() {
+            try {
+                const result = await apiRequest('/backup/list');
+                const backupList = document.getElementById('backupList');
+                
+                if (result && result.status === 'ok' && result.backups && result.backups.length > 0) {
+                    backupList.innerHTML = `
+                        <h3 style="margin-bottom: 15px; font-size: 16px;">可用备份 (${result.backups.length})</h3>
+                        <div style="max-height: 400px; overflow-y: auto;">
+                            ${result.backups.map((backup, index) => {
+                                const date = new Date(backup.created).toLocaleString('zh-CN');
+                                const sizeMB = (backup.size / 1024 / 1024).toFixed(2);
+                                return `
+                                    <div style="border: 1px solid #e0e0e0; padding: 12px; margin-bottom: 10px; border-radius: 6px; background: #f9f9f9;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                                            <div style="flex: 1;">
+                                                <div style="font-weight: 500; margin-bottom: 4px;">${backup.name}</div>
+                                                <div style="font-size: 12px; color: #666;">
+                                                    创建时间: ${date} | 大小: ${sizeMB} MB
+                                                </div>
+                                            </div>
+                                            <button class="btn btn-danger" onclick="restoreBackup('${backup.name}')" style="padding: 6px 12px; font-size: 13px; margin-left: 10px;">
+                                                🔄 恢复
+                                            </button>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    `;
+                } else {
+                    backupList.innerHTML = '<p style="text-align: center; color: #999;">暂无备份文件</p>';
+                }
+            } catch (error) {
+                console.error('加载备份列表失败:', error);
+                const backupList = document.getElementById('backupList');
+                backupList.innerHTML = '<p style="text-align: center; color: #e74c3c;">加载失败：' + (error.message || '未知错误') + '</p>';
+            }
+        }
+        
+        // 恢复备份
+        async function restoreBackup(backupName) {
+            if (!confirm(`⚠️ 确定要恢复备份 "${backupName}" 吗？\n\n此操作将：\n- 覆盖现有配置文件\n- 覆盖现有环境变量\n- 覆盖现有数据目录\n- 此操作不可恢复！\n\n恢复后需要重启服务才能生效。`)) {
+                return;
+            }
+            
+            if (!confirm('⚠️ 最后确认：您确定要继续恢复吗？\n\n这将覆盖所有现有数据！')) {
+                return;
+            }
+            
+            try {
+                showToast('📥 正在恢复备份，请稍候...', true);
+                
+                const result = await apiRequest('/backup/restore', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        backupName: backupName
+                    })
+                });
+                
+                if (result && result.status === 'ok') {
+                    showToast('✅ 数据恢复成功！请重启服务以应用更改。', true);
+                    // 刷新备份列表
+                    await loadBackupList();
+                } else {
+                    showToast('❌ 恢复失败：' + (result?.error || '未知错误'), false);
+                }
+            } catch (error) {
+                console.error('恢复备份失败:', error);
+                showToast('❌ 恢复失败：' + (error.message || '未知错误'), false);
+            }
+        }
+        
         // 发送测试告警
         async function testAlert() {
             const token = checkAuth();

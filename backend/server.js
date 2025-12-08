@@ -5,13 +5,16 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
+const { promisify } = require('util');
 const nodemailer = require('nodemailer');
 const axios = require('axios');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const Joi = require('joi');
 require('dotenv').config();
+
+const execAsync = promisify(exec);
 
 const Log = require('./logModel');
 const AISummary = require('./aiSummaryModel');
@@ -2287,6 +2290,258 @@ app.post('/api/ai/analyze-now', authMiddleware, async (req, res) => {
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: '触发 AI 分析失败：' + error.message });
+  }
+});
+
+// ===== 数据备份与恢复 API =====
+
+// 创建数据备份
+app.post('/api/backup', authMiddleware, async (req, res) => {
+  try {
+    const username = req.user.username;
+    
+    // 只有admin用户可以执行备份
+    if (username !== 'admin') {
+      return res.status(403).json({ error: '权限不足：仅管理员可执行备份操作' });
+    }
+    
+    console.log('📦 [备份] 开始创建数据备份...');
+    
+    const scriptDir = path.resolve(__dirname, '..');
+    const backupScript = path.join(scriptDir, 'backup.sh');
+    
+    // 检查备份脚本是否存在
+    if (!fs.existsSync(backupScript)) {
+      return res.status(500).json({ error: '备份脚本不存在' });
+    }
+    
+    // 执行备份脚本
+    const { stdout, stderr } = await execAsync(`bash "${backupScript}"`, {
+      cwd: scriptDir,
+      timeout: 300000 // 5分钟超时
+    });
+    
+    if (stderr && !stderr.includes('✅')) {
+      console.warn('⚠️  [备份] 警告信息:', stderr);
+    }
+    
+    console.log('✅ [备份] 备份完成');
+    
+    // 获取备份文件列表
+    const backupDir = path.join(scriptDir, 'backups');
+    const backups = [];
+    
+    if (fs.existsSync(backupDir)) {
+      // 查找所有备份文件
+      const files = fs.readdirSync(backupDir);
+      for (const file of files) {
+        if (file.startsWith('backup_') && (file.endsWith('.tar.gz') || fs.statSync(path.join(backupDir, file)).isDirectory())) {
+          const filePath = path.join(backupDir, file);
+          const stats = fs.statSync(filePath);
+          backups.push({
+            name: file,
+            size: stats.size,
+            created: stats.birthtime,
+            path: filePath
+          });
+        }
+      }
+      
+      // 按创建时间排序（最新的在前）
+      backups.sort((a, b) => b.created - a.created);
+    }
+    
+    res.json({
+      status: 'ok',
+      message: '备份创建成功',
+      backups: backups.slice(0, 10) // 只返回最近10个备份
+    });
+  } catch (error) {
+    console.error('❌ [备份] 备份失败:', error);
+    res.status(500).json({ error: '备份失败：' + error.message });
+  }
+});
+
+// 获取备份列表
+app.get('/api/backup/list', authMiddleware, async (req, res) => {
+  try {
+    const username = req.user.username;
+    
+    // 只有admin用户可以查看备份列表
+    if (username !== 'admin') {
+      return res.status(403).json({ error: '权限不足：仅管理员可查看备份列表' });
+    }
+    
+    const scriptDir = path.resolve(__dirname, '..');
+    const backupDir = path.join(scriptDir, 'backups');
+    const backups = [];
+    
+    if (fs.existsSync(backupDir)) {
+      const files = fs.readdirSync(backupDir);
+      for (const file of files) {
+        if (file.startsWith('backup_') && (file.endsWith('.tar.gz') || fs.statSync(path.join(backupDir, file)).isDirectory())) {
+          const filePath = path.join(backupDir, file);
+          const stats = fs.statSync(filePath);
+          backups.push({
+            name: file,
+            size: stats.size,
+            created: stats.birthtime,
+            path: filePath
+          });
+        }
+      }
+      
+      // 按创建时间排序（最新的在前）
+      backups.sort((a, b) => b.created - a.created);
+    }
+    
+    res.json({
+      status: 'ok',
+      backups: backups
+    });
+  } catch (error) {
+    console.error('❌ [备份] 获取备份列表失败:', error);
+    res.status(500).json({ error: '获取备份列表失败：' + error.message });
+  }
+});
+
+// 恢复数据备份
+app.post('/api/backup/restore', authMiddleware, async (req, res) => {
+  try {
+    const username = req.user.username;
+    const { backupName } = req.body;
+    
+    // 只有admin用户可以执行恢复
+    if (username !== 'admin') {
+      return res.status(403).json({ error: '权限不足：仅管理员可执行恢复操作' });
+    }
+    
+    if (!backupName) {
+      return res.status(400).json({ error: '请指定要恢复的备份文件名' });
+    }
+    
+    console.log(`📥 [恢复] 开始恢复备份: ${backupName}`);
+    
+    const scriptDir = path.resolve(__dirname, '..');
+    const backupDir = path.join(scriptDir, 'backups');
+    const backupPath = path.join(backupDir, backupName);
+    
+    // 检查备份文件是否存在
+    if (!fs.existsSync(backupPath)) {
+      return res.status(404).json({ error: '备份文件不存在' });
+    }
+    
+    // 执行恢复脚本（通过传入备份文件名）
+    const restoreScript = path.join(scriptDir, 'restore.sh');
+    
+    if (!fs.existsSync(restoreScript)) {
+      return res.status(500).json({ error: '恢复脚本不存在' });
+    }
+    
+    // 由于restore.sh是交互式的，我们需要创建一个非交互式版本
+    // 或者直接执行恢复操作
+    const isTarGz = backupName.endsWith('.tar.gz');
+    const tempDir = isTarGz ? path.join(scriptDir, 'temp_restore') : null;
+    
+    try {
+      // 如果是压缩文件，先解压
+      if (isTarGz) {
+        if (!fs.existsSync(tempDir)) {
+          fs.mkdirSync(tempDir, { recursive: true });
+        }
+        await execAsync(`tar -xzf "${backupPath}" -C "${tempDir}"`, {
+          cwd: scriptDir,
+          timeout: 300000
+        });
+        
+        const extractedDir = path.join(tempDir, backupName.replace('.tar.gz', ''));
+        
+        // 恢复配置文件
+        const configSource = path.join(extractedDir, 'config.json');
+        const configDest = path.join(scriptDir, 'backend', 'config.json');
+        if (fs.existsSync(configSource)) {
+          fs.copyFileSync(configSource, configDest);
+          console.log('✅ [恢复] 已恢复配置文件');
+        }
+        
+        // 恢复.env文件
+        const envSource = path.join(extractedDir, '.env');
+        const envDest = path.join(scriptDir, '.env');
+        if (fs.existsSync(envSource)) {
+          fs.copyFileSync(envSource, envDest);
+          console.log('✅ [恢复] 已恢复环境变量文件');
+        }
+        
+        // 恢复数据目录
+        const dataSource = path.join(extractedDir, 'data');
+        const dataDest = path.join(scriptDir, 'data');
+        if (fs.existsSync(dataSource)) {
+          // 备份现有数据
+          if (fs.existsSync(dataDest)) {
+            const backupDataPath = `${dataDest}.backup.${Date.now()}`;
+            fs.renameSync(dataDest, backupDataPath);
+            console.log(`✅ [恢复] 已备份现有数据到: ${backupDataPath}`);
+          }
+          // 复制恢复数据
+          await execAsync(`cp -r "${dataSource}" "${dataDest}"`, {
+            cwd: scriptDir,
+            timeout: 300000
+          });
+          console.log('✅ [恢复] 已恢复数据目录');
+        }
+        
+        // 清理临时目录
+        if (fs.existsSync(tempDir)) {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+      } else {
+        // 如果是目录
+        const configSource = path.join(backupPath, 'config.json');
+        const configDest = path.join(scriptDir, 'backend', 'config.json');
+        if (fs.existsSync(configSource)) {
+          fs.copyFileSync(configSource, configDest);
+          console.log('✅ [恢复] 已恢复配置文件');
+        }
+        
+        const envSource = path.join(backupPath, '.env');
+        const envDest = path.join(scriptDir, '.env');
+        if (fs.existsSync(envSource)) {
+          fs.copyFileSync(envSource, envDest);
+          console.log('✅ [恢复] 已恢复环境变量文件');
+        }
+        
+        const dataSource = path.join(backupPath, 'data');
+        const dataDest = path.join(scriptDir, 'data');
+        if (fs.existsSync(dataSource)) {
+          if (fs.existsSync(dataDest)) {
+            const backupDataPath = `${dataDest}.backup.${Date.now()}`;
+            fs.renameSync(dataDest, backupDataPath);
+            console.log(`✅ [恢复] 已备份现有数据到: ${backupDataPath}`);
+          }
+          await execAsync(`cp -r "${dataSource}" "${dataDest}"`, {
+            cwd: scriptDir,
+            timeout: 300000
+          });
+          console.log('✅ [恢复] 已恢复数据目录');
+        }
+      }
+      
+      console.log('✅ [恢复] 恢复完成');
+      
+      res.json({
+        status: 'ok',
+        message: '数据恢复成功，请重启服务以应用更改'
+      });
+    } catch (restoreError) {
+      // 清理临时目录
+      if (tempDir && fs.existsSync(tempDir)) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+      throw restoreError;
+    }
+  } catch (error) {
+    console.error('❌ [恢复] 恢复失败:', error);
+    res.status(500).json({ error: '恢复失败：' + error.message });
   }
 });
 
