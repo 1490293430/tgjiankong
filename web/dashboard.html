@@ -1636,14 +1636,63 @@
                     return;
                 }
                 
-                return await response.json();
+                // 处理5xx错误（服务器错误）
+                if (response.status >= 500) {
+                    const errorText = await response.text();
+                    console.error(`API Server Error (${response.status}):`, errorText);
+                    throw new Error(`服务器错误 (${response.status}): 后端服务可能未正常运行，请检查服务状态`);
+                }
+                
+                // 处理4xx错误（客户端错误）
+                if (response.status >= 400) {
+                    const errorText = await response.text();
+                    console.error(`API Client Error (${response.status}):`, errorText);
+                    // 尝试解析为JSON，如果失败则使用错误文本
+                    try {
+                        const errorJson = JSON.parse(errorText);
+                        throw new Error(errorJson.error || errorJson.message || `请求错误 (${response.status})`);
+                    } catch (parseError) {
+                        throw new Error(`请求错误 (${response.status}): ${errorText.substring(0, 100)}`);
+                    }
+                }
+                
+                // 尝试解析JSON响应
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('application/json')) {
+                    return await response.json();
+                } else {
+                    // 如果不是JSON，可能是HTML错误页面（如502错误）
+                    const text = await response.text();
+                    if (text.includes('<!DOCTYPE') || text.includes('<html')) {
+                        throw new Error(`服务器返回了HTML页面而不是JSON (${response.status})，后端服务可能未正常运行`);
+                    }
+                    // 尝试解析为JSON
+                    try {
+                        return JSON.parse(text);
+                    } catch (parseError) {
+                        throw new Error(`无法解析响应: ${text.substring(0, 100)}`);
+                    }
+                }
             } catch (error) {
                 // 如果是取消请求，直接抛出错误以便上层处理
                 if (error.name === 'AbortError') {
                     throw error;
                 }
+                
+                // 如果是网络错误或连接错误
+                if (error.message && (
+                    error.message.includes('Failed to fetch') ||
+                    error.message.includes('NetworkError') ||
+                    error.message.includes('网络') ||
+                    error.message.includes('连接')
+                )) {
+                    console.error('API Network Error:', error.message);
+                    throw new Error('无法连接到服务器，请检查网络连接或服务器状态');
+                }
+                
+                // 其他错误
                 console.error('API Error:', error);
-                return null;
+                throw error; // 抛出错误以便上层处理
             }
         }
         
@@ -1790,6 +1839,15 @@
             
             try {
                 const data = await apiRequest(`/logs?page=${recentLogsPage}&pageSize=${recentLogsPageSize}`);
+                
+                if (!data) {
+                    // API请求失败（可能是502等错误）
+                    if (reset) {
+                        container.innerHTML = '<div class="loading" style="color: #e74c3c;">⚠️ 无法连接到服务器，请检查后端服务状态</div>';
+                    }
+                    recentLogsLoading = false;
+                    return;
+                }
                 
                 if (data && data.logs && data.logs.length > 0) {
                     const isFirstPage = recentLogsPage === 1;
@@ -2267,12 +2325,25 @@
             if (keyword && keyword.trim() !== "") {
                 url += `&keyword=${encodeURIComponent(keyword)}`;
             }
-            const data = await apiRequest(url);
             
             const container = document.getElementById('logsTable');
             const pagination = document.getElementById('pagination');
             
-            if (data && data.logs && data.logs.length > 0) {
+            try {
+                const data = await apiRequest(url);
+                
+                if (!data) {
+                    // API请求失败（可能是502等错误）
+                    if (container) {
+                        container.innerHTML = '<div class="loading" style="color: #e74c3c; padding: 40px; text-align: center;">⚠️ 无法连接到服务器，请检查后端服务状态</div>';
+                    }
+                    if (pagination) {
+                        pagination.style.display = 'none';
+                    }
+                    return;
+                }
+                
+                if (data && data.logs && data.logs.length > 0) {
                 let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>发送者</th><th>关键词</th><th>消息内容</th></tr></thead><tbody>';
                 data.logs.forEach(log => {
                     const keywords = log.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('');
@@ -2302,6 +2373,15 @@
             } else {
                 container.innerHTML = '<p style="text-align: center; color: #999; padding: 40px;">暂无日志</p>';
                 pagination.style.display = 'none';
+            }
+            } catch (error) {
+                console.error('加载日志失败:', error);
+                if (container) {
+                    container.innerHTML = `<div class="loading" style="color: #e74c3c; padding: 40px; text-align: center;">⚠️ 加载失败：${error.message || '未知错误'}</div>`;
+                }
+                if (pagination) {
+                    pagination.style.display = 'none';
+                }
             }
         }
         
@@ -2582,8 +2662,18 @@
         
         // 加载 AI 统计信息
         async function loadAIStats() {
-            const stats = await apiRequest('/ai/stats');
-            if (stats) {
+            try {
+                const stats = await apiRequest('/ai/stats');
+                if (!stats) {
+                    // API请求失败
+                    document.getElementById('aiTotalAnalyses').textContent = '-';
+                    document.getElementById('aiTotalMessages').textContent = '-';
+                    document.getElementById('aiUnanalyzedMessages').textContent = '-';
+                    document.getElementById('aiModel').textContent = 'N/A';
+                    return;
+                }
+                
+                if (stats) {
                 document.getElementById('aiTotalAnalyses').textContent = stats.total_analyses || 0;
                 document.getElementById('aiTotalMessages').textContent = stats.total_messages_analyzed || 0;
                 document.getElementById('aiUnanalyzedMessages').textContent = stats.unanalyzed_messages || 0;
@@ -2650,8 +2740,20 @@
             if (sentiment) url += `&sentiment=${sentiment}`;
             if (riskLevel) url += `&riskLevel=${riskLevel}`;
             
-            const data = await apiRequest(url);
-            if (data) {
+            const list = document.getElementById('aiSummaryList');
+            
+            try {
+                const data = await apiRequest(url);
+                
+                if (!data) {
+                    // API请求失败
+                    if (list) {
+                        list.innerHTML = '<p style="text-align: center; color: #e74c3c; padding: 40px;">⚠️ 无法连接到服务器，请检查后端服务状态</p>';
+                    }
+                    return;
+                }
+                
+                if (data) {
                 const list = document.getElementById('aiSummaryList');
                 if (data.summaries && data.summaries.length > 0) {
                     list.innerHTML = data.summaries.map(summary => {
@@ -2794,6 +2896,12 @@
                 document.getElementById('aiPageInfo').textContent = `第 ${page} 页 / 共 ${data.totalPages || 1} 页`;
                 document.getElementById('aiPrevPage').disabled = page <= 1;
                 document.getElementById('aiNextPage').disabled = page >= (data.totalPages || 1);
+                }
+            } catch (error) {
+                console.error('加载AI分析结果失败:', error);
+                if (list) {
+                    list.innerHTML = `<p style="text-align: center; color: #e74c3c; padding: 40px;">⚠️ 加载失败：${error.message || '未知错误'}</p>`;
+                }
             }
         }
         
@@ -3233,8 +3341,17 @@
             
             if (!statusDiv || !loggedInDiv || !notLoggedInDiv) return;
             
-            // 防抖：如果正在检查中，且不是强制刷新，则取消之前的检查
+            // 如果正在检查中，且不是强制刷新，则等待当前检查完成
             if (telegramStatusCheckInProgress && !force) {
+                // 等待当前检查完成后再检查一次
+                const checkAgain = () => {
+                    if (!telegramStatusCheckInProgress) {
+                        checkTelegramLoginStatus(true);
+                    } else {
+                        setTimeout(checkAgain, 200);
+                    }
+                };
+                setTimeout(checkAgain, 200);
                 return;
             }
             
@@ -3242,14 +3359,6 @@
             if (telegramStatusCheckTimer) {
                 clearTimeout(telegramStatusCheckTimer);
                 telegramStatusCheckTimer = null;
-            }
-            
-            // 延迟执行，避免重复调用
-            if (!force) {
-                telegramStatusCheckTimer = setTimeout(() => {
-                    checkTelegramLoginStatus(true);
-                }, 100);
-                return;
             }
             
             telegramStatusCheckInProgress = true;
@@ -3263,33 +3372,41 @@
                 
                 const response = await apiRequest('/telegram/login/status');
                 
-                if (response.logged_in) {
-                    // 已登录
-                    loggedInDiv.style.display = 'block';
-                    notLoggedInDiv.style.display = 'none';
-                    statusDiv.style.display = 'none';
-                    
-                    if (response.user) {
-                        const userInfo = response.user;
-                        const userInfoText = `用户：${userInfo.first_name || '未知'}${userInfo.username ? ' (@' + userInfo.username + ')' : ''}`;
-                        const userInfoEl = document.getElementById('telegramUserInfo');
-                        if (userInfoEl) {
-                            userInfoEl.textContent = userInfoText;
+                // 确保响应有效
+                if (response && typeof response.logged_in === 'boolean') {
+                    if (response.logged_in) {
+                        // 已登录
+                        loggedInDiv.style.display = 'block';
+                        notLoggedInDiv.style.display = 'none';
+                        statusDiv.style.display = 'none';
+                        
+                        if (response.user) {
+                            const userInfo = response.user;
+                            const userInfoText = `用户：${userInfo.first_name || '未知'}${userInfo.username ? ' (@' + userInfo.username + ')' : ''}`;
+                            const userInfoEl = document.getElementById('telegramUserInfo');
+                            if (userInfoEl) {
+                                userInfoEl.textContent = userInfoText;
+                            }
                         }
+                    } else {
+                        // 未登录
+                        loggedInDiv.style.display = 'none';
+                        notLoggedInDiv.style.display = 'block';
+                        statusDiv.style.display = 'none';
                     }
                 } else {
-                    // 未登录
+                    // 响应格式异常，显示未登录状态
+                    console.warn('Telegram 登录状态响应格式异常:', response);
                     loggedInDiv.style.display = 'none';
                     notLoggedInDiv.style.display = 'block';
                     statusDiv.style.display = 'none';
                 }
             } catch (error) {
                 console.error('检查 Telegram 登录状态失败:', error);
-                // 显示错误信息，但不隐藏状态区域
-                statusDiv.style.display = 'block';
-                statusDiv.innerHTML = `<p style="color: #e74c3c; margin-bottom: 10px;">检查失败：${error.message || '未知错误'}</p>`;
+                // 出错时显示未登录状态，而不是错误信息
                 loggedInDiv.style.display = 'none';
-                notLoggedInDiv.style.display = 'none';
+                notLoggedInDiv.style.display = 'block';
+                statusDiv.style.display = 'none';
             } finally {
                 telegramStatusCheckInProgress = false;
             }
