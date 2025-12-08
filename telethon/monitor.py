@@ -626,18 +626,24 @@ async def message_handler(event, client):
 
         # alert keywords (first-match)
         alert_keyword = None
-        for keyword in (config.get("alert_keywords") or []):
+        alert_keywords_list = config.get("alert_keywords") or []
+        if alert_keywords_list:
+            logger.debug("🔍 [关键词检查] 告警关键词列表: %s", alert_keywords_list)
+        for keyword in alert_keywords_list:
             if keyword.lower() in text.lower():
                 alert_keyword = keyword
                 matched_keywords.append(keyword)
+                logger.info("🔔 [告警关键词匹配] 匹配到告警关键词: %s", keyword)
                 break
 
         # compiled regex (precompiled at config load)
-        if not alert_keyword:
+        if not alert_keyword and COMPILED_ALERT_REGEX:
+            logger.debug("🔍 [关键词检查] 检查告警正则表达式 (%d 个)", len(COMPILED_ALERT_REGEX))
             for pattern in COMPILED_ALERT_REGEX:
                 if pattern.search(text):
                     alert_keyword = pattern.pattern
                     matched_keywords.append(f"regex:{pattern.pattern}")
+                    logger.info("🔔 [告警正则匹配] 匹配到告警正则: %s", pattern.pattern)
                     break
 
         # save log if needed (async)

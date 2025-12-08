@@ -1019,10 +1019,33 @@ app.post('/api/config', authMiddleware, async (req, res) => {
       ...incoming
     };
     
-    // 保存到数据库
+    // 添加详细日志，检查告警关键词是否正确接收
     console.log(`💾 [配置保存] 准备保存配置到数据库 (userId: ${userId})`);
+    console.log(`📋 [配置保存] 接收到的配置字段:`, Object.keys(updateData).join(', '));
+    if (updateData.alert_keywords !== undefined) {
+      console.log(`📋 [配置保存] alert_keywords 值:`, JSON.stringify(updateData.alert_keywords));
+      console.log(`📋 [配置保存] alert_keywords 类型:`, typeof updateData.alert_keywords, Array.isArray(updateData.alert_keywords) ? '(数组)' : '(非数组)');
+      console.log(`📋 [配置保存] alert_keywords 长度:`, Array.isArray(updateData.alert_keywords) ? updateData.alert_keywords.length : 'N/A');
+    } else {
+      console.log(`⚠️  [配置保存] alert_keywords 字段未接收到！`);
+    }
+    if (updateData.keywords !== undefined) {
+      console.log(`📋 [配置保存] keywords 值:`, JSON.stringify(updateData.keywords));
+      console.log(`📋 [配置保存] keywords 长度:`, Array.isArray(updateData.keywords) ? updateData.keywords.length : 'N/A');
+    }
+    
+    // 保存到数据库
     await saveUserConfig(userId, updateData);
     console.log(`✅ [配置保存] 配置已保存到数据库`);
+    
+    // 验证保存后的配置
+    try {
+      const savedConfig = await loadUserConfig(userId);
+      const savedObj = savedConfig.toObject ? savedConfig.toObject() : savedConfig;
+      console.log(`✅ [配置保存] 验证保存结果 - alert_keywords:`, JSON.stringify(savedObj.alert_keywords || []), `(${(savedObj.alert_keywords || []).length} 个)`);
+    } catch (verifyError) {
+      console.error(`❌ [配置保存] 验证保存结果失败:`, verifyError.message);
+    }
     
     // 同步配置到全局配置文件（用于Telethon服务读取）
     try {
@@ -3140,14 +3163,33 @@ async function syncUserConfigAndRestartTelethon(userId) {
       const userConfig = await loadUserConfig(userId.toString());
       if (userConfig) {
         const configObj = userConfig.toObject ? userConfig.toObject() : userConfig;
+        
+        // 添加详细日志
+        console.log(`🔍 [配置同步] 从数据库读取配置 - alert_keywords:`, JSON.stringify(configObj.alert_keywords || []));
+        console.log(`🔍 [配置同步] alert_keywords 类型:`, typeof configObj.alert_keywords, Array.isArray(configObj.alert_keywords) ? '(数组)' : '(非数组)');
+        
+        // 确保 alert_keywords 是数组
+        let alertKeywordsArray = [];
+        if (Array.isArray(configObj.alert_keywords)) {
+          alertKeywordsArray = configObj.alert_keywords;
+        } else if (typeof configObj.alert_keywords === 'string') {
+          // 如果是字符串，尝试按换行符分割
+          alertKeywordsArray = configObj.alert_keywords.split('\n').map(k => k.trim()).filter(k => k);
+        } else if (configObj.alert_keywords) {
+          // 其他类型，尝试转换为数组
+          alertKeywordsArray = [configObj.alert_keywords].filter(k => k);
+        }
+        
         const configToSync = {
-          keywords: configObj.keywords || [],
-          channels: configObj.channels || [],
-          alert_keywords: configObj.alert_keywords || [],
-          alert_regex: configObj.alert_regex || [],
+          keywords: Array.isArray(configObj.keywords) ? configObj.keywords : (configObj.keywords || []),
+          channels: Array.isArray(configObj.channels) ? configObj.channels : (configObj.channels || []),
+          alert_keywords: alertKeywordsArray,
+          alert_regex: Array.isArray(configObj.alert_regex) ? configObj.alert_regex : (configObj.alert_regex || []),
           log_all_messages: configObj.log_all_messages || false,
           alert_target: configObj.alert_target || ''
         };
+        
+        console.log(`🔍 [配置同步] 准备同步的配置 - alert_keywords:`, JSON.stringify(configToSync.alert_keywords), `(${configToSync.alert_keywords.length} 个)`);
         
         // 同步 alert_actions 配置（Telethon服务不需要，但后端API需要从数据库读取）
         // 这里只是记录日志，实际使用时从数据库读取
@@ -3184,8 +3226,25 @@ async function syncUserConfigAndRestartTelethon(userId) {
         
         // 更新全局配置，保留其他字段（如 alert_actions 等）
         Object.assign(globalConfig, configToSync);
+        
+        // 写入配置文件前再次验证
+        console.log(`📝 [配置同步] 准备写入配置文件 - alert_keywords:`, JSON.stringify(configToSync.alert_keywords));
         fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
-        console.log(`✅ [配置同步] 已同步用户配置到全局配置文件 (userId: ${userId}, alert_target: ${configToSync.alert_target || '未设置'}, alert_keywords: ${configToSync.alert_keywords?.length || 0})`);
+        
+        // 验证写入后的配置文件
+        try {
+          const verifyConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+          console.log(`✅ [配置同步] 配置文件已写入并验证 - alert_keywords:`, JSON.stringify(verifyConfig.alert_keywords || []), `(${(verifyConfig.alert_keywords || []).length} 个)`);
+        } catch (verifyError) {
+          console.error(`❌ [配置同步] 验证配置文件失败:`, verifyError.message);
+        }
+        
+        console.log(`✅ [配置同步] 已同步用户配置到全局配置文件 (userId: ${userId})`);
+        console.log(`   - alert_target: ${configToSync.alert_target || '未设置'}`);
+        console.log(`   - keywords: ${configToSync.keywords?.length || 0} 个`);
+        console.log(`   - alert_keywords: ${configToSync.alert_keywords?.length || 0} 个 ${configToSync.alert_keywords?.length > 0 ? `(${configToSync.alert_keywords.join(', ')})` : ''}`);
+        console.log(`   - alert_regex: ${configToSync.alert_regex?.length || 0} 个`);
+        console.log(`   - channels: ${configToSync.channels?.length || 0} 个`);
       }
     
     // 重启 Telethon 服务以应用新配置
