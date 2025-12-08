@@ -58,13 +58,24 @@ class AIAnalysisService {
       console.log(`🔄 AI 分析请求 (消息数: ${messageCount}, 超时: ${timeout/1000}秒, 重试: ${retryCount}/${maxRetries}, 提示词: ${promptToUse ? `"${promptToUse.substring(0, 30)}..."` : '(空)'})`);
 
       // 构建用户消息内容
+      // 定义严格的JSON格式要求
+      const jsonFormatExample = `{
+  "sentiment": "neutral",
+  "sentiment_score": 0.0,
+  "categories": ["分类1", "分类2"],
+  "summary": "消息摘要内容",
+  "keywords": ["关键词1", "关键词2"],
+  "topics": ["话题1", "话题2"],
+  "risk_level": "low"
+}`;
+      
       let userContent = '';
       if (promptToUse && promptToUse.trim()) {
-        // 如果有提示词，使用提示词格式
-        userContent = `${promptToUse}\n\n消息内容：\n${messageTexts}\n\n请返回 JSON 格式，包含以下字段：\n- sentiment: 整体情感（positive/neutral/negative）\n- sentiment_score: 情感分数（-1到1之间）\n- categories: 主要内容分类（数组）\n- summary: 消息摘要（不超过200字）\n- keywords: 关键词列表（数组，最多10个）\n- topics: 主要话题（数组）\n- risk_level: 风险等级（low/medium/high）`;
+        // 如果有提示词，使用提示词格式，但强调JSON格式要求
+        userContent = `${promptToUse}\n\n消息内容：\n${messageTexts}\n\n重要：你必须只返回一个有效的JSON对象，不要包含任何其他文本、解释或代码块标记。JSON格式如下：\n${jsonFormatExample}\n\n字段说明：\n- sentiment: 整体情感，必须是 "positive"、"neutral" 或 "negative" 之一\n- sentiment_score: 情感分数，-1到1之间的数字\n- categories: 主要内容分类，字符串数组\n- summary: 消息摘要，不超过200字的中文文本\n- keywords: 关键词列表，字符串数组，最多10个\n- topics: 主要话题，字符串数组\n- risk_level: 风险等级，必须是 "low"、"medium" 或 "high" 之一\n\n请严格按照上述格式返回JSON，不要添加任何其他内容。`;
       } else {
-        // 如果提示词为空，只发送消息内容和JSON格式要求
-        userContent = `消息内容：\n${messageTexts}\n\n请返回 JSON 格式，包含以下字段：\n- sentiment: 整体情感（positive/neutral/negative）\n- sentiment_score: 情感分数（-1到1之间）\n- categories: 主要内容分类（数组）\n- summary: 消息摘要（不超过200字）\n- keywords: 关键词列表（数组，最多10个）\n- topics: 主要话题（数组）\n- risk_level: 风险等级（low/medium/high）`;
+        // 如果提示词为空，只发送消息内容和严格的JSON格式要求
+        userContent = `请分析以下消息内容，并返回JSON格式的分析结果。\n\n消息内容：\n${messageTexts}\n\n重要：你必须只返回一个有效的JSON对象，不要包含任何其他文本、解释或代码块标记。JSON格式如下：\n${jsonFormatExample}\n\n字段说明：\n- sentiment: 整体情感，必须是 "positive"、"neutral" 或 "negative" 之一\n- sentiment_score: 情感分数，-1到1之间的数字\n- categories: 主要内容分类，字符串数组\n- summary: 消息摘要，不超过200字的中文文本\n- keywords: 关键词列表，字符串数组，最多10个\n- topics: 主要话题，字符串数组\n- risk_level: 风险等级，必须是 "low"、"medium" 或 "high" 之一\n\n请严格按照上述格式返回JSON，不要添加任何其他内容。`;
       }
 
       // 调用 OpenAI API
@@ -75,14 +86,14 @@ class AIAnalysisService {
           messages: [
             {
               role: 'system',
-              content: '你是一个专业的消息分析助手，擅长分析 Telegram 群组消息的情感、内容和趋势。请用简洁的中文回复。'
+              content: '你是一个专业的消息分析助手。你的任务是根据用户提供的消息内容，分析并返回一个有效的JSON对象。你必须严格遵守JSON格式要求，只返回JSON对象，不要包含任何其他文本、解释、代码块标记或换行符。如果消息内容为空或无法分析，也要返回一个有效的JSON对象，使用默认值。'
             },
             {
               role: 'user',
               content: userContent
             }
           ],
-          temperature: 0.7,
+          temperature: 0.3, // 降低温度以提高JSON格式的一致性
           max_tokens: 1000
         },
         {
@@ -100,18 +111,32 @@ class AIAnalysisService {
       // 尝试解析 JSON
       let analysisResult;
       try {
-        // 清理可能的代码块标记
-        let cleanContent = content.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim();
+        // 清理可能的代码块标记和多余空白
+        let cleanContent = content
+          .replace(/```json\n?/gi, '')  // 移除 ```json
+          .replace(/```\n?/g, '')       // 移除 ```
+          .replace(/^[\s\n]*/, '')      // 移除开头的空白和换行
+          .replace(/[\s\n]*$/, '')      // 移除结尾的空白和换行
+          .trim();
         
         // 尝试提取JSON对象（处理可能的额外文本）
+        // 使用更精确的正则，匹配完整的JSON对象
         const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           cleanContent = jsonMatch[0];
         }
         
+        // 如果还是没有找到JSON，尝试查找第一个 { 到最后一个 } 之间的内容
+        const firstBrace = cleanContent.indexOf('{');
+        const lastBrace = cleanContent.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          cleanContent = cleanContent.substring(firstBrace, lastBrace + 1);
+        }
+        
         console.log(`🔍 [AI解析] 原始内容长度: ${content.length}, 清理后长度: ${cleanContent.length}`);
         console.log(`🔍 [AI解析] 清理后的内容前500字符: ${cleanContent.substring(0, 500)}`);
         
+        // 尝试解析JSON
         analysisResult = JSON.parse(cleanContent);
         
         console.log(`✅ [AI解析] JSON解析成功，字段: ${Object.keys(analysisResult).join(', ')}`);
@@ -186,35 +211,71 @@ class AIAnalysisService {
         console.error(`❌ [AI解析] 原始内容前1000字符: ${content.substring(0, 1000)}`);
         
         // 尝试从文本中提取结构化信息
-        let extractedSummary = content.length > 0 ? content.substring(0, 200).replace(/\n/g, ' ').trim() : '无法解析AI返回内容';
+        let extractedSummary = '';
         let extractedSentiment = 'neutral';
         let extractedRisk = 'low';
         let extractedKeywords = [];
+        let extractedCategories = ['未分类'];
+        
+        // 如果内容不为空，尝试提取摘要
+        if (content && content.trim().length > 0) {
+          // 尝试提取摘要（优先查找summary字段）
+          const summaryMatch = content.match(/summary[：:]\s*([^\n]+)/i) || 
+                              content.match(/摘要[：:]\s*([^\n]+)/i) ||
+                              content.match(/内容[：:]\s*([^\n]+)/i);
+          
+          if (summaryMatch && summaryMatch[1].trim().length > 0) {
+            extractedSummary = summaryMatch[1].trim().substring(0, 200);
+          } else {
+            // 如果没有找到明确的摘要字段，提取前200字符作为摘要
+            extractedSummary = content.replace(/\n+/g, ' ').trim().substring(0, 200);
+          }
+          
+          // 如果提取的摘要为空或太短，使用更长的内容
+          if (extractedSummary.length < 20) {
+            extractedSummary = content.replace(/\n+/g, ' ').trim().substring(0, 300);
+          }
+        }
+        
+        // 如果还是没有摘要，使用默认值
+        if (!extractedSummary || extractedSummary.trim().length === 0) {
+          extractedSummary = 'AI返回了内容，但格式无法解析。原始内容已保存。';
+        }
         
         // 尝试从文本中提取情感和风险信息
         const contentLower = content.toLowerCase();
-        if (contentLower.includes('积极') || contentLower.includes('positive') || contentLower.includes('正面')) {
+        if (contentLower.includes('积极') || contentLower.includes('positive') || contentLower.includes('正面') || contentLower.includes('乐观')) {
           extractedSentiment = 'positive';
-        } else if (contentLower.includes('消极') || contentLower.includes('negative') || contentLower.includes('负面')) {
+        } else if (contentLower.includes('消极') || contentLower.includes('negative') || contentLower.includes('负面') || contentLower.includes('悲观')) {
           extractedSentiment = 'negative';
         }
         
-        if (contentLower.includes('高风险') || contentLower.includes('high risk')) {
+        if (contentLower.includes('高风险') || contentLower.includes('high risk') || contentLower.includes('危险')) {
           extractedRisk = 'high';
         } else if (contentLower.includes('中风险') || contentLower.includes('medium risk') || contentLower.includes('中等风险')) {
           extractedRisk = 'medium';
         }
         
         // 尝试提取关键词（从原始内容中）
-        const keywordMatch = content.match(/关键词[：:]\s*([^\n]+)/i) || content.match(/keywords[：:]\s*([^\n]+)/i);
+        const keywordMatch = content.match(/关键词[：:]\s*([^\n]+)/i) || 
+                            content.match(/keywords[：:]\s*([^\n]+)/i) ||
+                            content.match(/key\s*words[：:]\s*([^\n]+)/i);
         if (keywordMatch) {
-          extractedKeywords = keywordMatch[1].split(/[，,、]/).map(k => k.trim()).filter(k => k);
+          extractedKeywords = keywordMatch[1].split(/[，,、;；\s]+/).map(k => k.trim()).filter(k => k && k.length > 0);
+        }
+        
+        // 尝试提取分类
+        const categoryMatch = content.match(/分类[：:]\s*([^\n]+)/i) || 
+                             content.match(/categories[：:]\s*([^\n]+)/i) ||
+                             content.match(/category[：:]\s*([^\n]+)/i);
+        if (categoryMatch) {
+          extractedCategories = categoryMatch[1].split(/[，,、;；\s]+/).map(c => c.trim()).filter(c => c && c.length > 0);
         }
         
         analysisResult = {
           sentiment: extractedSentiment,
           sentiment_score: 0,
-          categories: ['未分类'],
+          categories: extractedCategories.length > 0 ? extractedCategories : ['未分类'],
           summary: extractedSummary,
           keywords: extractedKeywords,
           topics: [],
@@ -223,7 +284,7 @@ class AIAnalysisService {
           parse_error: parseError.message
         };
         
-        console.warn(`⚠️  [AI解析] 使用降级解析 - sentiment: ${extractedSentiment}, risk_level: ${extractedRisk}, summary: ${extractedSummary.substring(0, 50)}...`);
+        console.warn(`⚠️  [AI解析] 使用降级解析 - sentiment: ${extractedSentiment}, risk_level: ${extractedRisk}, summary长度: ${extractedSummary.length}`);
       }
 
       return {

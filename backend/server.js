@@ -2308,21 +2308,125 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
     console.log('📦 [备份] 开始创建数据备份...');
     
     const scriptDir = path.resolve(__dirname, '..');
-    const backupScript = path.join(scriptDir, 'backup.sh');
+    const backupDir = path.join(scriptDir, 'backups');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19).replace('T', '_');
+    const backupName = `backup_${timestamp}`;
+    const backupPath = path.join(backupDir, backupName);
     
-    // 检查备份脚本是否存在
-    if (!fs.existsSync(backupScript)) {
-      return res.status(500).json({ error: '备份脚本不存在' });
+    // 创建备份目录
+    if (!fs.existsSync(backupDir)) {
+      fs.mkdirSync(backupDir, { recursive: true });
     }
     
-    // 执行备份脚本
-    const { stdout, stderr } = await execAsync(`bash "${backupScript}"`, {
-      cwd: scriptDir,
-      timeout: 300000 // 5分钟超时
-    });
+    // 创建备份子目录
+    fs.mkdirSync(backupPath, { recursive: true });
     
-    if (stderr && !stderr.includes('✅')) {
-      console.warn('⚠️  [备份] 警告信息:', stderr);
+    // 备份配置文件
+    const configPath = path.join(scriptDir, 'backend', 'config.json');
+    if (fs.existsSync(configPath)) {
+      fs.copyFileSync(configPath, path.join(backupPath, 'config.json'));
+      console.log('✅ [备份] 已备份配置文件: backend/config.json');
+    } else {
+      console.warn('⚠️  [备份] 配置文件不存在: backend/config.json');
+    }
+    
+    // 备份 .env 文件
+    const envPath = path.join(scriptDir, '.env');
+    if (fs.existsSync(envPath)) {
+      fs.copyFileSync(envPath, path.join(backupPath, '.env'));
+      console.log('✅ [备份] 已备份环境变量: .env');
+    }
+    
+    // 备份数据目录
+    const dataPath = path.join(scriptDir, 'data');
+    if (fs.existsSync(dataPath)) {
+      const dataFiles = fs.readdirSync(dataPath);
+      if (dataFiles.length > 0) {
+        const backupDataPath = path.join(backupPath, 'data');
+        fs.mkdirSync(backupDataPath, { recursive: true });
+        
+        // 复制数据目录内容
+        for (const item of dataFiles) {
+          const sourcePath = path.join(dataPath, item);
+          const destPath = path.join(backupDataPath, item);
+          const stat = fs.statSync(sourcePath);
+          
+          if (stat.isDirectory()) {
+            // 递归复制目录
+            const copyDir = (src, dest) => {
+              fs.mkdirSync(dest, { recursive: true });
+              const entries = fs.readdirSync(src);
+              for (const entry of entries) {
+                const srcPath = path.join(src, entry);
+                const destPath = path.join(dest, entry);
+                const entryStat = fs.statSync(srcPath);
+                if (entryStat.isDirectory()) {
+                  copyDir(srcPath, destPath);
+                } else {
+                  fs.copyFileSync(srcPath, destPath);
+                }
+              }
+            };
+            copyDir(sourcePath, destPath);
+          } else {
+            fs.copyFileSync(sourcePath, destPath);
+          }
+        }
+        console.log('✅ [备份] 已备份数据目录: data/');
+      } else {
+        console.warn('⚠️  [备份] 数据目录为空');
+      }
+    } else {
+      console.warn('⚠️  [备份] 数据目录不存在: data/');
+    }
+    
+    // 创建备份信息文件
+    const backupInfoPath = path.join(backupPath, 'backup_info.txt');
+    const backupInfo = `备份时间: ${new Date().toLocaleString('zh-CN')}
+备份路径: ${backupPath}
+备份内容:
+- 配置文件 (backend/config.json)
+- 环境变量 (.env)
+- 数据目录 (data/)
+`;
+    fs.writeFileSync(backupInfoPath, backupInfo);
+    
+    // 压缩备份（使用系统 tar 命令）
+    try {
+      const tarPath = `${backupPath}.tar.gz`;
+      await execAsync(`tar -czf "${tarPath}" -C "${backupDir}" "${backupName}"`, {
+        timeout: 300000
+      });
+      
+      // 删除未压缩的目录
+      if (fs.existsSync(backupPath)) {
+        fs.rmSync(backupPath, { recursive: true, force: true });
+      }
+      console.log(`✅ [备份] 备份已压缩: ${tarPath}`);
+    } catch (tarError) {
+      console.warn('⚠️  [备份] 压缩失败，保留未压缩目录:', tarError.message);
+      // 如果压缩失败，至少备份目录已经创建
+    }
+    
+    // 清理旧备份（保留最近10个）
+    console.log('🧹 [备份] 清理旧备份（保留最近10个）...');
+    const allBackups = [];
+    if (fs.existsSync(backupDir)) {
+      const files = fs.readdirSync(backupDir);
+      for (const file of files) {
+        if (file.startsWith('backup_')) {
+          const filePath = path.join(backupDir, file);
+          const stats = fs.statSync(filePath);
+          allBackups.push({ name: file, path: filePath, created: stats.birthtime });
+        }
+      }
+      // 按创建时间排序（最新的在前）
+      allBackups.sort((a, b) => b.created - a.created);
+      // 删除超过10个的旧备份
+      for (let i = 10; i < allBackups.length; i++) {
+        fs.rmSync(allBackups[i].path, { recursive: true, force: true });
+        console.log(`🗑️  [备份] 已删除旧备份: ${allBackups[i].name}`);
+      }
     }
     
     console.log('✅ [备份] 备份完成');
