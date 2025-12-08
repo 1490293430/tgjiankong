@@ -635,7 +635,7 @@
             
             <div class="card">
                 <h2>最近日志</h2>
-                <div id="recentLogs" class="loading">加载中...</div>
+                <div id="recentLogs" class="loading" style="max-height: 600px; overflow-y: auto; position: relative;">加载中...</div>
             </div>
         </div>
         
@@ -1395,7 +1395,7 @@
                 const activeTab = document.querySelector('.tab-content.active')?.id;
                 if (activeTab === 'dashboard') {
                     loadStats();
-                    loadRecentLogs();
+                    loadRecentLogs(true); // 重置并加载
                 } else if (activeTab === 'ai') {
                     loadAIStats();
                     loadAISummaries();
@@ -1454,7 +1454,7 @@
                     // 有新消息，更新相关页面（已过滤userId）
                     if (activeTab === 'dashboard') {
                         loadStats();
-                        loadRecentLogs();
+                        loadRecentLogs(true); // 重置并加载
                     } else if (activeTab === 'logs') {
                         loadLogs();
                     }
@@ -1615,7 +1615,7 @@
             
             if (tabName === 'dashboard') {
                 loadStats();
-                loadRecentLogs();
+                loadRecentLogs(true); // 重置并加载（会自动设置滚动监听）
             } else if (tabName === 'config') {
                 loadConfig();
                 // loadConfig 内部会调用 checkTelegramLoginStatus，这里不需要重复调用
@@ -1699,37 +1699,155 @@
             };
         }
         
-        // 加载最近日志
-        async function loadRecentLogs() {
-            const data = await apiRequest('/logs?page=1&pageSize=10');
-            const container = document.getElementById('recentLogs');
+        // 最近日志滚动加载相关变量
+        let recentLogsPage = 1;
+        let recentLogsLoading = false;
+        let recentLogsHasMore = true;
+        let recentLogsScrollSetup = false; // 标记是否已设置滚动监听
+        const recentLogsPageSize = 30; // 每页加载30条
+        
+        // 加载最近日志（支持分页和无限滚动）
+        async function loadRecentLogs(reset = false) {
+            if (recentLogsLoading) return; // 防止重复加载
+            if (!recentLogsHasMore && !reset) return; // 没有更多数据且不是重置
             
-            if (data && data.logs && data.logs.length > 0) {
-                let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>ID</th><th>关键词</th><th>消息</th></tr></thead><tbody>';
-                data.logs.forEach(log => {
-                    const keywords = log.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('');
-                    const info = parseChannelInfo(log.channel, log.channelId, log.sender);
-                    
-                    // 统一处理：频道栏显示名字，ID栏显示用户名和ID（双排）
-                    const channelCell = info.displayName;
-                    const idCell = `<div style="line-height: 1.4;">
-                        <div style="font-size: 12px; color: #666;">${info.userName}</div>
-                        <div style="font-size: 11px; color: #999; margin-top: 2px;">${info.id}</div>
-                    </div>`;
-                    
-                    html += `<tr>
-                        <td style="white-space: nowrap;">${new Date(log.time).toLocaleString('zh-CN')}</td>
-                        <td>${channelCell}</td>
-                        <td>${idCell}</td>
-                        <td>${keywords}</td>
-                        <td>${log.message.substring(0, 100)}${log.message.length > 100 ? '...' : ''}</td>
-                    </tr>`;
-                });
-                html += '</tbody></table>';
-                container.innerHTML = html;
-            } else {
-                container.innerHTML = '<p style="text-align: center; color: #999;">暂无日志</p>';
+            const container = document.getElementById('recentLogs');
+            if (!container) return;
+            
+            if (reset) {
+                recentLogsPage = 1;
+                recentLogsHasMore = true;
+                container.innerHTML = '<div class="loading">加载中...</div>';
+                
+                // 确保滚动监听已设置（只设置一次）
+                if (!recentLogsScrollSetup) {
+                    setupRecentLogsScroll();
+                    recentLogsScrollSetup = true;
+                }
             }
+            
+            recentLogsLoading = true;
+            
+            try {
+                const data = await apiRequest(`/logs?page=${recentLogsPage}&pageSize=${recentLogsPageSize}`);
+                
+                if (data && data.logs && data.logs.length > 0) {
+                    const isFirstPage = recentLogsPage === 1;
+                    
+                    if (isFirstPage) {
+                        // 第一页：创建新表格
+                        let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>ID</th><th>关键词</th><th>消息</th></tr></thead><tbody>';
+                        
+                        data.logs.forEach(log => {
+                            const keywords = log.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('');
+                            const info = parseChannelInfo(log.channel, log.channelId, log.sender);
+                            
+                            const channelCell = info.displayName;
+                            const idCell = `<div style="line-height: 1.4;">
+                                <div style="font-size: 12px; color: #666;">${info.userName}</div>
+                                <div style="font-size: 11px; color: #999; margin-top: 2px;">${info.id}</div>
+                            </div>`;
+                            
+                            html += `<tr>
+                                <td style="white-space: nowrap;">${new Date(log.time).toLocaleString('zh-CN')}</td>
+                                <td>${channelCell}</td>
+                                <td>${idCell}</td>
+                                <td>${keywords}</td>
+                                <td>${log.message.substring(0, 100)}${log.message.length > 100 ? '...' : ''}</td>
+                            </tr>`;
+                        });
+                        
+                        html += '</tbody></table>';
+                        container.innerHTML = html;
+                    } else {
+                        // 追加模式：追加到现有表格
+                        const existingTable = container.querySelector('table');
+                        if (existingTable) {
+                            const tbody = existingTable.querySelector('tbody');
+                            if (tbody) {
+                                data.logs.forEach(log => {
+                                    const keywords = log.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('');
+                                    const info = parseChannelInfo(log.channel, log.channelId, log.sender);
+                                    
+                                    const channelCell = info.displayName;
+                                    const idCell = `<div style="line-height: 1.4;">
+                                        <div style="font-size: 12px; color: #666;">${info.userName}</div>
+                                        <div style="font-size: 11px; color: #999; margin-top: 2px;">${info.id}</div>
+                                    </div>`;
+                                    
+                                    const row = document.createElement('tr');
+                                    row.innerHTML = `
+                                        <td style="white-space: nowrap;">${new Date(log.time).toLocaleString('zh-CN')}</td>
+                                        <td>${channelCell}</td>
+                                        <td>${idCell}</td>
+                                        <td>${keywords}</td>
+                                        <td>${log.message.substring(0, 100)}${log.message.length > 100 ? '...' : ''}</td>
+                                    `;
+                                    tbody.appendChild(row);
+                                });
+                            }
+                        }
+                    }
+                    
+                    // 检查是否还有更多数据
+                    recentLogsHasMore = data.logs.length >= recentLogsPageSize && (data.total || 0) > recentLogsPage * recentLogsPageSize;
+                    
+                    if (recentLogsHasMore) {
+                        recentLogsPage++;
+                    }
+                } else {
+                    if (recentLogsPage === 1) {
+                        container.innerHTML = '<p style="text-align: center; color: #999;">暂无日志</p>';
+                    }
+                    recentLogsHasMore = false;
+                }
+                
+                // 移除加载提示
+                const loadingIndicator = container.querySelector('.loading-more');
+                if (loadingIndicator) {
+                    loadingIndicator.remove();
+                }
+            } catch (error) {
+                console.error('加载最近日志失败:', error);
+                if (recentLogsPage === 1) {
+                    container.innerHTML = '<p style="text-align: center; color: #e74c3c;">加载失败：' + (error.message || '未知错误') + '</p>';
+                }
+            } finally {
+                recentLogsLoading = false;
+            }
+        }
+        
+        // 设置最近日志区域的滚动监听（无限滚动）
+        function setupRecentLogsScroll() {
+            const container = document.getElementById('recentLogs');
+            if (!container || recentLogsScrollSetup) return;
+            
+            // 使用防抖来避免频繁触发
+            let scrollTimeout;
+            container.addEventListener('scroll', function() {
+                clearTimeout(scrollTimeout);
+                scrollTimeout = setTimeout(() => {
+                    // 检查是否滚动到底部（距离底部50px以内）
+                    const scrollTop = container.scrollTop;
+                    const scrollHeight = container.scrollHeight;
+                    const clientHeight = container.clientHeight;
+                    
+                    if (scrollHeight - scrollTop - clientHeight < 50 && recentLogsHasMore && !recentLogsLoading) {
+                        // 显示加载提示
+                        let loadingDiv = container.querySelector('.loading-more');
+                        if (!loadingDiv) {
+                            loadingDiv = document.createElement('div');
+                            loadingDiv.className = 'loading-more';
+                            loadingDiv.style.cssText = 'text-align: center; padding: 10px; color: #999;';
+                            loadingDiv.textContent = '加载更多...';
+                            container.appendChild(loadingDiv);
+                        }
+                        
+                        // 加载更多数据
+                        loadRecentLogs(false);
+                    }
+                }, 200);
+            });
         }
         
         // 加载配置
@@ -2185,7 +2303,7 @@
                 // 强制重新加载当前标签页的所有数据
                 if (activeTab === 'dashboard') {
                     await loadStats();
-                    await loadRecentLogs();
+                    await loadRecentLogs(true); // 重置并加载
                 } else if (activeTab === 'config') {
                     await loadConfig();
                     // loadConfig 内部会调用 checkTelegramLoginStatus，这里不需要重复调用
@@ -2460,7 +2578,7 @@
         
         // 清除所有AI分析结果
         async function clearAIAnalysis() {
-            if (!confirm('⚠️ 确定要清除所有AI分析结果吗？\n\n此操作将：\n- 删除所有AI分析摘要\n- 重置所有消息的AI分析标记\n- 此操作不可恢复！')) {
+            if (!confirm('⚠️ 确定要清除所有AI分析结果吗？\n\n此操作将：\n- 删除所有AI分析摘要\n- 仅重置已分析消息的标记（不影响未分析的消息）\n- 此操作不可恢复！')) {
                 return;
             }
             
@@ -2470,7 +2588,11 @@
                 });
                 
                 if (result) {
-                    alert(`✅ 清除成功！\n\n已删除 ${result.deletedSummaries || 0} 条分析结果\n已重置 ${result.resetLogs || 0} 条消息的分析标记`);
+                    let message = `✅ 清除成功！\n\n已删除 ${result.deletedSummaries || 0} 条分析结果\n已重置 ${result.resetLogs || 0} 条已分析消息的标记`;
+                    if (result.remainingSummaries > 0 || result.stillAnalyzedLogs > 0) {
+                        message += `\n\n⚠️ 警告：仍有残留数据\n- 剩余分析结果: ${result.remainingSummaries}\n- 仍有已分析消息: ${result.stillAnalyzedLogs}`;
+                    }
+                    alert(message);
                     
                     // 刷新所有相关数据
                     loadAISummaries(1);
@@ -2703,7 +2825,7 @@
                         const activeTab = document.querySelector('.tab-content.active')?.id || localStorage.getItem('currentTab') || 'dashboard';
                         if (activeTab === 'dashboard') {
                             loadStats();
-                            loadRecentLogs();
+                            loadRecentLogs(true); // 重置并加载
                         } else if (activeTab === 'config') {
                             loadConfig();
                             // loadConfig 内部会调用 checkTelegramLoginStatus，这里不需要重复调用
@@ -2806,7 +2928,7 @@
         setTimeout(() => {
             if (savedTab === 'dashboard') {
                 loadStats();
-                loadRecentLogs();
+                loadRecentLogs(true); // 重置并加载
             } else if (savedTab === 'config') {
                 loadConfig();
             } else if (savedTab === 'ai') {

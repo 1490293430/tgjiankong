@@ -947,10 +947,14 @@ app.post('/api/config', authMiddleware, async (req, res) => {
         ...existingAI,
         ...incoming.ai_analysis,
         // ✅ 如果前端没有发送 API Key（因为我们不返回），则保留原有值
-        openai_api_key: incoming.ai_analysis.openai_api_key || existingAI.openai_api_key || ''
+        openai_api_key: incoming.ai_analysis.openai_api_key || existingAI.openai_api_key || '',
+        // 确保数值类型正确（前端可能发送字符串）
+        message_count_threshold: Number(incoming.ai_analysis.message_count_threshold) || existingAI.message_count_threshold || 50,
+        time_interval_minutes: Number(incoming.ai_analysis.time_interval_minutes) || existingAI.time_interval_minutes || 30,
+        max_messages_per_analysis: Number(incoming.ai_analysis.max_messages_per_analysis) || existingAI.max_messages_per_analysis || 500
       };
       
-      console.log(`📋 [配置保存] ai_analysis 配置 - enabled: ${incoming.ai_analysis.enabled}, trigger_type: ${incoming.ai_analysis.analysis_trigger_type}, count_threshold: ${incoming.ai_analysis.message_count_threshold}, trigger_enabled: ${incoming.ai_analysis.ai_trigger_enabled}`);
+      console.log(`📋 [配置保存] ai_analysis 配置 - enabled: ${incoming.ai_analysis.enabled}, trigger_type: ${incoming.ai_analysis.analysis_trigger_type}, count_threshold: ${incoming.ai_analysis.message_count_threshold} (类型: ${typeof incoming.ai_analysis.message_count_threshold}), time_interval: ${incoming.ai_analysis.time_interval_minutes} (类型: ${typeof incoming.ai_analysis.time_interval_minutes}), trigger_enabled: ${incoming.ai_analysis.ai_trigger_enabled}`);
     } else if (currentConfig.ai_analysis) {
       // 如果前端没有发送 ai_analysis，保留原有配置
       incoming.ai_analysis = currentConfig.ai_analysis;
@@ -2036,28 +2040,60 @@ app.delete('/api/ai/summary/clear', authMiddleware, async (req, res) => {
     const userId = req.user.userId;
     const userIdObj = new mongoose.Types.ObjectId(userId);
     
+    console.log(`🗑️ [清除分析结果] 开始清除用户 ${userId} 的AI分析结果`);
+    
+    // 先查询该用户的所有AI分析结果ID
+    const summaries = await AISummary.find({ userId: userIdObj }).select('_id');
+    const summaryIds = summaries.map(s => s._id);
+    
+    console.log(`🗑️ [清除分析结果] 找到 ${summaryIds.length} 条AI分析结果`);
+    
     // 删除该用户的所有AI分析结果
     const deleteResult = await AISummary.deleteMany({ userId: userIdObj });
+    console.log(`🗑️ [清除分析结果] 已删除 ${deleteResult.deletedCount} 条AI分析结果`);
     
-    // 重置该用户所有Log记录中的ai_analyzed和ai_summary_id字段
+    // 只重置那些真正被分析过的消息（ai_analyzed=true 或 ai_summary_id 不为空）
+    // 这样不会影响从未分析过的消息
     const updateResult = await Log.updateMany(
-      { userId: userIdObj },
+      { 
+        userId: userIdObj,
+        $or: [
+          { ai_analyzed: true },
+          { ai_summary_id: { $ne: null } },
+          { ai_summary_id: { $in: summaryIds } }
+        ]
+      },
       { $set: { ai_analyzed: false, ai_summary_id: null } }
     );
     
-    console.log(`🗑️ 用户 ${userId} 已清除 ${deleteResult.deletedCount} 条AI分析结果，重置了 ${updateResult.modifiedCount} 条日志的AI分析标记`);
+    console.log(`🗑️ [清除分析结果] 已重置 ${updateResult.modifiedCount} 条已分析消息的标记`);
+    console.log(`✅ [清除分析结果] 用户 ${userId} 清除完成 - 删除分析结果: ${deleteResult.deletedCount}, 重置消息标记: ${updateResult.modifiedCount}`);
     
     // 清除统计缓存
     statsCache.delete(userId);
+    
+    // 验证清除结果
+    const remainingSummaries = await AISummary.countDocuments({ userId: userIdObj });
+    const stillAnalyzedLogs = await Log.countDocuments({ 
+      userId: userIdObj,
+      ai_analyzed: true 
+    });
+    
+    if (remainingSummaries > 0 || stillAnalyzedLogs > 0) {
+      console.warn(`⚠️  [清除分析结果] 警告：仍有残留数据 - 分析结果: ${remainingSummaries}, 已分析消息: ${stillAnalyzedLogs}`);
+    }
     
     res.json({ 
       status: 'ok', 
       message: '清除成功',
       deletedSummaries: deleteResult.deletedCount,
-      resetLogs: updateResult.modifiedCount
+      resetLogs: updateResult.modifiedCount,
+      remainingSummaries: remainingSummaries,
+      stillAnalyzedLogs: stillAnalyzedLogs
     });
   } catch (error) {
     console.error('❌ 清除AI分析结果失败:', error);
+    console.error('错误堆栈:', error.stack);
     res.status(500).json({ error: '清除失败：' + error.message });
   }
 });
@@ -2118,21 +2154,24 @@ app.post('/api/internal/message-notify', async (req, res) => {
         console.log(`🔍 [消息通知] 检查AI分析触发 - userId: ${userId}, enabled: ${config.ai_analysis?.enabled}, trigger_type: ${config.ai_analysis?.analysis_trigger_type}`);
         
         if (config.ai_analysis?.enabled && config.ai_analysis.analysis_trigger_type === 'count') {
-          const threshold = config.ai_analysis.message_count_threshold || 50;
+          const threshold = Number(config.ai_analysis.message_count_threshold) || 50;
           const userIdObj = new mongoose.Types.ObjectId(userId);
           const unanalyzedCount = await Log.countDocuments({ 
             userId: userIdObj,
             ai_analyzed: false 
           });
           
-          console.log(`🔍 [消息通知] 消息计数检查 - userId: ${userId}, 阈值: ${threshold}, 未分析数量: ${unanalyzedCount}`);
+          console.log(`🔍 [消息通知] 消息计数检查 - userId: ${userId}, 阈值: ${threshold} (类型: ${typeof threshold}), 未分析数量: ${unanalyzedCount} (类型: ${typeof unanalyzedCount})`);
           
-          if (unanalyzedCount >= threshold) {
-            console.log(`📊 用户 ${userId} 未分析消息达到阈值 ${threshold}（当前: ${unanalyzedCount}），立即触发 AI 分析`);
+          // 确保阈值和数量都是数字类型进行比较
+          if (Number(unanalyzedCount) >= Number(threshold)) {
+            console.log(`📊 [消息通知触发] 用户 ${userId} 未分析消息达到阈值 ${threshold}（当前: ${unanalyzedCount}），立即触发 AI 分析`);
             // 异步触发，不阻塞响应
             performAIAnalysis('count', null, userId).catch(err => {
-              console.error(`触发 AI 分析失败:`, err.message);
+              console.error(`❌ [消息通知触发] 触发 AI 分析失败:`, err.message);
             });
+          } else {
+            console.log(`⏸️  [消息通知] 用户 ${userId} 未分析消息 ${unanalyzedCount} < 阈值 ${threshold}，未触发`);
           }
         }
       } catch (err) {
@@ -4250,11 +4289,11 @@ async function startAIAnalysisTimer() {
           continue;
         }
         
-        // 使用用户配置的时间间隔
-        const intervalMinutes = config.ai_analysis.time_interval_minutes || 30;
+        // 使用用户配置的时间间隔（确保是数字类型）
+        const intervalMinutes = Number(config.ai_analysis.time_interval_minutes) || 30;
         const intervalMs = intervalMinutes * 60 * 1000;
         
-        console.log(`🔍 [定时器启动] 用户: ${user.username}, 间隔: ${intervalMinutes} 分钟 (${intervalMs}ms)`);
+        console.log(`🔍 [定时器启动] 用户: ${user.username}, 间隔: ${intervalMinutes} 分钟 (${intervalMs}ms, 类型: ${typeof intervalMinutes})`);
         
         // 为每个用户创建独立的定时器
         const timer = setInterval(async () => {
@@ -4301,18 +4340,21 @@ async function checkMessageCountTrigger() {
           continue;
         }
         
-        const threshold = config.ai_analysis.message_count_threshold || 50;
+        const threshold = Number(config.ai_analysis.message_count_threshold) || 50;
         const userIdObj = new mongoose.Types.ObjectId(user._id);
         const unanalyzedCount = await Log.countDocuments({ 
           userId: userIdObj,
           ai_analyzed: false 
         });
         
-        console.log(`🔍 [计数触发检查] 用户: ${user.username}, 阈值: ${threshold}, 未分析数量: ${unanalyzedCount}`);
+        console.log(`🔍 [计数触发检查] 用户: ${user.username}, 阈值: ${threshold} (类型: ${typeof threshold}), 未分析数量: ${unanalyzedCount} (类型: ${typeof unanalyzedCount})`);
         
-        if (unanalyzedCount >= threshold) {
-          console.log(`📊 [计数触发] 用户 ${user.username} 未分析消息达到阈值 ${threshold}，触发 AI 分析`);
+        // 确保阈值和数量都是数字类型进行比较
+        if (Number(unanalyzedCount) >= Number(threshold)) {
+          console.log(`📊 [计数触发] 用户 ${user.username} 未分析消息达到阈值 ${threshold}（当前: ${unanalyzedCount}），触发 AI 分析`);
           await performAIAnalysis('count', null, user._id.toString());
+        } else {
+          console.log(`⏸️  [计数触发检查] 用户 ${user.username} 未分析消息 ${unanalyzedCount} < 阈值 ${threshold}，未触发`);
         }
       } catch (err) {
         console.error(`❌ [计数触发检查] 检查用户 ${user.username} 消息计数触发失败:`, err.message);
