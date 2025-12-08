@@ -1042,44 +1042,70 @@ app.post('/api/config', authMiddleware, async (req, res) => {
     await saveUserConfig(userId, updateData);
     console.log(`✅ [配置保存] 配置已保存到数据库`);
     
-    // 验证保存后的配置
-    try {
-      const savedConfig = await loadUserConfig(userId);
-      const savedObj = savedConfig.toObject ? savedConfig.toObject() : savedConfig;
-      console.log(`✅ [配置保存] 验证保存结果 - alert_keywords:`, JSON.stringify(savedObj.alert_keywords || []), `(${(savedObj.alert_keywords || []).length} 个)`);
-    } catch (verifyError) {
-      console.error(`❌ [配置保存] 验证保存结果失败:`, verifyError.message);
-    }
-    
-    // 同步配置到全局配置文件（用于Telethon服务读取）
-    try {
-      console.log(`🔄 [配置保存] 开始同步配置到全局文件并重启Telethon服务`);
-      await syncUserConfigAndRestartTelethon(userId);
-      console.log(`✅ [配置保存] 配置同步完成`);
-    } catch (syncError) {
-      console.warn('⚠️  [配置保存] 同步配置到全局文件失败（不影响配置保存）:', syncError.message);
-      console.error('错误堆栈:', syncError.stack);
-    }
-    
-    // 如果 AI 分析配置有变化，重启定时器
-    if (incoming.ai_analysis) {
-      setTimeout(async () => {
-        console.log('🔄 [配置保存] AI 分析配置已更新，重启定时器');
-        await startAIAnalysisTimer();
-        console.log('✅ [配置保存] AI 分析定时器已重启');
-      }, 1000);
-    }
-    
+    // 立即返回成功响应，不等待同步和重启操作
     // 构建响应消息
     let message = '配置保存成功';
     if (telegramConfigChanged) {
-      message += '。⚠️ 检测到 API_ID 或 API_HASH 已更改，需要重启 Telethon 服务才能生效。请执行：docker compose restart telethon';
+      message += '。⚠️ 检测到 API_ID 或 API_HASH 已更改，Telethon 服务正在后台重启中...';
+    } else {
+      message += '。配置正在后台同步中...';
     }
     
     res.json({ 
       status: 'ok', 
       message: message,
       requiresRestart: telegramConfigChanged
+    });
+    
+    // 在后台异步执行同步配置和重启操作（不阻塞响应）
+    setImmediate(async () => {
+      try {
+        // 验证保存后的配置
+        const savedConfig = await loadUserConfig(userId);
+        const savedObj = savedConfig.toObject ? savedConfig.toObject() : savedConfig;
+        console.log(`✅ [配置保存] 验证保存结果 - alert_keywords:`, JSON.stringify(savedObj.alert_keywords || []), `(${(savedObj.alert_keywords || []).length} 个)`);
+      } catch (verifyError) {
+        console.error(`❌ [配置保存] 验证保存结果失败:`, verifyError.message);
+      }
+      
+      // 同步配置到全局配置文件（不重启Telethon，因为只有API凭证才需要重启）
+      try {
+        console.log(`🔄 [配置保存] 开始同步配置到全局文件（不重启Telethon）`);
+        // 只同步配置，不重启Telethon
+        const globalConfig = loadConfig();
+        const accountId = await getAccountId(userId);
+        const accountIdObj = new mongoose.Types.ObjectId(accountId);
+        const userConfig = await loadUserConfig(userId.toString());
+        if (userConfig) {
+          const configObj = userConfig.toObject ? userConfig.toObject() : userConfig;
+          
+          const configToSync = {
+            keywords: Array.isArray(configObj.keywords) ? configObj.keywords : (configObj.keywords || []),
+            channels: Array.isArray(configObj.channels) ? configObj.channels : (configObj.channels || []),
+            alert_keywords: Array.isArray(configObj.alert_keywords) ? configObj.alert_keywords : (configObj.alert_keywords || []),
+            alert_regex: Array.isArray(configObj.alert_regex) ? configObj.alert_regex : (configObj.alert_regex || []),
+            log_all_messages: configObj.log_all_messages || false,
+            alert_target: configObj.alert_target || ''
+          };
+          
+          // 更新全局配置，保留其他字段
+          Object.assign(globalConfig, configToSync);
+          fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
+          console.log(`✅ [配置保存] 配置已同步到全局文件（不重启Telethon）`);
+        }
+      } catch (syncError) {
+        console.warn('⚠️  [配置保存] 同步配置到全局文件失败（不影响配置保存）:', syncError.message);
+        console.error('错误堆栈:', syncError.stack);
+      }
+      
+      // 如果 AI 分析配置有变化，重启定时器
+      if (incoming.ai_analysis) {
+        setTimeout(async () => {
+          console.log('🔄 [配置保存] AI 分析配置已更新，重启定时器');
+          await startAIAnalysisTimer();
+          console.log('✅ [配置保存] AI 分析定时器已重启');
+        }, 1000);
+      }
     });
   } catch (error) {
     // 详细错误日志
@@ -1112,6 +1138,54 @@ app.post('/api/config', authMiddleware, async (req, res) => {
     }
     
     res.status(500).json({ error: errorMessage });
+  }
+});
+
+// 保存 Telegram API 凭证并重启 Telethon 服务
+app.post('/api/config/telegram', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const currentConfig = await loadUserConfig(userId);
+    const { api_id, api_hash } = req.body;
+    
+    if (!api_id) {
+      return res.status(400).json({ error: 'API_ID 不能为空' });
+    }
+    
+    // 准备更新数据
+    const updateData = {
+      telegram: {
+        api_id: Number(api_id),
+        api_hash: api_hash || (currentConfig.telegram?.api_hash || '').toString()
+      }
+    };
+    
+    console.log(`💾 [Telegram凭证保存] 准备保存到数据库 (userId: ${userId})`);
+    
+    // 保存到数据库
+    await saveUserConfig(userId, updateData);
+    console.log(`✅ [Telegram凭证保存] 配置已保存到数据库`);
+    
+    // 同步配置并重启Telethon服务（同步执行，因为需要等待重启完成）
+    try {
+      console.log(`🔄 [Telegram凭证保存] 开始同步配置到全局文件并重启Telethon服务`);
+      await syncUserConfigAndRestartTelethon(userId);
+      console.log(`✅ [Telegram凭证保存] 配置同步完成，Telethon服务已重启`);
+    } catch (syncError) {
+      console.error('❌ [Telegram凭证保存] 同步配置或重启Telethon失败:', syncError.message);
+      console.error('错误堆栈:', syncError.stack);
+      return res.status(500).json({ 
+        error: '配置已保存，但重启Telethon服务失败：' + syncError.message 
+      });
+    }
+    
+    res.json({ 
+      status: 'ok', 
+      message: 'Telegram API 凭证保存成功，Telethon 服务已重启'
+    });
+  } catch (error) {
+    console.error('❌ 保存Telegram凭证失败:', error);
+    res.status(500).json({ error: '保存失败：' + error.message });
   }
 });
 
@@ -2042,54 +2116,102 @@ app.delete('/api/ai/summary/clear', authMiddleware, async (req, res) => {
     
     console.log(`🗑️ [清除分析结果] 开始清除用户 ${userId} 的AI分析结果`);
     
-    // 先查询该用户的所有AI分析结果ID
-    const summaries = await AISummary.find({ userId: userIdObj }).select('_id');
+    // 获取主账号ID（用于查询可能使用account_id的数据）
+    const accountId = await getAccountId(userId);
+    const accountIdObj = new mongoose.Types.ObjectId(accountId);
+    
+    // 先查询该用户的所有AI分析结果ID（包括使用userId和account_id的）
+    const summaries = await AISummary.find({ 
+      $or: [
+        { userId: userIdObj },
+        { account_id: accountIdObj }
+      ]
+    }).select('_id');
     const summaryIds = summaries.map(s => s._id);
     
     console.log(`🗑️ [清除分析结果] 找到 ${summaryIds.length} 条AI分析结果`);
     
-    // 删除该用户的所有AI分析结果
-    const deleteResult = await AISummary.deleteMany({ userId: userIdObj });
+    // 删除该用户的所有AI分析结果（包括使用userId和account_id的）
+    const deleteResult = await AISummary.deleteMany({ 
+      $or: [
+        { userId: userIdObj },
+        { account_id: accountIdObj }
+      ]
+    });
     console.log(`🗑️ [清除分析结果] 已删除 ${deleteResult.deletedCount} 条AI分析结果`);
     
-    // 只重置那些真正被分析过的消息（ai_analyzed=true 或 ai_summary_id 不为空）
-    // 这样不会影响从未分析过的消息
+    // 重置所有相关的消息标记
+    // 1. 重置所有ai_analyzed=true的消息
+    // 2. 重置所有ai_summary_id不为null的消息（包括指向已删除分析结果的消息）
+    // 3. 重置所有ai_summary_id在summaryIds列表中的消息
     const updateResult = await Log.updateMany(
       { 
-        userId: userIdObj,
         $or: [
-          { ai_analyzed: true },
-          { ai_summary_id: { $ne: null } },
-          { ai_summary_id: { $in: summaryIds } }
+          { userId: userIdObj, ai_analyzed: true },
+          { userId: userIdObj, ai_summary_id: { $ne: null } },
+          { account_id: accountIdObj, ai_analyzed: true },
+          { account_id: accountIdObj, ai_summary_id: { $ne: null } }
         ]
       },
       { $set: { ai_analyzed: false, ai_summary_id: null } }
     );
     
     console.log(`🗑️ [清除分析结果] 已重置 ${updateResult.modifiedCount} 条已分析消息的标记`);
-    console.log(`✅ [清除分析结果] 用户 ${userId} 清除完成 - 删除分析结果: ${deleteResult.deletedCount}, 重置消息标记: ${updateResult.modifiedCount}`);
+    
+    // 再次检查并清理所有指向已删除分析结果的孤立消息标记
+    // 这些消息的ai_summary_id指向的分析结果已经不存在了
+    const orphanedUpdateResult = await Log.updateMany(
+      { 
+        $or: [
+          { userId: userIdObj, ai_summary_id: { $ne: null } },
+          { account_id: accountIdObj, ai_summary_id: { $ne: null } }
+        ]
+      },
+      { $set: { ai_analyzed: false, ai_summary_id: null } }
+    );
+    
+    if (orphanedUpdateResult.modifiedCount > 0) {
+      console.log(`🗑️ [清除分析结果] 额外清理了 ${orphanedUpdateResult.modifiedCount} 条孤立消息标记`);
+    }
+    
+    const totalResetLogs = updateResult.modifiedCount + orphanedUpdateResult.modifiedCount;
+    console.log(`✅ [清除分析结果] 用户 ${userId} 清除完成 - 删除分析结果: ${deleteResult.deletedCount}, 重置消息标记: ${totalResetLogs}`);
     
     // 清除统计缓存
     statsCache.delete(userId);
     
     // 验证清除结果
-    const remainingSummaries = await AISummary.countDocuments({ userId: userIdObj });
+    const remainingSummaries = await AISummary.countDocuments({ 
+      $or: [
+        { userId: userIdObj },
+        { account_id: accountIdObj }
+      ]
+    });
     const stillAnalyzedLogs = await Log.countDocuments({ 
-      userId: userIdObj,
-      ai_analyzed: true 
+      $or: [
+        { userId: userIdObj, ai_analyzed: true },
+        { account_id: accountIdObj, ai_analyzed: true }
+      ]
+    });
+    const stillHasSummaryId = await Log.countDocuments({ 
+      $or: [
+        { userId: userIdObj, ai_summary_id: { $ne: null } },
+        { account_id: accountIdObj, ai_summary_id: { $ne: null } }
+      ]
     });
     
-    if (remainingSummaries > 0 || stillAnalyzedLogs > 0) {
-      console.warn(`⚠️  [清除分析结果] 警告：仍有残留数据 - 分析结果: ${remainingSummaries}, 已分析消息: ${stillAnalyzedLogs}`);
+    if (remainingSummaries > 0 || stillAnalyzedLogs > 0 || stillHasSummaryId > 0) {
+      console.warn(`⚠️  [清除分析结果] 警告：仍有残留数据 - 分析结果: ${remainingSummaries}, 已分析消息: ${stillAnalyzedLogs}, 仍有summary_id的消息: ${stillHasSummaryId}`);
     }
     
     res.json({ 
       status: 'ok', 
       message: '清除成功',
       deletedSummaries: deleteResult.deletedCount,
-      resetLogs: updateResult.modifiedCount,
+      resetLogs: totalResetLogs,
       remainingSummaries: remainingSummaries,
-      stillAnalyzedLogs: stillAnalyzedLogs
+      stillAnalyzedLogs: stillAnalyzedLogs,
+      stillHasSummaryId: stillHasSummaryId
     });
   } catch (error) {
     console.error('❌ 清除AI分析结果失败:', error);

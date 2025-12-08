@@ -448,6 +448,50 @@
             color: white;
         }
         
+        /* 成功提示弹窗 */
+        .success-popup {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            border-radius: 12px;
+            padding: 30px 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            z-index: 1000000;
+            display: none;
+            align-items: center;
+            gap: 15px;
+            min-width: 300px;
+            animation: popupFadeIn 0.3s ease-out;
+        }
+        
+        .success-popup.show {
+            display: flex;
+        }
+        
+        @keyframes popupFadeIn {
+            from {
+                opacity: 0;
+                transform: translate(-50%, -50%) scale(0.9);
+            }
+            to {
+                opacity: 1;
+                transform: translate(-50%, -50%) scale(1);
+            }
+        }
+        
+        .success-popup-icon {
+            font-size: 36px;
+            color: #4caf50;
+        }
+        
+        .success-popup-message {
+            font-size: 16px;
+            color: #333;
+            font-weight: 500;
+        }
+        
         .loading {
             text-align: center;
             padding: 40px;
@@ -657,6 +701,14 @@
                     <div class="form-group">
                         <label>API_HASH</label>
                         <input type="text" id="tgApiHash" placeholder="例如：abcd1234efgh5678">
+                    </div>
+                    
+                    <!-- Telegram 凭证保存按钮 -->
+                    <div style="margin-top: 15px;">
+                        <button class="btn btn-primary" onclick="saveTelegramCredentials()">💾 保存 Telegram 凭证</button>
+                        <div class="hint" style="margin-top: 8px; color: #f39c12;">
+                            ⚠️ 保存后会重启 Telethon 服务，请确保配置正确
+                        </div>
                     </div>
                     
                     <!-- Telegram 登录状态和按钮 -->
@@ -1033,45 +1085,60 @@
             
             <!-- 修改密码 -->
             <div class="card">
-                <h2>🔐 修改密码</h2>
-                <div class="form-group">
-                    <label>原密码</label>
-                    <input type="password" id="oldPassword">
+                <div class="card-header" onclick="toggleCard(this)" data-card-id="change-password">
+                    <h2>🔐 修改密码</h2>
+                    <span class="card-toggle collapsed">▼</span>
                 </div>
-                <div class="form-group">
-                    <label>新密码</label>
-                    <input type="password" id="newPassword">
+                <div class="card-content collapsed">
+                    <div class="form-group">
+                        <label>原密码</label>
+                        <input type="password" id="oldPassword">
+                    </div>
+                    <div class="form-group">
+                        <label>新密码</label>
+                        <input type="password" id="newPassword">
+                    </div>
+                    <div class="form-group">
+                        <label>确认新密码</label>
+                        <input type="password" id="confirmPassword">
+                    </div>
+                    <button class="btn btn-primary" onclick="changePassword()">🔐 修改密码</button>
                 </div>
-                <div class="form-group">
-                    <label>确认新密码</label>
-                    <input type="password" id="confirmPassword">
-                </div>
-                <button class="btn btn-primary" onclick="changePassword()">🔐 修改密码</button>
             </div>
             
             <!-- 用户管理（仅管理员可见） -->
             <div id="userManagementSection" style="display: none;">
                 <div class="card" style="margin-bottom: 20px; margin-top: 20px;">
-                    <h2>👥 创建新用户</h2>
-                    <div class="form-group">
-                        <label>用户名</label>
-                        <input type="text" id="newUsername" placeholder="用户名（3-50个字符）">
+                    <div class="card-header" onclick="toggleCard(this)" data-card-id="create-user">
+                        <h2>👥 创建新用户</h2>
+                        <span class="card-toggle collapsed">▼</span>
                     </div>
-                    <div class="form-group">
-                        <label>密码</label>
-                        <input type="password" id="newUserPassword" placeholder="密码（至少6位）">
+                    <div class="card-content collapsed">
+                        <div class="form-group">
+                            <label>用户名</label>
+                            <input type="text" id="newUsername" placeholder="用户名（3-50个字符）">
+                        </div>
+                        <div class="form-group">
+                            <label>密码</label>
+                            <input type="password" id="newUserPassword" placeholder="密码（至少6位）">
+                        </div>
+                        <div class="form-group">
+                            <label>显示名称（可选）</label>
+                            <input type="text" id="newUserDisplayName" placeholder="显示名称">
+                        </div>
+                        <button class="btn btn-primary" onclick="createUser()">➕ 创建用户</button>
                     </div>
-                    <div class="form-group">
-                        <label>显示名称（可选）</label>
-                        <input type="text" id="newUserDisplayName" placeholder="显示名称">
-                    </div>
-                    <button class="btn btn-primary" onclick="createUser()">➕ 创建用户</button>
                 </div>
                 
                 <div class="card">
-                    <h2>👥 用户列表</h2>
-                    <div id="userList" style="margin-top: 20px;">
-                        <p style="text-align: center; color: #999;">加载中...</p>
+                    <div class="card-header" onclick="toggleCard(this)" data-card-id="user-list">
+                        <h2>👥 用户列表</h2>
+                        <span class="card-toggle collapsed">▼</span>
+                    </div>
+                    <div class="card-content collapsed">
+                        <div id="userList" style="margin-top: 20px;">
+                            <p style="text-align: center; color: #999;">加载中...</p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1080,6 +1147,12 @@
 
     <!-- 浮动提示框 -->
     <div id="toastNotification" class="toast-notification"></div>
+    
+    <!-- 成功提示弹窗 -->
+    <div id="successPopup" class="success-popup">
+        <div class="success-popup-icon">✅</div>
+        <div class="success-popup-message" id="successPopupMessage">操作成功</div>
+    </div>
     
     <!-- Telegram 登录模态弹窗 -->
     <div id="telegramLoginModal" class="modal-overlay" style="display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; z-index: -1 !important;">
@@ -1930,16 +2003,81 @@
             }
         }
         
-        // 保存配置
+        // 显示成功弹窗
+        function showSuccessPopup(message) {
+            const popup = document.getElementById('successPopup');
+            const messageEl = document.getElementById('successPopupMessage');
+            if (!popup || !messageEl) return;
+            
+            messageEl.textContent = message;
+            popup.classList.add('show');
+            
+            // 1秒后自动关闭
+            setTimeout(() => {
+                popup.classList.remove('show');
+            }, 1000);
+        }
+        
+        // 保存 Telegram 凭证（需要重启Telethon）
+        async function saveTelegramCredentials() {
+            const apiId = parseInt(document.getElementById('tgApiId').value) || 0;
+            const apiHash = document.getElementById('tgApiHash').value.trim();
+            
+            if (!apiId) {
+                showToast('⚠️ 请填写 API_ID', false);
+                return;
+            }
+            
+            if (!apiHash) {
+                showToast('⚠️ 请填写 API_HASH', false);
+                return;
+            }
+            
+            const saveButton = document.querySelector('button[onclick="saveTelegramCredentials()"]');
+            const originalText = saveButton?.textContent || '💾 保存 Telegram 凭证';
+            if (saveButton) {
+                saveButton.disabled = true;
+                saveButton.textContent = '💾 保存中...';
+            }
+            
+            try {
+                const result = await apiRequest('/config/telegram', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        api_id: apiId,
+                        api_hash: apiHash
+                    })
+                });
+                
+                // 恢复按钮状态
+                if (saveButton) {
+                    saveButton.disabled = false;
+                    saveButton.textContent = originalText;
+                }
+                
+                if (result && result.status === 'ok') {
+                    showSuccessPopup(result.message || 'Telegram 凭证保存成功');
+                    
+                    // 延迟刷新登录状态
+                    setTimeout(() => {
+                        checkTelegramLoginStatus(true);
+                    }, 2000);
+                } else {
+                    showToast('❌ 保存失败：' + (result?.error || '未知错误'), false);
+                }
+            } catch (error) {
+                // 恢复按钮状态
+                if (saveButton) {
+                    saveButton.disabled = false;
+                    saveButton.textContent = originalText;
+                }
+                showToast('❌ 保存失败：' + (error.message || '未知错误'), false);
+            }
+        }
+        
+        // 保存配置（不包含Telegram凭证，不重启）
         async function saveConfig() {
             const newConfig = {
-                telegram: {
-                    api_id: parseInt(document.getElementById('tgApiId').value) || 0,
-                    // 🔒 如果不是空的，有新值就发送，没有新值就忽略，让服务器保留原有值
-                    ...(document.getElementById('tgApiHash').value.trim() && {
-                        api_hash: document.getElementById('tgApiHash').value.trim()
-                    })
-                },
                 log_all_messages: document.getElementById('logAllMessages').checked,
                 keywords: document.getElementById('keywords').value.split('\n').filter(k => k.trim()),
                 alert_keywords: document.getElementById('alertKeywords').value.split('\n').filter(k => k.trim()),
@@ -1986,26 +2124,39 @@
                 }
             };
             
-            const result = await apiRequest('/config', {
-                method: 'POST',
-                body: JSON.stringify(newConfig)
-            });
+            // 显示保存中提示
+            const saveButton = document.querySelector('button[onclick="saveConfig()"]');
+            const originalText = saveButton?.textContent || '💾 保存配置';
+            if (saveButton) {
+                saveButton.disabled = true;
+                saveButton.textContent = '💾 保存中...';
+            }
             
-            // 使用浮动提示框显示消息
-            if (result && result.status === 'ok') {
-                if (result.requiresRestart) {
-                    // 如果检测到 API_ID/API_HASH 变化，显示特殊提示
-                    showToast('✅ 配置保存成功！⚠️ API_ID 或 API_HASH 已更改，需要重启 Telethon 服务才能生效。请执行：docker compose restart telethon', true);
-                    
-                    // 如果配置了 API_ID 和 API_HASH，自动检查登录状态
-                    setTimeout(() => {
-                        checkTelegramLoginStatus(true); // 强制刷新
-                    }, 1500);
-                } else {
-                    showToast('✅ 配置保存成功！', true);
+            try {
+                const result = await apiRequest('/config', {
+                    method: 'POST',
+                    body: JSON.stringify(newConfig)
+                });
+                
+                // 恢复按钮状态
+                if (saveButton) {
+                    saveButton.disabled = false;
+                    saveButton.textContent = originalText;
                 }
-            } else {
-                showToast('❌ 保存失败：' + (result?.error || '未知错误'), false);
+                
+                // 使用浮动提示框显示消息
+                if (result && result.status === 'ok') {
+                    showToast('✅ 配置保存成功！', true);
+                } else {
+                    showToast('❌ 保存失败：' + (result?.error || '未知错误'), false);
+                }
+            } catch (error) {
+                // 恢复按钮状态
+                if (saveButton) {
+                    saveButton.disabled = false;
+                    saveButton.textContent = originalText;
+                }
+                showToast('❌ 保存失败：' + (error.message || '未知错误'), false);
             }
         }
 
@@ -2589,24 +2740,35 @@
                 
                 if (result) {
                     let message = `✅ 清除成功！\n\n已删除 ${result.deletedSummaries || 0} 条分析结果\n已重置 ${result.resetLogs || 0} 条已分析消息的标记`;
-                    if (result.remainingSummaries > 0 || result.stillAnalyzedLogs > 0) {
-                        message += `\n\n⚠️ 警告：仍有残留数据\n- 剩余分析结果: ${result.remainingSummaries}\n- 仍有已分析消息: ${result.stillAnalyzedLogs}`;
+                    if (result.remainingSummaries > 0 || result.stillAnalyzedLogs > 0 || result.stillHasSummaryId > 0) {
+                        message += `\n\n⚠️ 警告：仍有残留数据\n- 剩余分析结果: ${result.remainingSummaries}\n- 仍有已分析消息: ${result.stillAnalyzedLogs}\n- 仍有summary_id的消息: ${result.stillHasSummaryId || 0}`;
                     }
                     alert(message);
                     
+                    // 重置筛选条件
+                    document.getElementById('filterSentiment').value = '';
+                    document.getElementById('filterRisk').value = '';
+                    
+                    // 重置分页
+                    currentAIPage = 1;
+                    
                     // 刷新所有相关数据
-                    loadAISummaries(1);
+                    await loadAISummaries(1);
                     if (typeof loadAIStats === 'function') {
-                        loadAIStats();
+                        await loadAIStats();
                     }
                     // 刷新统计
                     if (typeof loadStats === 'function') {
-                        loadStats();
+                        await loadStats();
                     }
+                    
+                    // 显示成功提示
+                    showToast('AI分析结果已清除', true);
                 }
             } catch (error) {
                 console.error('清除失败:', error);
                 alert('❌ 清除失败：' + (error.message || '未知错误'));
+                showToast('清除失败：' + (error.message || '未知错误'), false);
             }
         }
         
