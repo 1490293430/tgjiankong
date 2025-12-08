@@ -980,8 +980,10 @@ app.post('/api/config', authMiddleware, async (req, res) => {
         }
         // 确保 email 对象完整，正确处理 false 值和空字符串
         incoming.alert_actions.email = {
-          // ✅ 关键修复：正确处理 false 值，不能使用 || 运算符
-          enable: incoming.alert_actions.email.enable !== undefined ? Boolean(incoming.alert_actions.email.enable) : (existingActions.email?.enable !== undefined ? existingActions.email.enable : false),
+          // ✅ 关键修复：正确处理 false 值，如果前端明确发送了 enable 值（包括 false），使用前端值；否则使用数据库中的值
+          enable: incoming.alert_actions.email.enable !== undefined 
+            ? Boolean(incoming.alert_actions.email.enable)
+            : (existingActions.email?.enable !== undefined ? Boolean(existingActions.email.enable) : false),
           // ✅ 修复：正确处理空字符串，不能使用 || 运算符
           smtp_host: incoming.alert_actions.email.smtp_host !== undefined ? String(incoming.alert_actions.email.smtp_host) : (existingActions.email?.smtp_host || ''),
           smtp_port: incoming.alert_actions.email.smtp_port !== undefined ? Number(incoming.alert_actions.email.smtp_port) || 465 : (existingActions.email?.smtp_port || 465),
@@ -992,6 +994,16 @@ app.post('/api/config', authMiddleware, async (req, res) => {
       } else if (existingActions.email) {
         // ✅ 如果前端没有发送 email 对象，但数据库中有，保留原有配置
         incoming.alert_actions.email = existingActions.email;
+      } else {
+        // ✅ 如果前端和数据库都没有 email 对象，创建默认对象
+        incoming.alert_actions.email = {
+          enable: false,
+          smtp_host: '',
+          smtp_port: 465,
+          username: '',
+          password: '',
+          to: ''
+        };
       }
       
       // 确保 webhook 对象完整，正确处理 false 值和空字符串

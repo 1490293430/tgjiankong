@@ -2014,13 +2014,15 @@
                 document.getElementById('channels').value = (config.channels || []).join('\n');
                 document.getElementById('alertTarget').value = config.alert_target || '';
                 
-                const emailEnable = config.alert_actions?.email?.enable || false;
-                const webhookEnable = config.alert_actions?.webhook?.enable || false;
+                // ✅ 修复：正确处理 false 值，使用 Boolean() 转换确保正确处理 false
+                const emailEnable = config.alert_actions?.email?.enable !== undefined ? Boolean(config.alert_actions.email.enable) : false;
+                const webhookEnable = config.alert_actions?.webhook?.enable !== undefined ? Boolean(config.alert_actions.webhook.enable) : false;
                 
                 document.getElementById('enableEmail').checked = emailEnable;
                 document.getElementById('enableWebhook').checked = webhookEnable;
                 
-                if (emailEnable && config.alert_actions.email) {
+                // ✅ 修复：无论enable状态如何，都要填充email配置字段，确保配置能正确保存
+                if (config.alert_actions?.email) {
                     document.getElementById('smtpHost').value = config.alert_actions.email.smtp_host || '';
                     document.getElementById('smtpPort').value = config.alert_actions.email.smtp_port || 465;
                     document.getElementById('emailUsername').value = config.alert_actions.email.username || '';
@@ -2028,7 +2030,7 @@
                     document.getElementById('emailPassword').placeholder = '🔒 已隐藏 - 如果需要更改请输入新密码';
                     document.getElementById('emailPassword').value = '';
                     document.getElementById('emailTo').value = config.alert_actions.email.to || '';
-                    document.getElementById('emailConfig').style.display = 'block';
+                    document.getElementById('emailConfig').style.display = emailEnable ? 'block' : 'none';
                 }
                 
                 if (webhookEnable && config.alert_actions.webhook) {

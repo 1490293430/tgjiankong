@@ -66,5 +66,29 @@ ls -dt "${BACKUP_DIR}"/backup_*/ 2>/dev/null | tail -n +11 | xargs -r rm -rf
 
 echo ""
 echo "✅ 备份完成！"
-echo "📁 备份位置: ${BACKUP_DIR}/${BACKUP_NAME}.tar.gz (或目录)"
+
+# 获取备份的绝对路径
+if [ -f "${BACKUP_DIR}/${BACKUP_NAME}.tar.gz" ]; then
+    # 尝试使用 realpath 或 readlink -f 获取绝对路径，如果失败则使用 cd + pwd 方法
+    if command -v realpath >/dev/null 2>&1; then
+        BACKUP_PATH=$(realpath "${BACKUP_DIR}/${BACKUP_NAME}.tar.gz")
+    elif command -v readlink >/dev/null 2>&1; then
+        BACKUP_PATH=$(readlink -f "${BACKUP_DIR}/${BACKUP_NAME}.tar.gz")
+    else
+        # 使用 cd + pwd 方法获取绝对路径
+        BACKUP_PATH=$(cd "${BACKUP_DIR}" && pwd)/${BACKUP_NAME}.tar.gz
+    fi
+    echo "📁 备份位置: ${BACKUP_PATH}"
+else
+    # 尝试使用 realpath 或 readlink -f 获取绝对路径，如果失败则使用 cd + pwd 方法
+    if command -v realpath >/dev/null 2>&1; then
+        BACKUP_PATH=$(realpath "${BACKUP_DIR}/${BACKUP_NAME}")
+    elif command -v readlink >/dev/null 2>&1; then
+        BACKUP_PATH=$(readlink -f "${BACKUP_DIR}/${BACKUP_NAME}")
+    else
+        # 使用 cd + pwd 方法获取绝对路径
+        BACKUP_PATH=$(cd "${BACKUP_DIR}/${BACKUP_NAME}" && pwd)
+    fi
+    echo "📁 备份位置: ${BACKUP_PATH}/"
+fi
 
