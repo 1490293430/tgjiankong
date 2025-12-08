@@ -1642,43 +1642,37 @@
                     return null;
                 }
                 
+                // 先读取响应文本（只能读取一次）
+                let text = '';
+                try {
+                    text = await response.text();
+                } catch (e) {
+                    text = '无法读取响应内容';
+                }
+                
                 // 处理5xx错误（服务器错误）
                 if (response.status >= 500) {
-                    let errorText = '';
-                    try {
-                        errorText = await response.text();
-                    } catch (e) {
-                        errorText = '无法读取错误信息';
-                    }
-                    console.error(`API Server Error (${response.status}):`, errorText);
+                    console.error(`API Server Error (${response.status}):`, text);
                     throw new Error(`服务器错误 (${response.status}): 后端服务可能未正常运行，请检查服务状态`);
                 }
                 
                 // 处理4xx错误（客户端错误）
-                if (response.status >= 400) {
-                    let errorText = '';
-                    try {
-                        errorText = await response.text();
-                    } catch (e) {
-                        errorText = '无法读取错误信息';
-                    }
-                    console.error(`API Client Error (${response.status}):`, errorText);
+                if (response.status >= 400 && response.status < 500) {
+                    console.error(`API Client Error (${response.status}):`, text);
                     // 尝试解析为JSON，如果失败则使用错误文本
                     if (isJson) {
                         try {
-                            const errorJson = JSON.parse(errorText);
+                            const errorJson = JSON.parse(text);
                             throw new Error(errorJson.error || errorJson.message || `请求错误 (${response.status})`);
                         } catch (parseError) {
-                            throw new Error(`请求错误 (${response.status}): ${errorText.substring(0, 100)}`);
+                            throw new Error(`请求错误 (${response.status}): ${text.substring(0, 100)}`);
                         }
                     } else {
-                        throw new Error(`请求错误 (${response.status}): ${errorText.substring(0, 100)}`);
+                        throw new Error(`请求错误 (${response.status}): ${text.substring(0, 100)}`);
                     }
                 }
                 
                 // 成功响应：尝试解析JSON响应
-                // 先读取文本，然后根据内容类型决定如何解析
-                const text = await response.text();
                 
                 if (isJson) {
                     try {
