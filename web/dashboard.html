@@ -410,31 +410,33 @@
         /* 浮动提示框 - 固定在右上角，大尺寸显示 */
         .toast-notification {
             position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            width: 100%;
+            top: 20px;
+            right: 20px;
+            width: auto;
+            max-width: 500px;
+            min-width: 300px;
             z-index: 99999;
-            padding: 20px 32px;
-            text-align: center;
+            padding: 16px 24px;
+            text-align: left;
             font-weight: 500;
-            font-size: 18px;
+            font-size: 16px;
             line-height: 1.6;
             display: none;
-            box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.2);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
             word-wrap: break-word;
-            min-height: 60px;
+            min-height: 50px;
             box-sizing: border-box;
+            border-radius: 8px;
         }
         
         @keyframes slideInBottom {
             from {
                 opacity: 0;
-                transform: translateY(100%);
+                transform: translateX(100%) translateY(-20px);
             }
             to {
                 opacity: 1;
-                transform: translateY(0);
+                transform: translateX(0) translateY(0);
             }
         }
         
@@ -1257,14 +1259,14 @@
             
             // 重置样式，确保动画能正常播放
             toast.style.opacity = '1';
-            toast.style.transform = 'translateY(0)';
+            toast.style.transform = 'translateX(0) translateY(0)';
             toast.style.transition = '';
             toast.style.animation = 'none';
             
             // 强制重新计算样式，确保动画生效
             void toast.offsetWidth;
             
-            // 显示提示框，从底部滑入
+            // 显示提示框，从右上角滑入
             toast.style.display = 'block';
             toast.style.animation = 'slideInBottom 0.4s ease-out';
             
@@ -1272,10 +1274,10 @@
             const duration = isSuccess ? 4000 : 6000;
             toast._hideTimer = setTimeout(() => {
                 if (toast) {
-                    // 淡出并下滑动画
+                    // 淡出并向右滑出动画
                     toast.style.transition = 'opacity 0.3s ease-out, transform 0.3s ease-out';
                     toast.style.opacity = '0';
-                    toast.style.transform = 'translateY(100%)';
+                    toast.style.transform = 'translateX(100%) translateY(-20px)';
                     setTimeout(() => {
                         if (toast) {
                             toast.style.display = 'none';
@@ -2033,6 +2035,11 @@
                 return;
             }
             
+            // 确认对话框
+            if (!confirm('⚠️ 确定要保存 Telegram 凭证吗？\n\n此操作将：\n- 更新 API_ID 和 API_HASH\n- 重启 Telethon 服务以应用新配置\n- 请确保凭证正确，否则可能导致登录失败')) {
+                return;
+            }
+            
             const saveButton = document.querySelector('button[onclick="saveTelegramCredentials()"]');
             const originalText = saveButton?.textContent || '💾 保存 Telegram 凭证';
             if (saveButton) {
@@ -2056,7 +2063,7 @@
                 }
                 
                 if (result && result.status === 'ok') {
-                    showSuccessPopup(result.message || 'Telegram 凭证保存成功');
+                    showToast(`✅ Telegram 凭证保存成功！${result.message ? '\n' + result.message : ''}`, true);
                     
                     // 延迟刷新登录状态
                     setTimeout(() => {
@@ -2144,7 +2151,7 @@
                     saveButton.textContent = originalText;
                 }
                 
-                // 使用浮动提示框显示消息
+                // 使用横幅通知显示消息
                 if (result && result.status === 'ok') {
                     showToast('✅ 配置保存成功！', true);
                 } else {

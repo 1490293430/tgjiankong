@@ -2132,32 +2132,42 @@ app.get('/api/ai/summary/:id', authMiddleware, async (req, res) => {
 app.delete('/api/ai/summary/clear', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
+    const username = req.user.username;
     const userIdObj = new mongoose.Types.ObjectId(userId);
+    const isAdmin = username === 'admin';
     
-    console.log(`🗑️ [清除分析结果] 开始清除用户 ${userId} 的AI分析结果`);
+    console.log(`🗑️ [清除分析结果] 开始清除用户 ${userId} (${username}) 的AI分析结果`);
     
     // 获取主账号ID（用于查询可能使用account_id的数据）
     const accountId = await getAccountId(userId);
     const accountIdObj = new mongoose.Types.ObjectId(accountId);
     
-    // 先查询该用户的所有AI分析结果ID（包括使用userId和account_id的）
-    const summaries = await AISummary.find({ 
-      $or: [
-        { userId: userIdObj },
-        { account_id: accountIdObj }
-      ]
-    }).select('_id');
+    // 构建删除查询条件
+    // admin用户可以清除旧的没有userId的记录
+    const deleteQuery = isAdmin
+      ? {
+          $or: [
+            { userId: userIdObj },
+            { account_id: accountIdObj },
+            { userId: { $exists: false } }, // 旧的没有userId的记录
+            { userId: null } // 旧的userId为null的记录
+          ]
+        }
+      : {
+          $or: [
+            { userId: userIdObj },
+            { account_id: accountIdObj }
+          ]
+        };
+    
+    // 先查询该用户的所有AI分析结果ID（包括使用userId和account_id的，以及旧的没有userId的）
+    const summaries = await AISummary.find(deleteQuery).select('_id');
     const summaryIds = summaries.map(s => s._id);
     
-    console.log(`🗑️ [清除分析结果] 找到 ${summaryIds.length} 条AI分析结果`);
+    console.log(`🗑️ [清除分析结果] 找到 ${summaryIds.length} 条AI分析结果${isAdmin ? '（包括旧记录）' : ''}`);
     
-    // 删除该用户的所有AI分析结果（包括使用userId和account_id的）
-    const deleteResult = await AISummary.deleteMany({ 
-      $or: [
-        { userId: userIdObj },
-        { account_id: accountIdObj }
-      ]
-    });
+    // 删除该用户的所有AI分析结果（包括使用userId和account_id的，以及旧的没有userId的）
+    const deleteResult = await AISummary.deleteMany(deleteQuery);
     console.log(`🗑️ [清除分析结果] 已删除 ${deleteResult.deletedCount} 条AI分析结果`);
     
     // 重置所有相关的消息标记
@@ -2165,16 +2175,31 @@ app.delete('/api/ai/summary/clear', authMiddleware, async (req, res) => {
     // 2. 重置所有ai_summary_id不为null的消息（包括指向已删除分析结果的消息）
     // 3. 重置所有ai_summary_id在summaryIds列表中的消息
     // 4. 设置 ai_cleared_at 时间戳，防止清除后立即被自动分析重新分析
+    // admin用户还需要清除旧的没有userId的Log记录
     const clearTimestamp = new Date();
+    const logUpdateQuery = isAdmin
+      ? {
+          $or: [
+            { userId: userIdObj, ai_analyzed: true },
+            { userId: userIdObj, ai_summary_id: { $ne: null } },
+            { account_id: accountIdObj, ai_analyzed: true },
+            { account_id: accountIdObj, ai_summary_id: { $ne: null } },
+            // 旧的没有userId的Log记录，且ai_summary_id指向已删除的分析结果
+            { userId: { $exists: false }, ai_summary_id: { $in: summaryIds } },
+            { userId: null, ai_summary_id: { $in: summaryIds } }
+          ]
+        }
+      : {
+          $or: [
+            { userId: userIdObj, ai_analyzed: true },
+            { userId: userIdObj, ai_summary_id: { $ne: null } },
+            { account_id: accountIdObj, ai_analyzed: true },
+            { account_id: accountIdObj, ai_summary_id: { $ne: null } }
+          ]
+        };
+    
     const updateResult = await Log.updateMany(
-      { 
-        $or: [
-          { userId: userIdObj, ai_analyzed: true },
-          { userId: userIdObj, ai_summary_id: { $ne: null } },
-          { account_id: accountIdObj, ai_analyzed: true },
-          { account_id: accountIdObj, ai_summary_id: { $ne: null } }
-        ]
-      },
+      logUpdateQuery,
       { $set: { ai_analyzed: false, ai_summary_id: null, ai_cleared_at: clearTimestamp } }
     );
     
@@ -2182,13 +2207,25 @@ app.delete('/api/ai/summary/clear', authMiddleware, async (req, res) => {
     
     // 再次检查并清理所有指向已删除分析结果的孤立消息标记
     // 这些消息的ai_summary_id指向的分析结果已经不存在了
+    const orphanedLogQuery = isAdmin
+      ? {
+          $or: [
+            { userId: userIdObj, ai_summary_id: { $ne: null } },
+            { account_id: accountIdObj, ai_summary_id: { $ne: null } },
+            // 旧的没有userId的Log记录，且ai_summary_id不为null
+            { userId: { $exists: false }, ai_summary_id: { $ne: null } },
+            { userId: null, ai_summary_id: { $ne: null } }
+          ]
+        }
+      : {
+          $or: [
+            { userId: userIdObj, ai_summary_id: { $ne: null } },
+            { account_id: accountIdObj, ai_summary_id: { $ne: null } }
+          ]
+        };
+    
     const orphanedUpdateResult = await Log.updateMany(
-      { 
-        $or: [
-          { userId: userIdObj, ai_summary_id: { $ne: null } },
-          { account_id: accountIdObj, ai_summary_id: { $ne: null } }
-        ]
-      },
+      orphanedLogQuery,
       { $set: { ai_analyzed: false, ai_summary_id: null, ai_cleared_at: clearTimestamp } }
     );
     
@@ -2202,25 +2239,25 @@ app.delete('/api/ai/summary/clear', authMiddleware, async (req, res) => {
     // 清除统计缓存
     statsCache.delete(userId);
     
-    // 验证清除结果
-    const remainingSummaries = await AISummary.countDocuments({ 
-      $or: [
-        { userId: userIdObj },
-        { account_id: accountIdObj }
-      ]
-    });
-    const stillAnalyzedLogs = await Log.countDocuments({ 
-      $or: [
-        { userId: userIdObj, ai_analyzed: true },
-        { account_id: accountIdObj, ai_analyzed: true }
-      ]
-    });
-    const stillHasSummaryId = await Log.countDocuments({ 
-      $or: [
-        { userId: userIdObj, ai_summary_id: { $ne: null } },
-        { account_id: accountIdObj, ai_summary_id: { $ne: null } }
-      ]
-    });
+    // 验证清除结果（使用与删除相同的查询条件）
+    const remainingSummaries = await AISummary.countDocuments(deleteQuery);
+    const stillAnalyzedLogsQuery = isAdmin
+      ? {
+          $or: [
+            { userId: userIdObj, ai_analyzed: true },
+            { account_id: accountIdObj, ai_analyzed: true },
+            { userId: { $exists: false }, ai_analyzed: true },
+            { userId: null, ai_analyzed: true }
+          ]
+        }
+      : {
+          $or: [
+            { userId: userIdObj, ai_analyzed: true },
+            { account_id: accountIdObj, ai_analyzed: true }
+          ]
+        };
+    const stillAnalyzedLogs = await Log.countDocuments(stillAnalyzedLogsQuery);
+    const stillHasSummaryId = await Log.countDocuments(orphanedLogQuery);
     
     if (remainingSummaries > 0 || stillAnalyzedLogs > 0 || stillHasSummaryId > 0) {
       console.warn(`⚠️  [清除分析结果] 警告：仍有残留数据 - 分析结果: ${remainingSummaries}, 已分析消息: ${stillAnalyzedLogs}, 仍有summary_id的消息: ${stillHasSummaryId}`);
