@@ -2438,12 +2438,37 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
       // 查找所有备份文件
       const files = fs.readdirSync(backupDir);
       for (const file of files) {
-        if (file.startsWith('backup_') && (file.endsWith('.tar.gz') || fs.statSync(path.join(backupDir, file)).isDirectory())) {
+        if (file.startsWith('backup_')) {
           const filePath = path.join(backupDir, file);
           const stats = fs.statSync(filePath);
+          
+          // 如果是目录，计算目录总大小
+          let totalSize = stats.size;
+          if (stats.isDirectory()) {
+            const calculateDirSize = (dirPath) => {
+              let size = 0;
+              try {
+                const entries = fs.readdirSync(dirPath);
+                for (const entry of entries) {
+                  const entryPath = path.join(dirPath, entry);
+                  const entryStats = fs.statSync(entryPath);
+                  if (entryStats.isDirectory()) {
+                    size += calculateDirSize(entryPath);
+                  } else {
+                    size += entryStats.size;
+                  }
+                }
+              } catch (err) {
+                console.warn(`⚠️  [备份] 无法读取目录 ${dirPath}:`, err.message);
+              }
+              return size;
+            };
+            totalSize = calculateDirSize(filePath);
+          }
+          
           backups.push({
             name: file,
-            size: stats.size,
+            size: totalSize,
             created: stats.birthtime,
             path: filePath
           });
@@ -2482,12 +2507,37 @@ app.get('/api/backup/list', authMiddleware, async (req, res) => {
     if (fs.existsSync(backupDir)) {
       const files = fs.readdirSync(backupDir);
       for (const file of files) {
-        if (file.startsWith('backup_') && (file.endsWith('.tar.gz') || fs.statSync(path.join(backupDir, file)).isDirectory())) {
+        if (file.startsWith('backup_')) {
           const filePath = path.join(backupDir, file);
           const stats = fs.statSync(filePath);
+          
+          // 如果是目录，计算目录总大小
+          let totalSize = stats.size;
+          if (stats.isDirectory()) {
+            const calculateDirSize = (dirPath) => {
+              let size = 0;
+              try {
+                const entries = fs.readdirSync(dirPath);
+                for (const entry of entries) {
+                  const entryPath = path.join(dirPath, entry);
+                  const entryStats = fs.statSync(entryPath);
+                  if (entryStats.isDirectory()) {
+                    size += calculateDirSize(entryPath);
+                  } else {
+                    size += entryStats.size;
+                  }
+                }
+              } catch (err) {
+                console.warn(`⚠️  [备份列表] 无法读取目录 ${dirPath}:`, err.message);
+              }
+              return size;
+            };
+            totalSize = calculateDirSize(filePath);
+          }
+          
           backups.push({
             name: file,
-            size: stats.size,
+            size: totalSize,
             created: stats.birthtime,
             path: filePath
           });
