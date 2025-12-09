@@ -954,7 +954,11 @@ app.post('/api/config', authMiddleware, async (req, res) => {
         // 确保数值类型正确（前端可能发送字符串）
         message_count_threshold: Number(incoming.ai_analysis.message_count_threshold) || existingAI.message_count_threshold || 50,
         time_interval_minutes: Number(incoming.ai_analysis.time_interval_minutes) || existingAI.time_interval_minutes || 30,
-        max_messages_per_analysis: Number(incoming.ai_analysis.max_messages_per_analysis) || existingAI.max_messages_per_analysis || 500
+        max_messages_per_analysis: Number(incoming.ai_analysis.max_messages_per_analysis) || existingAI.max_messages_per_analysis || 500,
+        // 明确保留固定用户触发相关配置
+        ai_trigger_enabled: incoming.ai_analysis.ai_trigger_enabled !== undefined ? incoming.ai_analysis.ai_trigger_enabled : existingAI.ai_trigger_enabled || false,
+        ai_trigger_users: incoming.ai_analysis.ai_trigger_users !== undefined ? (Array.isArray(incoming.ai_analysis.ai_trigger_users) ? incoming.ai_analysis.ai_trigger_users : []) : (existingAI.ai_trigger_users || []),
+        ai_trigger_prompt: incoming.ai_analysis.ai_trigger_prompt !== undefined ? (incoming.ai_analysis.ai_trigger_prompt || '') : (existingAI.ai_trigger_prompt || '')
       };
       
       console.log(`📋 [配置保存] ai_analysis 配置 - enabled: ${incoming.ai_analysis.enabled}, trigger_type: ${incoming.ai_analysis.analysis_trigger_type}, count_threshold: ${incoming.ai_analysis.message_count_threshold} (类型: ${typeof incoming.ai_analysis.message_count_threshold}), time_interval: ${incoming.ai_analysis.time_interval_minutes} (类型: ${typeof incoming.ai_analysis.time_interval_minutes}), trigger_enabled: ${incoming.ai_analysis.ai_trigger_enabled}`);
