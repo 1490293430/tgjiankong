@@ -1864,13 +1864,52 @@
         }
         
         
-        // 加载统计信息
+        // 加载统计信息（无感刷新）
         async function loadStats() {
-            const data = await apiRequest('/stats');
-            if (data) {
-                document.getElementById('totalLogs').textContent = data.total || 0;
-                document.getElementById('todayLogs').textContent = data.todayCount || 0;
-                document.getElementById('alertedLogs').textContent = data.alertedCount || 0;
+            const statsGrid = document.querySelector('.stats-grid');
+            const totalLogsEl = document.getElementById('totalLogs');
+            const todayLogsEl = document.getElementById('todayLogs');
+            const alertedLogsEl = document.getElementById('alertedLogs');
+            
+            // 如果有现有内容，先淡出
+            if (statsGrid && (totalLogsEl?.textContent !== '-' && totalLogsEl?.textContent !== '0')) {
+                statsGrid.style.transition = 'opacity 0.2s ease-out';
+                statsGrid.style.opacity = '0.5';
+            }
+            
+            try {
+                const data = await apiRequest('/stats');
+                if (data) {
+                    // 使用requestAnimationFrame确保DOM更新在下一帧，实现平滑过渡
+                    requestAnimationFrame(() => {
+                        if (totalLogsEl) {
+                            totalLogsEl.textContent = data.total || 0;
+                        }
+                        if (todayLogsEl) {
+                            todayLogsEl.textContent = data.todayCount || 0;
+                        }
+                        if (alertedLogsEl) {
+                            alertedLogsEl.textContent = data.alertedCount || 0;
+                        }
+                        
+                        // 数据更新后，淡入显示
+                        if (statsGrid) {
+                            statsGrid.style.transition = 'opacity 0.3s ease-in';
+                            statsGrid.style.opacity = '1';
+                        }
+                    });
+                } else {
+                    // 如果加载失败，恢复透明度
+                    if (statsGrid) {
+                        statsGrid.style.opacity = '1';
+                    }
+                }
+            } catch (error) {
+                console.error('加载统计信息失败:', error);
+                // 加载失败时恢复透明度
+                if (statsGrid) {
+                    statsGrid.style.opacity = '1';
+                }
             }
         }
         
@@ -1947,10 +1986,23 @@
             const container = document.getElementById('recentLogs');
             if (!container) return;
             
+            // 保存当前内容的引用（用于无感刷新）
+            const existingTable = container.querySelector('table');
+            let oldContentOpacity = 1;
+            
             if (reset) {
                 recentLogsPage = 1;
                 recentLogsHasMore = true;
-                container.innerHTML = '<div class="loading">加载中...</div>';
+                
+                // 无感刷新：如果有现有内容，先淡出，而不是直接清空
+                if (existingTable) {
+                    container.style.transition = 'opacity 0.2s ease-out';
+                    container.style.opacity = '0.5';
+                    oldContentOpacity = 0.5;
+                } else {
+                    // 首次加载，显示加载提示
+                    container.innerHTML = '<div class="loading">加载中...</div>';
+                }
                 
                 // 确保滚动监听已设置（只设置一次）
                 if (!recentLogsScrollSetup) {
@@ -1967,6 +2019,7 @@
                 if (!data) {
                     // API请求失败（可能是502等错误）
                     if (reset) {
+                        container.style.opacity = '1';
                         container.innerHTML = '<div class="loading" style="color: #e74c3c;">⚠️ 无法连接到服务器，请检查后端服务状态</div>';
                     }
                     recentLogsLoading = false;
@@ -1977,7 +2030,7 @@
                     const isFirstPage = recentLogsPage === 1;
                     
                     if (isFirstPage) {
-                        // 第一页：创建新表格
+                        // 第一页：创建新表格（无感刷新）
                         let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>ID</th><th>关键词</th><th>消息</th></tr></thead><tbody>';
                         
                         data.logs.forEach(log => {
@@ -2000,7 +2053,15 @@
                         });
                         
                         html += '</tbody></table>';
+                        
+                        // 无感刷新：先设置新内容（透明度为0），然后淡入
+                        container.style.transition = 'opacity 0.3s ease-in';
                         container.innerHTML = html;
+                        container.style.opacity = '0';
+                        // 使用 requestAnimationFrame 确保DOM更新后再淡入
+                        requestAnimationFrame(() => {
+                            container.style.opacity = '1';
+                        });
                     } else {
                         // 追加模式：追加到现有表格
                         const existingTable = container.querySelector('table');
