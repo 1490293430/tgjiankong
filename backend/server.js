@@ -4981,21 +4981,19 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
   
   try {
     const userConfig = await loadUserConfig(userId);
-  const config = userConfig.toObject ? userConfig.toObject() : userConfig;
-  
-  if (!config.ai_analysis?.enabled) {
-    console.log('⏸️  AI 分析功能未启用');
-    return { success: false, error: 'AI 分析功能未启用' };
-  }
+    const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+    
+    if (!config.ai_analysis?.enabled) {
+      console.log('⏸️  AI 分析功能未启用');
+      return { success: false, error: 'AI 分析功能未启用' };
+    }
 
-  const aiService = new AIAnalysisService(config.ai_analysis);
-  
-  if (!aiService.isConfigured()) {
-    console.log('⚠️  AI 分析配置不完整');
-    return { success: false, error: 'OpenAI API Key 未配置' };
-  }
-
-  try {
+    const aiService = new AIAnalysisService(config.ai_analysis);
+    
+    if (!aiService.isConfigured()) {
+      console.log('⚠️  AI 分析配置不完整');
+      return { success: false, error: 'OpenAI API Key 未配置' };
+    }
     const userIdObj = new mongoose.Types.ObjectId(userId);
     
     // 查询未分析的消息
@@ -5032,15 +5030,6 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
         $or: [
           { ai_cleared_at: null }, // 从未被清除过
           { ai_cleared_at: { $lt: clearCooldownTime } } // 或者清除时间已经超过5分钟
-        ],
-        // 排除最近30秒内可能正在被分析的消息（通过检查更新时间）
-        $and: [
-          {
-            $or: [
-              { updated_at: { $exists: false } }, // 没有更新时间字段（旧数据）
-              { updated_at: { $lt: analysisCooldownTime } } // 或者更新时间在30秒前
-            ]
-          }
         ]
       }).sort({ time: -1 }).limit(maxMessages);
       unanalyzedMessages = await query;
