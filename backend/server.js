@@ -3240,9 +3240,14 @@ function checkSessionFileExists(sessionPath) {
       sessionFileName = 'telegram'; // 默认文件名
     }
     
-    // 只检查项目的 data/session 路径（宿主机路径：/opt/telegram-monitor/data/session）
-    // 这是唯一的标准路径，不需要扫描其他位置
-    const sessionDir = '/opt/telegram-monitor/data/session';
+    // 只检查项目的 data/session 路径
+    // 容器内挂载路径：/app/data/session（对应宿主机：/opt/telegram-monitor/data/session）
+    // 如果容器内路径不存在，尝试宿主机路径
+    let sessionDir = '/app/data/session';
+    if (!fs.existsSync(sessionDir)) {
+      // 如果容器内路径不存在，尝试宿主机路径
+      sessionDir = '/opt/telegram-monitor/data/session';
+    }
     
     // 检查 .session 文件
     const sessionFile = path.join(sessionDir, `${sessionFileName}.session`);
