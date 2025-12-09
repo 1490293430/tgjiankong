@@ -2472,44 +2472,49 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
     let dataBacked = false;
     for (const dataPath of possibleDataPaths) {
       if (fs.existsSync(dataPath)) {
-      const dataFiles = fs.readdirSync(dataPath);
-      if (dataFiles.length > 0) {
-        const backupDataPath = path.join(backupPath, 'data');
-        fs.mkdirSync(backupDataPath, { recursive: true });
-        
-        // 复制数据目录内容
-        for (const item of dataFiles) {
-          const sourcePath = path.join(dataPath, item);
-          const destPath = path.join(backupDataPath, item);
-          const stat = fs.statSync(sourcePath);
+        const dataFiles = fs.readdirSync(dataPath);
+        if (dataFiles.length > 0) {
+          const backupDataPath = path.join(backupPath, 'data');
+          fs.mkdirSync(backupDataPath, { recursive: true });
           
-          if (stat.isDirectory()) {
-            // 递归复制目录
-            const copyDir = (src, dest) => {
-              fs.mkdirSync(dest, { recursive: true });
-              const entries = fs.readdirSync(src);
-              for (const entry of entries) {
-                const srcPath = path.join(src, entry);
-                const destPath = path.join(dest, entry);
-                const entryStat = fs.statSync(srcPath);
-                if (entryStat.isDirectory()) {
-                  copyDir(srcPath, destPath);
-                } else {
-                  fs.copyFileSync(srcPath, destPath);
+          // 复制数据目录内容
+          for (const item of dataFiles) {
+            const sourcePath = path.join(dataPath, item);
+            const destPath = path.join(backupDataPath, item);
+            const stat = fs.statSync(sourcePath);
+            
+            if (stat.isDirectory()) {
+              // 递归复制目录
+              const copyDir = (src, dest) => {
+                fs.mkdirSync(dest, { recursive: true });
+                const entries = fs.readdirSync(src);
+                for (const entry of entries) {
+                  const srcPath = path.join(src, entry);
+                  const destPath = path.join(dest, entry);
+                  const entryStat = fs.statSync(srcPath);
+                  if (entryStat.isDirectory()) {
+                    copyDir(srcPath, destPath);
+                  } else {
+                    fs.copyFileSync(srcPath, destPath);
+                  }
                 }
-              }
-            };
-            copyDir(sourcePath, destPath);
-          } else {
-            fs.copyFileSync(sourcePath, destPath);
+              };
+              copyDir(sourcePath, destPath);
+            } else {
+              fs.copyFileSync(sourcePath, destPath);
+            }
           }
+          console.log(`✅ [备份] 已备份数据目录: ${dataPath}`);
+          dataBacked = true;
+          break; // 找到数据目录后退出循环
+        } else {
+          console.warn(`⚠️  [备份] 数据目录为空: ${dataPath}`);
         }
-        console.log('✅ [备份] 已备份数据目录: data/');
-      } else {
-        console.warn('⚠️  [备份] 数据目录为空');
       }
-    } else {
-      console.warn('⚠️  [备份] 数据目录不存在: data/');
+    }
+    
+    if (!dataBacked) {
+      console.warn(`⚠️  [备份] 数据目录不存在，尝试过的路径: ${possibleDataPaths.join(', ')}`);
     }
     
     // 创建备份信息文件
