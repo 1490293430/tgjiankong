@@ -4398,6 +4398,10 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0, allow
 const loginStatusCache = new Map();
 const CACHE_TTL = 30000; // 缓存30秒（从10秒增加到30秒，减少检查频率）
 
+// 用户配置缓存（避免频繁查询 MongoDB）
+const userConfigCache = new Map();
+const CONFIG_CACHE_TTL = 60000; // 配置缓存60秒
+
 // 检查 Telegram 登录状态（优化版本，提高准确性）
 app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
   try {
@@ -4409,38 +4413,20 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       const cacheKey = `login_status_${userId}`;
       const cached = loginStatusCache.get(cacheKey);
       if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
-        console.log(`📋 [登录状态] 使用缓存结果 (userId: ${userId})`);
+        // 移除日志输出，减少I/O操作
         return res.json(cached.result);
       }
     }
     
-    const userConfig = await loadUserConfig(userId);
-    const config = userConfig.toObject ? userConfig.toObject() : userConfig;
-    
-    const apiId = config.telegram?.api_id || 0;
-    const apiHash = config.telegram?.api_hash || '';
-    
-    if (!apiId || !apiHash) {
-      const result = {
-        logged_in: false,
-        message: '请先配置 API_ID 和 API_HASH'
-      };
-      return res.json(result);
-    }
-    
-    // 验证输入
-    const validatedApiId = validateInput(apiId, 'number');
-    const validatedApiHash = validateInput(apiHash);
-    
+    // 快速检查 session 文件（不依赖 MongoDB 查询）
     const sessionPath = userId 
       ? `/app/session/telegram_${userId}`
       : '/app/session/telegram';
     
-    // 首先检查 session 文件是否存在（不依赖容器）
     const sessionExists = checkSessionFileExists(sessionPath);
     
+    // 如果 session 文件不存在，直接返回（不需要查询配置）
     if (!sessionExists) {
-      // 如果 session 文件不存在，直接返回未登录
       const result = {
         logged_in: false,
         message: '未登录（session 文件不存在）'
@@ -4454,27 +4440,56 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
     }
     
     // session 文件存在，快速返回已登录状态（不等待容器验证，提高速度）
-    // 如果用户需要验证，可以手动刷新
     const quickResult = {
       logged_in: true,
       message: '已登录（session 文件存在）',
       uncertain: false
     };
     
-    // 缓存成功结果（缓存时间更长，减少检查频率）
+    // 缓存成功结果
     loginStatusCache.set(`login_status_${userId}`, {
       result: quickResult,
       timestamp: Date.now()
     });
     
-    // 如果强制刷新，才进行容器验证（但使用较短的超时）
+    // 如果强制刷新，才加载配置并进行容器验证
     if (forceRefresh) {
+      // 尝试从缓存获取配置（避免 MongoDB 查询）
+      let config = null;
+      const configCacheKey = `user_config_${userId}`;
+      const cachedConfig = userConfigCache.get(configCacheKey);
+      
+      if (cachedConfig && (Date.now() - cachedConfig.timestamp) < CONFIG_CACHE_TTL) {
+        config = cachedConfig.config;
+      } else {
+        // 缓存未命中，查询 MongoDB
+        const userConfig = await loadUserConfig(userId);
+        config = userConfig.toObject ? userConfig.toObject() : userConfig;
+        // 更新配置缓存
+        userConfigCache.set(configCacheKey, {
+          config,
+          timestamp: Date.now()
+        });
+      }
+      
+      const apiId = config.telegram?.api_id || 0;
+      const apiHash = config.telegram?.api_hash || '';
+      
+      if (!apiId || !apiHash) {
+        return res.json(quickResult); // 即使没有配置，也返回已登录（因为文件存在）
+      }
+      
+      // 验证输入
+      const validatedApiId = validateInput(apiId, 'number');
+      const validatedApiHash = validateInput(apiHash);
+      
+      // 如果强制刷新，才进行容器验证（但使用较短的超时）
       let checkResult = null;
       let checkError = null;
       
       try {
-        // 使用较短的超时时间（5秒），快速失败
-        const quickTimeout = 5000; // 5秒超时（从10秒减少到5秒）
+        // 使用较短的超时时间（3秒），快速失败
+        const quickTimeout = 3000; // 3秒超时（进一步减少）
         checkResult = await Promise.race([
           execTelethonLoginScript('check', [
             sessionPath,
@@ -4482,12 +4497,12 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
             validatedApiHash
           ], 0, true), // allowCreateTemp = true
           new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('检查超时（10秒）')), quickTimeout)
+            setTimeout(() => reject(new Error('检查超时（3秒）')), quickTimeout)
           )
         ]);
       } catch (error) {
         checkError = error;
-        console.warn(`⚠️  [登录状态] 容器验证失败 (userId: ${userId}):`, error.message);
+        // 容器验证失败不影响结果，因为文件存在就认为已登录
       }
       
       // 如果容器验证成功，使用验证结果
