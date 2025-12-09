@@ -1129,26 +1129,19 @@ app.post('/api/config', authMiddleware, async (req, res) => {
         console.error(`❌ [配置保存] 验证保存结果失败:`, verifyError.message);
       }
       
-      // 检查是否需要同步配置并重启Telethon（如果固定用户触发配置有变化）
-      const needsTelethonRestart = incoming.ai_analysis && (
-        incoming.ai_analysis.ai_trigger_enabled !== undefined ||
-        incoming.ai_analysis.ai_trigger_users !== undefined
-      );
-      
-      if (needsTelethonRestart) {
-        // 如果固定用户触发配置有变化，需要同步配置并重启Telethon
+      // 如果Telegram凭证变化，需要重启Telethon服务
+      if (telegramConfigChanged) {
         try {
-          console.log(`🔄 [配置保存] 固定用户触发配置已更改，同步配置并重启Telethon`);
+          console.log(`🔄 [配置保存] Telegram凭证已变化，开始同步配置并重启Telethon服务`);
           await syncUserConfigAndRestartTelethon(userId);
-          console.log(`✅ [配置保存] 配置已同步，Telethon服务已重启`);
+          console.log(`✅ [配置保存] Telegram凭证配置已同步，Telethon服务已重启`);
         } catch (syncError) {
-          console.warn('⚠️  [配置保存] 同步配置或重启Telethon失败（不影响配置保存）:', syncError.message);
-          console.error('错误堆栈:', syncError.stack);
+          console.error('❌ [配置保存] 同步Telegram凭证配置或重启Telethon失败:', syncError.message);
         }
       } else {
-        // 其他配置变化，只同步到全局文件，不重启Telethon
+        // 非Telegram凭证配置变化，只同步配置并立即通知Telethon重载（不重启）
         try {
-          console.log(`🔄 [配置保存] 开始同步配置到全局文件（不重启Telethon）`);
+          console.log(`🔄 [配置保存] 开始同步配置到全局文件（立即通知Telethon重载）`);
           const globalConfig = loadConfig();
           const accountId = await getAccountId(userId);
           const accountIdObj = new mongoose.Types.ObjectId(accountId);
@@ -1156,19 +1149,49 @@ app.post('/api/config', authMiddleware, async (req, res) => {
           if (userConfig) {
             const configObj = userConfig.toObject ? userConfig.toObject() : userConfig;
             
+            // 确保 alert_keywords 是数组
+            let alertKeywordsArray = [];
+            if (Array.isArray(configObj.alert_keywords)) {
+              alertKeywordsArray = configObj.alert_keywords;
+            } else if (typeof configObj.alert_keywords === 'string') {
+              alertKeywordsArray = configObj.alert_keywords.split('\n').map(k => k.trim()).filter(k => k);
+            } else if (configObj.alert_keywords) {
+              alertKeywordsArray = [configObj.alert_keywords].filter(k => k);
+            }
+            
             const configToSync = {
               keywords: Array.isArray(configObj.keywords) ? configObj.keywords : (configObj.keywords || []),
               channels: Array.isArray(configObj.channels) ? configObj.channels : (configObj.channels || []),
-              alert_keywords: Array.isArray(configObj.alert_keywords) ? configObj.alert_keywords : (configObj.alert_keywords || []),
+              alert_keywords: alertKeywordsArray,
               alert_regex: Array.isArray(configObj.alert_regex) ? configObj.alert_regex : (configObj.alert_regex || []),
               log_all_messages: configObj.log_all_messages || false,
               alert_target: configObj.alert_target || ''
             };
             
+            // 同步 AI 分析配置（包括固定用户触发配置）
+            if (configObj.ai_analysis) {
+              configToSync.ai_analysis = {
+                enabled: configObj.ai_analysis.enabled || false,
+                ai_trigger_enabled: configObj.ai_analysis.ai_trigger_enabled || false,
+                ai_trigger_users: Array.isArray(configObj.ai_analysis.ai_trigger_users) 
+                  ? configObj.ai_analysis.ai_trigger_users 
+                  : (typeof configObj.ai_analysis.ai_trigger_users === 'string' 
+                      ? configObj.ai_analysis.ai_trigger_users.split('\n').map(u => u.trim()).filter(u => u)
+                      : []),
+                ai_trigger_prompt: configObj.ai_analysis.ai_trigger_prompt || ''
+              };
+              console.log(`✅ [配置保存] 已同步固定用户触发配置 - ai_trigger_enabled: ${configToSync.ai_analysis.ai_trigger_enabled}, 触发用户数: ${configToSync.ai_analysis.ai_trigger_users?.length || 0}`);
+            }
+            
+            // 注意：不同步Telegram API配置（只有telegram凭证变化时才同步）
+            
             // 更新全局配置，保留其他字段
             Object.assign(globalConfig, configToSync);
             fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
-            console.log(`✅ [配置保存] 配置已同步到全局文件（不重启Telethon）`);
+            console.log(`✅ [配置保存] 配置已同步到全局文件`);
+            
+            // 立即通知Telethon服务重新加载配置（不阻塞，静默失败）
+            await notifyTelethonConfigReload();
           }
         } catch (syncError) {
           console.warn('⚠️  [配置保存] 同步配置到全局文件失败（不影响配置保存）:', syncError.message);
@@ -4823,6 +4846,23 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
     res.status(500).json({ error: '验证失败：' + error.message });
   }
 });
+
+// 通知Telethon服务重新加载配置（不阻塞，静默失败）
+async function notifyTelethonConfigReload() {
+  try {
+    const telethonUrl = process.env.TELETHON_URL || 'http://telethon:8888';
+    await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
+      timeout: 5000,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+    console.log('✅ [配置同步] 已通知Telethon服务重新加载配置');
+  } catch (error) {
+    // 静默失败，不影响配置保存
+    console.warn('⚠️  [配置同步] 通知Telethon服务重新加载配置失败（不影响配置保存）:', error.message);
+  }
+}
 
 // 内部 API：发送 Telegram 消息（转发到Telethon服务的HTTP服务器）
 app.post('/api/internal/telegram/send', async (req, res) => {

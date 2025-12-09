@@ -148,10 +148,49 @@
         
         .tab-content {
             display: none;
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out;
         }
         
         .tab-content.active {
             display: block;
+            opacity: 1;
+        }
+        
+        /* 页面初始加载时隐藏内容，避免闪动 */
+        .page-loading .tab-content.active {
+            opacity: 0;
+        }
+        
+        .page-loaded .tab-content.active {
+            opacity: 1;
+        }
+        
+        /* 加载骨架屏 */
+        .skeleton {
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: loading 1.5s ease-in-out infinite;
+            border-radius: 4px;
+        }
+        
+        @keyframes loading {
+            0% {
+                background-position: 200% 0;
+            }
+            100% {
+                background-position: -200% 0;
+            }
+        }
+        
+        .skeleton-text {
+            height: 20px;
+            margin-bottom: 10px;
+        }
+        
+        .skeleton-card {
+            height: 100px;
+            margin-bottom: 20px;
         }
         
         .stats-grid {
@@ -595,7 +634,7 @@
         }
     </style>
 </head>
-<body>
+<body class="page-loading">
     <div class="header">
         <h1>📱 Telegram 监控系统</h1>
         <div class="user-info">
@@ -1794,26 +1833,34 @@
             const tabContent = document.getElementById(tabName);
             if (tabContent) {
                 tabContent.classList.add('active');
+                // 切换标签页时，先设置透明度为0，加载完成后再显示（减少闪动）
+                tabContent.style.opacity = '0';
             }
             
             // 保存当前标签页
             localStorage.setItem('currentTab', tabName);
             
-            if (tabName === 'dashboard') {
-                loadStats();
-                loadRecentLogs(true); // 重置并加载（会自动设置滚动监听）
-            } else if (tabName === 'config') {
-                loadConfig();
-                // loadConfig 内部会调用 checkTelegramLoginStatus，这里不需要重复调用
-            } else if (tabName === 'ai') {
-                loadAIStats();
-                loadAISummaries();
-            } else if (tabName === 'logs') {
-                loadLogs();
-            } else if (tabName === 'settings') {
-                // 加载用户列表（只有主账号可以创建和管理子账号，权限由后端控制）
-                loadUsers();
-            }
+            // 使用 Promise.all 等待所有数据加载完成
+            Promise.all([
+                tabName === 'dashboard' ? Promise.all([loadStats(), loadRecentLogs(true)]) : Promise.resolve(),
+                tabName === 'config' ? loadConfig() : Promise.resolve(),
+                tabName === 'ai' ? Promise.all([loadAIStats(), loadAISummaries()]) : Promise.resolve(),
+                tabName === 'logs' ? loadLogs() : Promise.resolve(),
+                tabName === 'settings' ? loadUsers() : Promise.resolve()
+            ]).then(() => {
+                // 数据加载完成后，平滑显示内容
+                if (tabContent) {
+                    setTimeout(() => {
+                        tabContent.style.opacity = '1';
+                    }, 50);
+                }
+            }).catch(error => {
+                console.error('加载标签页数据失败:', error);
+                // 即使加载失败，也要显示内容
+                if (tabContent) {
+                    tabContent.style.opacity = '1';
+                }
+            });
         }
         
         
@@ -3495,23 +3542,35 @@
         }
         
         // 根据标签页加载对应内容（使用 setTimeout 避免影响初始化滚动）
-        setTimeout(() => {
-            if (savedTab === 'dashboard') {
-                loadStats();
-                loadRecentLogs(true); // 重置并加载
-            } else if (savedTab === 'config') {
-                loadConfig();
-            } else if (savedTab === 'ai') {
-                loadAIStats();
-                loadAISummaries();
-            } else if (savedTab === 'logs') {
-                loadLogs();
-            } else if (savedTab === 'settings') {
-                // 如果是admin用户，加载用户列表
-                const currentUsername = localStorage.getItem('username');
-                if (currentUsername === 'admin') {
-                    loadUsers();
+        setTimeout(async () => {
+            try {
+                if (savedTab === 'dashboard') {
+                    await Promise.all([
+                        loadStats(),
+                        loadRecentLogs(true) // 重置并加载
+                    ]);
+                } else if (savedTab === 'config') {
+                    await loadConfig();
+                } else if (savedTab === 'ai') {
+                    await Promise.all([
+                        loadAIStats(),
+                        loadAISummaries()
+                    ]);
+                } else if (savedTab === 'logs') {
+                    await loadLogs();
+                } else if (savedTab === 'settings') {
+                    // 如果是admin用户，加载用户列表
+                    const currentUsername = localStorage.getItem('username');
+                    if (currentUsername === 'admin') {
+                        await loadUsers();
+                    }
                 }
+            } catch (error) {
+                console.error('加载页面数据失败:', error);
+            } finally {
+                // 数据加载完成后，移除加载状态，显示内容
+                document.body.classList.remove('page-loading');
+                document.body.classList.add('page-loaded');
             }
         }, 100);
         

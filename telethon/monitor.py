@@ -35,8 +35,8 @@ USER_ID = os.getenv("USER_ID", "").strip()
 AI_CONCURRENCY = int(os.getenv("AI_CONCURRENCY", "2"))
 ALERT_CONCURRENCY = int(os.getenv("ALERT_CONCURRENCY", "4"))
 
-# config reload interval (秒) - 增加到10秒以减少CPU开销
-CONFIG_RELOAD_INTERVAL = float(os.getenv("CONFIG_RELOAD_INTERVAL", "10.0"))
+# config reload interval (秒) - 增加到5分钟作为兜底机制（配置变更主要通过HTTP通知立即生效）
+CONFIG_RELOAD_INTERVAL = float(os.getenv("CONFIG_RELOAD_INTERVAL", "300.0"))
 
 # -----------------------
 # 日志
@@ -526,6 +526,19 @@ async def handle_send_telegram(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def handle_config_reload(request):
+    """处理配置重载通知的HTTP请求"""
+    try:
+        # 立即重新加载配置
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, load_config_sync)
+        logger.info("✅ 收到配置重载通知，配置已立即重新加载")
+        return web.json_response({"status": "ok", "message": "配置已重新加载"})
+    except Exception as e:
+        logger.error("处理配置重载通知失败: %s", str(e))
+        return web.json_response({"error": str(e)}, status=500)
+
+
 # -----------------------
 # 消息处理器（非阻塞 / 轻量）
 # -----------------------
@@ -855,9 +868,10 @@ async def main():
     global telegram_client
     telegram_client = client
 
-    # 启动HTTP服务器用于接收发送消息请求
+    # 启动HTTP服务器用于接收发送消息请求和配置重载通知
     app = web.Application()
     app.router.add_post('/api/internal/telegram/send', handle_send_telegram)
+    app.router.add_post('/api/internal/config/reload', handle_config_reload)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 8888)
