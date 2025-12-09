@@ -2087,9 +2087,10 @@
                     document.getElementById('emailConfig').style.display = emailEnable ? 'block' : 'none';
                 }
                 
-                if (webhookEnable && config.alert_actions.webhook) {
+                // ✅ 修复：无论enable状态如何，都要填充webhook配置字段，确保配置能正确保存
+                if (config.alert_actions?.webhook) {
                     document.getElementById('webhookUrl').value = config.alert_actions.webhook.url || '';
-                    document.getElementById('webhookConfig').style.display = 'block';
+                    document.getElementById('webhookConfig').style.display = webhookEnable ? 'block' : 'none';
                 }
                 
                 // AI 分析配置

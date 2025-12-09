@@ -1129,34 +1129,51 @@ app.post('/api/config', authMiddleware, async (req, res) => {
         console.error(`❌ [配置保存] 验证保存结果失败:`, verifyError.message);
       }
       
-      // 同步配置到全局配置文件（不重启Telethon，因为只有API凭证才需要重启）
-      try {
-        console.log(`🔄 [配置保存] 开始同步配置到全局文件（不重启Telethon）`);
-        // 只同步配置，不重启Telethon
-        const globalConfig = loadConfig();
-        const accountId = await getAccountId(userId);
-        const accountIdObj = new mongoose.Types.ObjectId(accountId);
-        const userConfig = await loadUserConfig(userId.toString());
-        if (userConfig) {
-          const configObj = userConfig.toObject ? userConfig.toObject() : userConfig;
-          
-          const configToSync = {
-            keywords: Array.isArray(configObj.keywords) ? configObj.keywords : (configObj.keywords || []),
-            channels: Array.isArray(configObj.channels) ? configObj.channels : (configObj.channels || []),
-            alert_keywords: Array.isArray(configObj.alert_keywords) ? configObj.alert_keywords : (configObj.alert_keywords || []),
-            alert_regex: Array.isArray(configObj.alert_regex) ? configObj.alert_regex : (configObj.alert_regex || []),
-            log_all_messages: configObj.log_all_messages || false,
-            alert_target: configObj.alert_target || ''
-          };
-          
-          // 更新全局配置，保留其他字段
-          Object.assign(globalConfig, configToSync);
-          fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
-          console.log(`✅ [配置保存] 配置已同步到全局文件（不重启Telethon）`);
+      // 检查是否需要同步配置并重启Telethon（如果固定用户触发配置有变化）
+      const needsTelethonRestart = incoming.ai_analysis && (
+        incoming.ai_analysis.ai_trigger_enabled !== undefined ||
+        incoming.ai_analysis.ai_trigger_users !== undefined
+      );
+      
+      if (needsTelethonRestart) {
+        // 如果固定用户触发配置有变化，需要同步配置并重启Telethon
+        try {
+          console.log(`🔄 [配置保存] 固定用户触发配置已更改，同步配置并重启Telethon`);
+          await syncUserConfigAndRestartTelethon(userId);
+          console.log(`✅ [配置保存] 配置已同步，Telethon服务已重启`);
+        } catch (syncError) {
+          console.warn('⚠️  [配置保存] 同步配置或重启Telethon失败（不影响配置保存）:', syncError.message);
+          console.error('错误堆栈:', syncError.stack);
         }
-      } catch (syncError) {
-        console.warn('⚠️  [配置保存] 同步配置到全局文件失败（不影响配置保存）:', syncError.message);
-        console.error('错误堆栈:', syncError.stack);
+      } else {
+        // 其他配置变化，只同步到全局文件，不重启Telethon
+        try {
+          console.log(`🔄 [配置保存] 开始同步配置到全局文件（不重启Telethon）`);
+          const globalConfig = loadConfig();
+          const accountId = await getAccountId(userId);
+          const accountIdObj = new mongoose.Types.ObjectId(accountId);
+          const userConfig = await loadUserConfig(userId.toString());
+          if (userConfig) {
+            const configObj = userConfig.toObject ? userConfig.toObject() : userConfig;
+            
+            const configToSync = {
+              keywords: Array.isArray(configObj.keywords) ? configObj.keywords : (configObj.keywords || []),
+              channels: Array.isArray(configObj.channels) ? configObj.channels : (configObj.channels || []),
+              alert_keywords: Array.isArray(configObj.alert_keywords) ? configObj.alert_keywords : (configObj.alert_keywords || []),
+              alert_regex: Array.isArray(configObj.alert_regex) ? configObj.alert_regex : (configObj.alert_regex || []),
+              log_all_messages: configObj.log_all_messages || false,
+              alert_target: configObj.alert_target || ''
+            };
+            
+            // 更新全局配置，保留其他字段
+            Object.assign(globalConfig, configToSync);
+            fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
+            console.log(`✅ [配置保存] 配置已同步到全局文件（不重启Telethon）`);
+          }
+        } catch (syncError) {
+          console.warn('⚠️  [配置保存] 同步配置到全局文件失败（不影响配置保存）:', syncError.message);
+          console.error('错误堆栈:', syncError.stack);
+        }
       }
       
       // 如果 AI 分析配置有变化，重启定时器
@@ -5118,15 +5135,21 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
     console.log(`✅ AI 分析完成，情感: ${analysisResult.analysis.sentiment}, 风险: ${analysisResult.analysis.risk_level}`);
     
     // 根据配置发送告警
+    // 注意：对于固定用户触发（triggerType === 'user_message'），Telethon服务已经发送了结果给触发用户
+    // 这里只发送给 alert_target（如果配置了），避免重复发送
     const aiSendTelegram = config.ai_analysis?.ai_send_telegram !== false; // 默认启用
     const aiSendEmail = config.ai_analysis?.ai_send_email || false;
     const aiSendWebhook = config.ai_analysis?.ai_send_webhook || false;
     
-    if (aiSendTelegram || aiSendEmail || aiSendWebhook) {
+    // 对于固定用户触发，Telethon已经发送了结果，这里只发送给 alert_target（如果 alert_target 不是触发用户）
+    const shouldSendTelegram = aiSendTelegram && config.alert_target && triggerType !== 'user_message';
+    
+    if (shouldSendTelegram || aiSendEmail || aiSendWebhook) {
       const alertMessage = `🤖 AI 分析完成\n\n总分析消息数: ${unanalyzedMessages.length}\n情感倾向: ${analysisResult.analysis.sentiment}\n风险等级: ${analysisResult.analysis.risk_level}\n\n摘要:\n${analysisResult.analysis.summary}\n\n关键词: ${(analysisResult.analysis.keywords || []).join(', ')}`;
       
       // 发送 Telegram 告警（直接通过Telethon服务发送）
-      if (aiSendTelegram && config.alert_target) {
+      // 注意：固定用户触发时，Telethon已经发送了结果，这里不再发送
+      if (shouldSendTelegram) {
         try {
           // 直接调用Telethon服务的HTTP接口发送消息
           await axios.post(`${process.env.TELETHON_URL || 'http://telethon:8888'}/api/internal/telegram/send`, {
@@ -5142,6 +5165,8 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
         } catch (error) {
           console.error('❌ Telegram 发送失败:', error.message);
         }
+      } else if (triggerType === 'user_message' && aiSendTelegram) {
+        console.log('ℹ️  固定用户触发：Telethon服务已发送分析结果给触发用户，不再发送到 alert_target');
       }
       
       // 发送邮件告警
