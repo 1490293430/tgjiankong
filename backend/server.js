@@ -2639,17 +2639,53 @@ app.get('/api/backup/list', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: '权限不足：仅管理员可查看备份列表' });
     }
     
-    const scriptDir = path.resolve(__dirname, '..');
+    // 使用与备份创建相同的路径检测逻辑
+    const containerAppDir = '/app';
+    const containerConfigPath = path.join(containerAppDir, 'config.json');
+    
+    let scriptDir = null;
+    
+    // 如果 /app/config.json 存在，说明在容器内，使用 /app 作为工作目录
+    if (fs.existsSync(containerConfigPath)) {
+      scriptDir = containerAppDir;
+    } else {
+      // 尝试其他路径
+      const possibleRootPaths = [
+        path.resolve(__dirname, '..'),  // 相对于 server.js 的上级目录
+        '/opt/telegram-monitor',        // 常见部署路径
+        process.cwd()                   // 当前工作目录
+      ];
+      
+      for (const rootPath of possibleRootPaths) {
+        const configPath1 = path.join(rootPath, 'backend', 'config.json');
+        const configPath2 = path.join(rootPath, 'config.json');
+        
+        if (fs.existsSync(configPath1) || fs.existsSync(configPath2)) {
+          scriptDir = rootPath;
+          break;
+        }
+      }
+      
+      // 如果都没找到，使用默认路径
+      if (!scriptDir) {
+        scriptDir = path.resolve(__dirname, '..');
+      }
+    }
+    
     const backupDir = path.join(scriptDir, 'backups');
+    console.log(`📁 [备份列表] 使用备份目录: ${backupDir}`);
+    
     const backups = [];
     
     if (fs.existsSync(backupDir)) {
       const files = fs.readdirSync(backupDir);
+      console.log(`📁 [备份列表] 备份目录中的文件: ${files.join(', ')}`);
       for (const file of files) {
         // 支持备份目录和 .tar.gz 压缩文件
         if (file.startsWith('backup_') && (file.endsWith('.tar.gz') || !file.includes('.'))) {
           const filePath = path.join(backupDir, file);
           const stats = fs.statSync(filePath);
+          console.log(`✅ [备份列表] 找到备份文件: ${file} (${stats.size} 字节)`);
           
           // 如果是目录，计算目录总大小
           let totalSize = stats.size;
@@ -2686,7 +2722,11 @@ app.get('/api/backup/list', authMiddleware, async (req, res) => {
       
       // 按创建时间排序（最新的在前）
       backups.sort((a, b) => b.created - a.created);
+    } else {
+      console.warn(`⚠️  [备份列表] 备份目录不存在: ${backupDir}`);
     }
+    
+    console.log(`📊 [备份列表] 返回 ${backups.length} 个备份文件`);
     
     res.json({
       status: 'ok',
@@ -3177,8 +3217,19 @@ async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHost
 }
 
 // 检查本地 session 文件是否存在（不依赖容器）
+// 缓存已检查过的 session 路径，避免重复文件系统操作
+const sessionFileCache = new Map();
+const SESSION_CACHE_TTL = 5000; // 5秒缓存
+
 function checkSessionFileExists(sessionPath) {
   try {
+    // 检查缓存
+    const cacheKey = `session_${sessionPath}`;
+    const cached = sessionFileCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp) < SESSION_CACHE_TTL) {
+      return cached.exists;
+    }
+    
     // sessionPath 是容器内的路径，需要转换为本地路径
     // 容器内路径格式: /app/session/telegram 或 /app/session/telegram_xxx
     // API 容器内路径格式: /app/data/session/telegram 或 /app/data/session/telegram_xxx
@@ -3189,150 +3240,69 @@ function checkSessionFileExists(sessionPath) {
       sessionFileName = 'telegram'; // 默认文件名
     }
     
-    // API 容器中挂载的路径是 /app/data/session
-    const possibleBasePaths = [
-      '/app/data/session',                           // API 容器内的挂载路径（优先）
-      path.join(process.cwd(), 'data', 'session'),  // 相对路径
-      '/opt/telegram-monitor/data/session',         // 常见部署路径
-      path.join(__dirname, '..', 'data', 'session'), // 相对于 server.js 的位置
-      './data/session'                               // 当前目录
-    ];
+    // 只检查项目的 data/session 路径（宿主机路径：/opt/telegram-monitor/data/session）
+    // 这是唯一的标准路径，不需要扫描其他位置
+    const sessionDir = '/opt/telegram-monitor/data/session';
     
-    // 检查所有可能的基础路径
-    for (const basePath of possibleBasePaths) {
+    // 检查 .session 文件
+    const sessionFile = path.join(sessionDir, `${sessionFileName}.session`);
+    if (fs.existsSync(sessionFile)) {
       try {
-        // Telethon 可能生成的文件名变体：
-        // 1. telegram_xxx.session（标准格式）
-        // 2. telegram_xxx（不带扩展名，不推荐，但可能）
-        // 3. telegram_xxx.session-journal（SQLite journal 文件）
-        const sessionFile1 = path.join(basePath, sessionFileName);           // telegram_xxx
-        const sessionFile2 = path.join(basePath, `${sessionFileName}.session`); // telegram_xxx.session
-        const sessionFile3 = path.join(basePath, `${sessionFileName}.session-journal`); // telegram_xxx.session-journal
-        
-        // 检查文件是否存在
-        const exists1 = fs.existsSync(sessionFile1) && fs.statSync(sessionFile1).isFile();
-        const exists2 = fs.existsSync(sessionFile2) && fs.statSync(sessionFile2).isFile();
-        const exists3 = fs.existsSync(sessionFile3) && fs.statSync(sessionFile3).isFile();
-        
-        // 优先检查 .session 文件（主要文件）
-        if (exists2) {
-          const stats = fs.statSync(sessionFile2);
-          if (stats.size > 0) {
-            console.log(`✅ [Session检查] 找到 session 文件: ${sessionFile2} (${stats.size} 字节)`);
-            return true;
-          }
-        }
-        
-        // 如果 .session 文件不存在，但 .session-journal 文件存在，也认为已登录
-        // journal 文件存在说明 session 正在使用或刚创建
-        if (exists3) {
-          const correspondingSession = path.join(basePath, `${sessionFileName}.session`);
-          if (fs.existsSync(correspondingSession)) {
-            const stats = fs.statSync(correspondingSession);
-            if (stats.size > 0) {
-              console.log(`✅ [Session检查] 找到 session 文件（通过 journal）: ${correspondingSession} (${stats.size} 字节)`);
-              return true;
-            }
-          } else {
-            // 如果只有 journal 文件，没有 .session 文件，可能是正在创建中
-            // 但为了快速响应，也认为已登录（journal 文件存在说明有登录活动）
-            console.log(`✅ [Session检查] 找到 session-journal 文件，认为已登录: ${sessionFile3}`);
-            return true;
-          }
-        }
-        
-        // 检查不带扩展名的文件
-        if (exists1) {
-          const stats = fs.statSync(sessionFile1);
-          if (stats.size > 0) {
-            console.log(`✅ [Session检查] 找到 session 文件（无扩展名）: ${sessionFile1} (${stats.size} 字节)`);
-            return true;
-          }
+        const stats = fs.statSync(sessionFile);
+        if (stats.isFile() && stats.size > 0) {
+          // 缓存结果
+          sessionFileCache.set(cacheKey, { exists: true, timestamp: Date.now() });
+          return true;
         }
       } catch (err) {
-        // 继续尝试下一个路径
-        continue;
+        // 文件存在但无法读取，继续检查 journal 文件
       }
     }
     
-    // 如果所有路径都没找到，尝试直接检查（可能是绝对路径）
-    try {
-      if (fs.existsSync(sessionPath) && fs.statSync(sessionPath).isFile()) {
-        const stats = fs.statSync(sessionPath);
-        if (stats.size > 0) {
-          console.log(`✅ [Session检查] 找到 session 文件（绝对路径）: ${sessionPath} (${stats.size} 字节)`);
-          return true;
-        }
-      }
-      const sessionPathWithExt = `${sessionPath}.session`;
-      if (fs.existsSync(sessionPathWithExt) && fs.statSync(sessionPathWithExt).isFile()) {
-        const stats = fs.statSync(sessionPathWithExt);
-        if (stats.size > 0) {
-          console.log(`✅ [Session检查] 找到 session 文件（绝对路径）: ${sessionPathWithExt} (${stats.size} 字节)`);
-          return true;
-        }
-      }
-    } catch (err) {
-      // 忽略错误
+    // 检查 .session-journal 文件（journal 文件存在也说明已登录）
+    const journalFile = path.join(sessionDir, `${sessionFileName}.session-journal`);
+    if (fs.existsSync(journalFile)) {
+      // journal 文件存在，也认为已登录
+      sessionFileCache.set(cacheKey, { exists: true, timestamp: Date.now() });
+      return true;
     }
     
-    // 如果精确匹配失败，扫描整个 session 目录，查找任何有效的 .session 文件
-    // 这样可以处理生成了多个 session 文件的情况（例如：telegram.session 和 telegram_xxx.session）
-    console.log(`🔍 [Session检查] 精确匹配失败，扫描 session 目录查找所有 .session 文件...`);
-    for (const basePath of possibleBasePaths) {
+    // 如果精确匹配失败，扫描 session 目录
+    // 扫描到第一个有效的 session 文件就返回，如果没找到就继续扫描完所有文件
+    if (fs.existsSync(sessionDir)) {
       try {
-        if (!fs.existsSync(basePath) || !fs.statSync(basePath).isDirectory()) {
-          continue;
-        }
-        
-        // 扫描目录中的所有文件
-        const files = fs.readdirSync(basePath);
-        let foundSessions = [];
+        const files = fs.readdirSync(sessionDir);
+        // 扫描所有文件，找到第一个有效的就返回
         for (const file of files) {
-          // 查找所有 .session 文件（包括 journal 文件，因为 journal 存在也说明已登录）
-          if (file.endsWith('.session') || file.endsWith('.session-journal')) {
-            // 如果是 journal 文件，检查对应的 .session 文件是否存在
-            if (file.endsWith('.session-journal')) {
-              const sessionFileName = file.replace('.session-journal', '.session');
-              const sessionFile = path.join(basePath, sessionFileName);
-              if (fs.existsSync(sessionFile)) {
-                const stats = fs.statSync(sessionFile);
-                if (stats.isFile() && stats.size > 0) {
-                  foundSessions.push({ file: sessionFile, size: stats.size });
-                }
-              } else {
-                // 如果只有 journal 文件，也认为已登录
-                foundSessions.push({ file: path.join(basePath, file), size: 0 });
+          if (file.endsWith('.session') && !file.endsWith('.session-journal')) {
+            const filePath = path.join(sessionDir, file);
+            try {
+              const stats = fs.statSync(filePath);
+              if (stats.isFile() && stats.size > 0) {
+                // 找到第一个有效的 session 文件就认为已登录，立即返回
+                sessionFileCache.set(cacheKey, { exists: true, timestamp: Date.now() });
+                return true;
               }
-            } else {
-              // 标准 .session 文件
-              const sessionFile = path.join(basePath, file);
-              try {
-                const stats = fs.statSync(sessionFile);
-                if (stats.isFile() && stats.size > 0) {
-                  foundSessions.push({ file: sessionFile, size: stats.size });
-                }
-              } catch (err) {
-                // 继续检查下一个文件
-                continue;
-              }
+            } catch (err) {
+              continue;
             }
           }
         }
-        
-        if (foundSessions.length > 0) {
-          console.log(`✅ [Session检查] 在 ${basePath} 找到 ${foundSessions.length} 个 session 文件:`);
-          foundSessions.forEach(s => console.log(`   - ${s.file} (${s.size} 字节)`));
-          // 找到任何有效的 session 文件就认为已登录
-          return true;
+        // 如果 .session 文件都没找到，检查 journal 文件
+        for (const file of files) {
+          if (file.endsWith('.session-journal')) {
+            // journal 文件存在，也认为已登录
+            sessionFileCache.set(cacheKey, { exists: true, timestamp: Date.now() });
+            return true;
+          }
         }
       } catch (err) {
-        // 继续检查下一个路径
-        continue;
+        // 忽略扫描错误
       }
     }
     
-    console.log(`❌ [Session检查] 未找到 session 文件: ${sessionPath} (尝试过的路径: ${possibleBasePaths.join(', ')})`);
+    // 缓存未找到的结果
+    sessionFileCache.set(cacheKey, { exists: false, timestamp: Date.now() });
     return false;
   } catch (error) {
     console.error('检查 session 文件失败:', error);
@@ -4421,7 +4391,7 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0, allow
 
 // 登录状态检查缓存（避免频繁检查）
 const loginStatusCache = new Map();
-const CACHE_TTL = 10000; // 缓存10秒
+const CACHE_TTL = 30000; // 缓存30秒（从10秒增加到30秒，减少检查频率）
 
 // 检查 Telegram 登录状态（优化版本，提高准确性）
 app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
@@ -4498,8 +4468,8 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       let checkError = null;
       
       try {
-        // 使用较短的超时时间（10秒），快速失败
-        const quickTimeout = 10000; // 10秒超时
+        // 使用较短的超时时间（5秒），快速失败
+        const quickTimeout = 5000; // 5秒超时（从10秒减少到5秒）
         checkResult = await Promise.race([
           execTelethonLoginScript('check', [
             sessionPath,
