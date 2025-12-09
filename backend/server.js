@@ -3131,32 +3131,39 @@ function checkSessionFileExists(sessionPath) {
         const exists2 = fs.existsSync(sessionFile2) && fs.statSync(sessionFile2).isFile();
         const exists3 = fs.existsSync(sessionFile3) && fs.statSync(sessionFile3).isFile();
         
-        if (exists1 || exists2 || exists3) {
-          // 如果找到了文件，验证是否是有效的 session 文件
-          // .session 文件应该大于 0 字节（至少有一些内容）
-          if (exists2) {
-            const stats = fs.statSync(sessionFile2);
+        // 优先检查 .session 文件（主要文件）
+        if (exists2) {
+          const stats = fs.statSync(sessionFile2);
+          if (stats.size > 0) {
+            console.log(`✅ [Session检查] 找到 session 文件: ${sessionFile2} (${stats.size} 字节)`);
+            return true;
+          }
+        }
+        
+        // 如果 .session 文件不存在，但 .session-journal 文件存在，也认为已登录
+        // journal 文件存在说明 session 正在使用或刚创建
+        if (exists3) {
+          const correspondingSession = path.join(basePath, `${sessionFileName}.session`);
+          if (fs.existsSync(correspondingSession)) {
+            const stats = fs.statSync(correspondingSession);
             if (stats.size > 0) {
-              console.log(`✅ 找到 session 文件: ${sessionFile2} (${stats.size} 字节)`);
+              console.log(`✅ [Session检查] 找到 session 文件（通过 journal）: ${correspondingSession} (${stats.size} 字节)`);
               return true;
             }
-          } else if (exists1) {
-            const stats = fs.statSync(sessionFile1);
-            if (stats.size > 0) {
-              console.log(`✅ 找到 session 文件: ${sessionFile1} (${stats.size} 字节)`);
-              return true;
-            }
-          } else if (exists3) {
-            // journal 文件存在，说明至少尝试创建过 session
-            // 但我们需要检查对应的 .session 文件是否存在
-            const correspondingSession = path.join(basePath, `${sessionFileName}.session`);
-            if (fs.existsSync(correspondingSession)) {
-              const stats = fs.statSync(correspondingSession);
-              if (stats.size > 0) {
-                console.log(`✅ 找到 session 文件（通过 journal）: ${correspondingSession} (${stats.size} 字节)`);
-                return true;
-              }
-            }
+          } else {
+            // 如果只有 journal 文件，没有 .session 文件，可能是正在创建中
+            // 但为了快速响应，也认为已登录（journal 文件存在说明有登录活动）
+            console.log(`✅ [Session检查] 找到 session-journal 文件，认为已登录: ${sessionFile3}`);
+            return true;
+          }
+        }
+        
+        // 检查不带扩展名的文件
+        if (exists1) {
+          const stats = fs.statSync(sessionFile1);
+          if (stats.size > 0) {
+            console.log(`✅ [Session检查] 找到 session 文件（无扩展名）: ${sessionFile1} (${stats.size} 字节)`);
+            return true;
           }
         }
       } catch (err) {
@@ -3199,17 +3206,33 @@ function checkSessionFileExists(sessionPath) {
         const files = fs.readdirSync(basePath);
         let foundSessions = [];
         for (const file of files) {
-          // 查找所有 .session 文件（排除 journal 文件）
-          if (file.endsWith('.session') && !file.endsWith('.session-journal')) {
-            const sessionFile = path.join(basePath, file);
-            try {
-              const stats = fs.statSync(sessionFile);
-              if (stats.isFile() && stats.size > 0) {
-                foundSessions.push({ file: sessionFile, size: stats.size });
+          // 查找所有 .session 文件（包括 journal 文件，因为 journal 存在也说明已登录）
+          if (file.endsWith('.session') || file.endsWith('.session-journal')) {
+            // 如果是 journal 文件，检查对应的 .session 文件是否存在
+            if (file.endsWith('.session-journal')) {
+              const sessionFileName = file.replace('.session-journal', '.session');
+              const sessionFile = path.join(basePath, sessionFileName);
+              if (fs.existsSync(sessionFile)) {
+                const stats = fs.statSync(sessionFile);
+                if (stats.isFile() && stats.size > 0) {
+                  foundSessions.push({ file: sessionFile, size: stats.size });
+                }
+              } else {
+                // 如果只有 journal 文件，也认为已登录
+                foundSessions.push({ file: path.join(basePath, file), size: 0 });
               }
-            } catch (err) {
-              // 继续检查下一个文件
-              continue;
+            } else {
+              // 标准 .session 文件
+              const sessionFile = path.join(basePath, file);
+              try {
+                const stats = fs.statSync(sessionFile);
+                if (stats.isFile() && stats.size > 0) {
+                  foundSessions.push({ file: sessionFile, size: stats.size });
+                }
+              } catch (err) {
+                // 继续检查下一个文件
+                continue;
+              }
             }
           }
         }
@@ -4372,95 +4395,60 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       return res.json(result);
     }
     
-    // session 文件存在，尝试通过 Telethon 验证
-    let checkResult = null;
-    let checkError = null;
+    // session 文件存在，快速返回已登录状态（不等待容器验证，提高速度）
+    // 如果用户需要验证，可以手动刷新
+    const quickResult = {
+      logged_in: true,
+      message: '已登录（session 文件存在）',
+      uncertain: false
+    };
     
-    try {
-      // 使用安全的脚本调用方式，允许创建临时容器
-      // 增加超时时间到30秒，给足够时间连接 Telegram
-      const originalTimeout = 30000; // 30秒超时
-      checkResult = await Promise.race([
-        execTelethonLoginScript('check', [
-          sessionPath,
-          validatedApiId.toString(),
-          validatedApiHash
-        ], 0, true), // allowCreateTemp = true
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('检查超时（30秒）')), originalTimeout)
-        )
-      ]);
-    } catch (error) {
-      checkError = error;
-      console.warn(`⚠️  [登录状态] 检查失败 (userId: ${userId}):`, error.message);
-    }
+    // 缓存成功结果（缓存时间更长，减少检查频率）
+    loginStatusCache.set(`login_status_${userId}`, {
+      result: quickResult,
+      timestamp: Date.now()
+    });
     
-    // 分析检查结果
-    if (checkResult && checkResult.success) {
-      if (checkResult.logged_in) {
-        // 已登录
-        const result = {
+    // 如果强制刷新，才进行容器验证（但使用较短的超时）
+    if (forceRefresh) {
+      let checkResult = null;
+      let checkError = null;
+      
+      try {
+        // 使用较短的超时时间（10秒），快速失败
+        const quickTimeout = 10000; // 10秒超时
+        checkResult = await Promise.race([
+          execTelethonLoginScript('check', [
+            sessionPath,
+            validatedApiId.toString(),
+            validatedApiHash
+          ], 0, true), // allowCreateTemp = true
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('检查超时（10秒）')), quickTimeout)
+          )
+        ]);
+      } catch (error) {
+        checkError = error;
+        console.warn(`⚠️  [登录状态] 容器验证失败 (userId: ${userId}):`, error.message);
+      }
+      
+      // 如果容器验证成功，使用验证结果
+      if (checkResult && checkResult.success && checkResult.logged_in) {
+        const verifiedResult = {
           logged_in: true,
           message: '已登录',
           user: checkResult.user || null
         };
-        // 缓存成功结果（缓存时间更长）
         loginStatusCache.set(`login_status_${userId}`, {
-          result,
+          result: verifiedResult,
           timestamp: Date.now()
         });
-        return res.json(result);
-      } else {
-        // session 文件存在但未登录
-        const result = {
-          logged_in: false,
-          message: 'session 文件存在但未登录，可能需要重新登录'
-        };
-        loginStatusCache.set(`login_status_${userId}`, {
-          result,
-          timestamp: Date.now()
-        });
-        return res.json(result);
-      }
-    } else {
-      // 检查失败，但 session 文件存在
-      // 根据错误类型判断可能的登录状态
-      const errorMsg = checkError?.message || checkResult?.error || '无法检查登录状态';
-      
-      // 判断是否为网络或临时错误（这些情况下，如果 session 文件存在，很可能已登录）
-      const isTemporaryError = errorMsg.includes('超时') || 
-                               errorMsg.includes('timeout') ||
-                               errorMsg.includes('网络') ||
-                               errorMsg.includes('network') ||
-                               errorMsg.includes('连接') ||
-                               errorMsg.includes('connection') ||
-                               errorMsg.includes('容器未运行') ||
-                               errorMsg.includes('容器不存在') ||
-                               errorMsg.includes('已退出');
-      
-      if (isTemporaryError) {
-        // 临时错误：session 文件存在，很可能已登录，但无法验证
-        const result = {
-          logged_in: true, // 乐观判断：session 文件存在 + 临时错误 = 可能已登录
-          message: `session 文件存在，但无法验证登录状态（${errorMsg}）。如果实际未登录，请尝试重新登录`,
-          uncertain: true // 标记为不确定状态
-        };
-        // 临时错误不缓存，下次再检查
-        return res.json(result);
-      } else {
-        // 其他错误：可能是 session 文件损坏或配置错误
-        const result = {
-          logged_in: false,
-          message: `无法验证登录状态：${errorMsg}。session 文件存在，但验证失败，可能需要重新登录`
-        };
-        // 缓存失败结果（短时间）
-        loginStatusCache.set(`login_status_${userId}`, {
-          result,
-          timestamp: Date.now()
-        });
-        return res.json(result);
+        return res.json(verifiedResult);
       }
     }
+    
+    // 默认返回快速结果（基于文件存在）
+    return res.json(quickResult);
   } catch (error) {
     console.error('❌ [登录状态] 检查失败:', error);
     res.status(500).json({ error: '检查登录状态失败：' + error.message });

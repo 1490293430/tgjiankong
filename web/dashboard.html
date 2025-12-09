@@ -2903,13 +2903,61 @@
                             keywords = keywords ? [String(keywords)] : [];
                         }
                         keywords = keywords.slice(0, 8);
-                        // 确保 summary_text 是字符串
+                        // 确保 summary_text 是字符串，并清理可能的JSON格式
                         let summary_text = summary.analysis_result?.summary || '';
                         if (typeof summary_text !== 'string') {
                             summary_text = String(summary_text || '暂无摘要');
                         }
+                        
+                        // 如果summary看起来像JSON字符串，尝试提取文本内容
+                        if (summary_text.trim().startsWith('{') || summary_text.trim().startsWith('[')) {
+                            try {
+                                const parsed = JSON.parse(summary_text);
+                                if (typeof parsed === 'string') {
+                                    summary_text = parsed;
+                                } else if (parsed.summary) {
+                                    summary_text = String(parsed.summary);
+                                } else if (parsed.text) {
+                                    summary_text = String(parsed.text);
+                                } else {
+                                    // 如果无法提取，移除JSON格式标记
+                                    summary_text = summary_text
+                                        .replace(/^[\s\n]*\{[\s\n]*/, '')
+                                        .replace(/[\s\n]*\}[\s\n]*$/, '')
+                                        .replace(/^[\s\n]*\[[\s\n]*/, '')
+                                        .replace(/[\s\n]*\][\s\n]*$/, '')
+                                        .trim();
+                                }
+                            } catch (e) {
+                                // 解析失败，移除JSON格式标记，保留文本内容
+                                summary_text = summary_text
+                                    .replace(/^[\s\n]*\{[\s\n]*/, '')
+                                    .replace(/[\s\n]*\}[\s\n]*$/, '')
+                                    .replace(/^[\s\n]*\[[\s\n]*/, '')
+                                    .replace(/[\s\n]*\][\s\n]*$/, '')
+                                    .replace(/["']/g, '')
+                                    .trim();
+                            }
+                        }
+                        
+                        // 清理转义字符和格式标记
+                        summary_text = summary_text
+                            .replace(/\\n/g, '\n')
+                            .replace(/\\t/g, '\t')
+                            .replace(/\\"/g, '"')
+                            .replace(/\\'/g, "'")
+                            .replace(/```json\n?/gi, '')
+                            .replace(/```\n?/g, '')
+                            .trim();
+                        
                         if (!summary_text.trim()) {
                             summary_text = '暂无摘要';
+                        }
+                        
+                        // 限制显示长度（但增加到2000字符，确保内容完整）
+                        const maxDisplayLength = 2000;
+                        if (summary_text.length > maxDisplayLength) {
+                            summary_text = summary_text.substring(0, maxDisplayLength) + '...';
                         }
                         
                         // 频道统计（简化显示，只显示前3个）

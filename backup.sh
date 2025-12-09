@@ -1,7 +1,8 @@
 #!/bin/bash
 # Telegram Monitor 数据备份脚本
 
-set -e
+# 不使用 set -e，允许某些步骤失败后继续执行
+set +e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_DIR="${SCRIPT_DIR}/backups"
@@ -9,10 +10,26 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_NAME="backup_${TIMESTAMP}"
 
 echo "📦 开始备份 Telegram Monitor 数据..."
+echo "📁 脚本目录: ${SCRIPT_DIR}"
+echo "📁 备份目录: ${BACKUP_DIR}"
 
 # 创建备份目录（确保主目录存在）
-mkdir -p "${BACKUP_DIR}"
-mkdir -p "${BACKUP_DIR}/${BACKUP_NAME}"
+echo "🔧 创建备份目录..."
+if ! mkdir -p "${BACKUP_DIR}" 2>/dev/null; then
+    echo "❌ 错误：无法创建备份目录 ${BACKUP_DIR}"
+    echo "   请检查："
+    echo "   1. 是否有写入权限"
+    echo "   2. 磁盘空间是否充足"
+    echo "   3. 路径是否正确"
+    exit 1
+fi
+
+if ! mkdir -p "${BACKUP_DIR}/${BACKUP_NAME}" 2>/dev/null; then
+    echo "❌ 错误：无法创建备份子目录 ${BACKUP_DIR}/${BACKUP_NAME}"
+    exit 1
+fi
+
+echo "✅ 备份目录创建成功: ${BACKUP_DIR}/${BACKUP_NAME}"
 
 # 备份配置文件
 if [ -f "${SCRIPT_DIR}/backend/config.json" ]; then
@@ -75,9 +92,6 @@ else
     echo "   提示：如果 MongoDB 数据文件在 data/mongo/ 目录中，将通过数据目录备份"
 fi
 
-# 恢复错误退出
-set -e
-
 # 备份数据目录（包括 MongoDB 数据文件，作为备用）
 if [ -d "${SCRIPT_DIR}/data" ]; then
     if [ "$(ls -A ${SCRIPT_DIR}/data 2>/dev/null)" ]; then
@@ -108,7 +122,8 @@ else
 fi
 
 # 创建备份信息文件
-cat > "${BACKUP_DIR}/${BACKUP_NAME}/backup_info.txt" <<EOF
+echo "📝 创建备份信息文件..."
+if cat > "${BACKUP_DIR}/${BACKUP_NAME}/backup_info.txt" <<EOF
 备份时间: $(date)
 备份路径: ${BACKUP_DIR}/${BACKUP_NAME}
 备份内容:
@@ -117,15 +132,30 @@ cat > "${BACKUP_DIR}/${BACKUP_NAME}/backup_info.txt" <<EOF
 - MongoDB 数据库导出 (mongo_dump/) - 用于数据重构
 - 数据目录 (data/) - 包含 session 和 MongoDB 数据文件（备用）
 EOF
+then
+    echo "✅ 备份信息文件已创建"
+else
+    echo "⚠️  备份信息文件创建失败（继续执行）"
+fi
 
 # 压缩备份（可选）
-cd "${BACKUP_DIR}"
-tar -czf "${BACKUP_NAME}.tar.gz" "${BACKUP_NAME}" 2>/dev/null || true
-if [ -f "${BACKUP_NAME}.tar.gz" ]; then
-    rm -rf "${BACKUP_NAME}"
-    echo "✅ 备份已压缩: ${BACKUP_DIR}/${BACKUP_NAME}.tar.gz"
+echo "🗜️  压缩备份文件..."
+if cd "${BACKUP_DIR}" 2>/dev/null; then
+    if tar -czf "${BACKUP_NAME}.tar.gz" "${BACKUP_NAME}" 2>/dev/null; then
+        if [ -f "${BACKUP_NAME}.tar.gz" ]; then
+            rm -rf "${BACKUP_NAME}"
+            echo "✅ 备份已压缩: ${BACKUP_DIR}/${BACKUP_NAME}.tar.gz"
+        else
+            echo "⚠️  压缩文件未生成，保留未压缩的备份目录"
+            echo "✅ 备份完成: ${BACKUP_DIR}/${BACKUP_NAME}/"
+        fi
+    else
+        echo "⚠️  压缩失败，保留未压缩的备份目录"
+        echo "✅ 备份完成: ${BACKUP_DIR}/${BACKUP_NAME}/"
+    fi
 else
-    echo "✅ 备份完成: ${BACKUP_DIR}/${BACKUP_NAME}/"
+    echo "❌ 错误：无法切换到备份目录 ${BACKUP_DIR}"
+    echo "✅ 备份完成（未压缩）: ${BACKUP_DIR}/${BACKUP_NAME}/"
 fi
 
 # 清理旧备份（保留最近10个）

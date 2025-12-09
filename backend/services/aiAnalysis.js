@@ -86,7 +86,7 @@ class AIAnalysisService {
           messages: [
             {
               role: 'system',
-              content: '你是一个专业的消息分析助手。你的任务是根据用户提供的消息内容，分析并返回一个有效的JSON对象。你必须严格遵守JSON格式要求，只返回JSON对象，不要包含任何其他文本、解释、代码块标记或换行符。如果消息内容为空或无法分析，也要返回一个有效的JSON对象，使用默认值。'
+              content: '你是一个专业的消息分析助手。你的任务是根据用户提供的消息返回一个有效的JSON对象。你必须严格遵守JSON格式要求，只返回JSON对象，不要包含任何其他文本、解释、代码块标记或换行符。如果消息内容为空或无法分析，也要返回一个有效的JSON对象，使用默内容，分析并认值。'
             },
             {
               role: 'user',
@@ -94,7 +94,7 @@ class AIAnalysisService {
             }
           ],
           temperature: 0.3, // 降低温度以提高JSON格式的一致性
-          max_tokens: 1000
+          max_tokens: 2000  // 增加token限制，确保完整返回分析结果
         },
         {
           headers: {
@@ -247,7 +247,7 @@ class AIAnalysisService {
           }
         }
         
-        // 确保 summary 字段有值
+        // 确保 summary 字段有值且是纯文本（不是JSON字符串）
         if (!analysisResult.summary || analysisResult.summary.trim() === '') {
           // 如果 summary 为空，尝试从其他字段生成摘要
           const topics = (analysisResult.topics || []).join('、');
@@ -257,11 +257,58 @@ class AIAnalysisService {
           if (topics || categories) {
             analysisResult.summary = `主要话题：${topics || categories}${keywords ? `；关键词：${keywords}` : ''}`;
           } else if (content.length > 0) {
-            // 如果都没有，从原始响应中提取前200字作为摘要
-            analysisResult.summary = content.substring(0, 200).replace(/\n/g, ' ').trim();
+            // 如果都没有，从原始响应中提取前500字作为摘要（增加长度）
+            analysisResult.summary = content.substring(0, 500).replace(/\n/g, ' ').trim();
           } else {
             analysisResult.summary = '暂无摘要（AI未返回有效内容）';
           }
+        } else {
+          // 如果 summary 存在，确保它是纯文本（不是JSON字符串）
+          let summaryText = String(analysisResult.summary);
+          
+          // 如果 summary 看起来像JSON字符串，尝试解析
+          if (summaryText.trim().startsWith('{') || summaryText.trim().startsWith('[')) {
+            try {
+              const parsed = JSON.parse(summaryText);
+              // 如果解析成功，尝试提取文本内容
+              if (typeof parsed === 'string') {
+                summaryText = parsed;
+              } else if (parsed.summary) {
+                summaryText = String(parsed.summary);
+              } else if (parsed.text) {
+                summaryText = String(parsed.text);
+              } else {
+                // 如果无法提取，使用原始内容的前500字符
+                summaryText = summaryText.substring(0, 500).replace(/\n/g, ' ').trim();
+              }
+            } catch (e) {
+              // 解析失败，移除JSON格式标记，保留文本内容
+              summaryText = summaryText
+                .replace(/^[\s\n]*\{[\s\n]*/, '')
+                .replace(/[\s\n]*\}[\s\n]*$/, '')
+                .replace(/^[\s\n]*\[[\s\n]*/, '')
+                .replace(/[\s\n]*\][\s\n]*$/, '')
+                .replace(/["']/g, '')
+                .trim();
+            }
+          }
+          
+          // 清理可能的JSON格式标记和转义字符
+          summaryText = summaryText
+            .replace(/\\n/g, '\n')
+            .replace(/\\t/g, '\t')
+            .replace(/\\"/g, '"')
+            .replace(/\\'/g, "'")
+            .replace(/```json\n?/gi, '')
+            .replace(/```\n?/g, '')
+            .trim();
+          
+          // 限制长度（但增加到1000字符，确保内容完整）
+          if (summaryText.length > 1000) {
+            summaryText = summaryText.substring(0, 1000) + '...';
+          }
+          
+          analysisResult.summary = summaryText;
         }
         
         // 确保其他必需字段有默认值
@@ -307,15 +354,15 @@ class AIAnalysisService {
                               content.match(/内容[：:]\s*([^\n]+)/i);
           
           if (summaryMatch && summaryMatch[1].trim().length > 0) {
-            extractedSummary = summaryMatch[1].trim().substring(0, 200);
+            extractedSummary = summaryMatch[1].trim().substring(0, 1000); // 增加到1000字符
           } else {
-            // 如果没有找到明确的摘要字段，提取前200字符作为摘要
-            extractedSummary = content.replace(/\n+/g, ' ').trim().substring(0, 200);
+            // 如果没有找到明确的摘要字段，提取前500字符作为摘要
+            extractedSummary = content.replace(/\n+/g, ' ').trim().substring(0, 500);
           }
           
           // 如果提取的摘要为空或太短，使用更长的内容
           if (extractedSummary.length < 20) {
-            extractedSummary = content.replace(/\n+/g, ' ').trim().substring(0, 300);
+            extractedSummary = content.replace(/\n+/g, ' ').trim().substring(0, 1000);
           }
         }
         
