@@ -1984,7 +1984,7 @@
         let recentLogsScrollSetup = false; // 标记是否已设置滚动监听
         const recentLogsPageSize = 30; // 每页加载30条
         
-        // 加载最近日志（支持分页和无限滚动）
+        // 加载最近日志（支持分页和无限滚动）- 完美复刻日志页面的无感刷新
         async function loadRecentLogs(reset = false) {
             if (recentLogsLoading) return; // 防止重复加载
             if (!recentLogsHasMore && !reset) return; // 没有更多数据且不是重置
@@ -1992,24 +1992,9 @@
             const container = document.getElementById('recentLogs');
             if (!container) return;
             
-            // 保存当前内容的引用（用于无感刷新）
-            const existingTable = container.querySelector('table');
-            let oldContentOpacity = 1;
-            
             if (reset) {
                 recentLogsPage = 1;
                 recentLogsHasMore = true;
-                
-                // 无感刷新：如果有现有内容，先淡出，而不是直接清空
-                if (existingTable) {
-                    // 使用更平滑的淡出效果
-                    container.style.transition = 'opacity 0.15s ease-out';
-                    container.style.opacity = '0.3';
-                    oldContentOpacity = 0.3;
-                } else {
-                    // 首次加载，显示加载提示
-                    container.innerHTML = '<div class="loading">加载中...</div>';
-                }
                 
                 // 确保滚动监听已设置（只设置一次）
                 if (!recentLogsScrollSetup) {
@@ -2026,8 +2011,7 @@
                 if (!data) {
                     // API请求失败（可能是502等错误）
                     if (reset) {
-                        container.style.opacity = '1';
-                        container.innerHTML = '<div class="loading" style="color: #e74c3c;">⚠️ 无法连接到服务器，请检查后端服务状态</div>';
+                        container.innerHTML = '<div class="loading" style="color: #e74c3c; padding: 40px; text-align: center;">⚠️ 无法连接到服务器，请检查后端服务状态</div>';
                     }
                     recentLogsLoading = false;
                     return;
@@ -2037,7 +2021,7 @@
                     const isFirstPage = recentLogsPage === 1;
                     
                     if (isFirstPage) {
-                        // 第一页：创建新表格（无感刷新）
+                        // 第一页：创建新表格（完全复刻日志页面的无感刷新方式）
                         let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>ID</th><th>关键词</th><th>消息</th></tr></thead><tbody>';
                         
                         data.logs.forEach(log => {
@@ -2060,18 +2044,8 @@
                         });
                         
                         html += '</tbody></table>';
-                        
-                        // 无感刷新：先设置新内容（透明度为0），然后淡入
-                        // 使用双重 requestAnimationFrame 确保DOM完全更新后再淡入
-                        container.style.transition = 'opacity 0.2s ease-in';
+                        // 直接更新 innerHTML，完全复刻日志页面的无感刷新方式
                         container.innerHTML = html;
-                        container.style.opacity = '0';
-                        // 双重 requestAnimationFrame 确保DOM更新和浏览器重绘完成
-                        requestAnimationFrame(() => {
-                            requestAnimationFrame(() => {
-                                container.style.opacity = '1';
-                            });
-                        });
                     } else {
                         // 追加模式：追加到现有表格
                         const existingTable = container.querySelector('table');
@@ -2110,7 +2084,7 @@
                     }
                 } else {
                     if (recentLogsPage === 1) {
-                        container.innerHTML = '<p style="text-align: center; color: #999;">暂无日志</p>';
+                        container.innerHTML = '<p style="text-align: center; color: #999; padding: 40px;">暂无日志</p>';
                     }
                     recentLogsHasMore = false;
                 }
@@ -2123,7 +2097,7 @@
             } catch (error) {
                 console.error('加载最近日志失败:', error);
                 if (recentLogsPage === 1) {
-                    container.innerHTML = '<p style="text-align: center; color: #e74c3c;">加载失败：' + (error.message || '未知错误') + '</p>';
+                    container.innerHTML = '<p style="text-align: center; color: #e74c3c; padding: 40px;">加载失败：' + (error.message || '未知错误') + '</p>';
                 }
             } finally {
                 recentLogsLoading = false;
