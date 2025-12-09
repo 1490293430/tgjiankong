@@ -1601,8 +1601,14 @@
                 case 'new_message':
                     // 有新消息，更新相关页面（已过滤userId）
                     if (activeTab === 'dashboard') {
-                        loadStats();
-                        loadRecentLogs(true); // 重置并加载
+                        // 使用防抖，避免频繁刷新
+                        if (!window.recentLogsRefreshTimer) {
+                            window.recentLogsRefreshTimer = setTimeout(() => {
+                                loadStats();
+                                loadRecentLogs(true); // 重置并加载
+                                window.recentLogsRefreshTimer = null;
+                            }, 100); // 100ms防抖，合并快速连续的消息更新
+                        }
                     } else if (activeTab === 'logs') {
                         loadLogs();
                     }
@@ -1996,9 +2002,10 @@
                 
                 // 无感刷新：如果有现有内容，先淡出，而不是直接清空
                 if (existingTable) {
-                    container.style.transition = 'opacity 0.2s ease-out';
-                    container.style.opacity = '0.5';
-                    oldContentOpacity = 0.5;
+                    // 使用更平滑的淡出效果
+                    container.style.transition = 'opacity 0.15s ease-out';
+                    container.style.opacity = '0.3';
+                    oldContentOpacity = 0.3;
                 } else {
                     // 首次加载，显示加载提示
                     container.innerHTML = '<div class="loading">加载中...</div>';
@@ -2055,12 +2062,15 @@
                         html += '</tbody></table>';
                         
                         // 无感刷新：先设置新内容（透明度为0），然后淡入
-                        container.style.transition = 'opacity 0.3s ease-in';
+                        // 使用双重 requestAnimationFrame 确保DOM完全更新后再淡入
+                        container.style.transition = 'opacity 0.2s ease-in';
                         container.innerHTML = html;
                         container.style.opacity = '0';
-                        // 使用 requestAnimationFrame 确保DOM更新后再淡入
+                        // 双重 requestAnimationFrame 确保DOM更新和浏览器重绘完成
                         requestAnimationFrame(() => {
-                            container.style.opacity = '1';
+                            requestAnimationFrame(() => {
+                                container.style.opacity = '1';
+                            });
                         });
                     } else {
                         // 追加模式：追加到现有表格

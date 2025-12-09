@@ -546,6 +546,10 @@ async def message_handler(event, client):
     # 移除频繁的CPU监控调用，避免每条消息都触发CPU检查导致峰值
     # log_cpu_usage("消息处理开始")
     try:
+        # 记录消息接收时间（用于调试延迟问题）
+        message_received_time = datetime.utcnow()
+        message_event_time = getattr(event.message, 'date', None) if hasattr(event, 'message') and event.message else None
+        
         # use cached config only (no IO here)
         config = CONFIG_CACHE or default_config()
         log_all = bool(config.get("log_all_messages", False))
