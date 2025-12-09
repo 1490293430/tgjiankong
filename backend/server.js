@@ -2895,12 +2895,48 @@ app.delete('/api/backup/:backupName', authMiddleware, async (req, res) => {
     
     console.log(`🗑️  [删除备份] 开始删除备份: ${backupName}`);
     
-    const scriptDir = path.resolve(__dirname, '..');
+    // 使用与备份创建和列表相同的路径检测逻辑
+    const containerAppDir = '/app';
+    const containerConfigPath = path.join(containerAppDir, 'config.json');
+    
+    let scriptDir = null;
+    
+    // 如果 /app/config.json 存在，说明在容器内，使用 /app 作为工作目录
+    if (fs.existsSync(containerConfigPath)) {
+      scriptDir = containerAppDir;
+    } else {
+      // 尝试其他路径
+      const possibleRootPaths = [
+        path.resolve(__dirname, '..'),  // 相对于 server.js 的上级目录
+        '/opt/telegram-monitor',        // 常见部署路径
+        process.cwd()                   // 当前工作目录
+      ];
+      
+      for (const rootPath of possibleRootPaths) {
+        const configPath1 = path.join(rootPath, 'backend', 'config.json');
+        const configPath2 = path.join(rootPath, 'config.json');
+        
+        if (fs.existsSync(configPath1) || fs.existsSync(configPath2)) {
+          scriptDir = rootPath;
+          break;
+        }
+      }
+      
+      // 如果都没找到，使用默认路径
+      if (!scriptDir) {
+        scriptDir = path.resolve(__dirname, '..');
+      }
+    }
+    
     const backupDir = path.join(scriptDir, 'backups');
     const backupPath = path.join(backupDir, backupName);
     
+    console.log(`📁 [删除备份] 使用备份目录: ${backupDir}`);
+    console.log(`📁 [删除备份] 备份文件路径: ${backupPath}`);
+    
     // 检查备份文件是否存在
     if (!fs.existsSync(backupPath)) {
+      console.warn(`⚠️  [删除备份] 备份文件不存在: ${backupPath}`);
       return res.status(404).json({ error: '备份文件不存在' });
     }
     
