@@ -4948,6 +4948,7 @@ app.get('/health', (req, res) => {
 // AI分析定时器（保留以兼容性，但不再使用全局定时器，改为每个用户独立定时器）
 let aiAnalysisTimer = null; 
 const userAITimers = new Map(); // 存储每个用户的定时器
+const analyzingLocks = new Map(); // 防止重复提交：存储正在分析的用户ID和触发类型
 
 // 执行 AI 批量分析
 async function performAIAnalysis(triggerType = 'manual', logId = null, userId = null) {
@@ -4955,7 +4956,31 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
     return { success: false, error: '用户ID不能为空' };
   }
   
-  const userConfig = await loadUserConfig(userId);
+  // 检查是否正在分析（防止重复提交）
+  // 对于手动触发和固定用户触发，允许并发（因为用户可能想立即分析）
+  // 对于自动触发（count/time），防止重复提交
+  const lockKey = `${userId}_${triggerType}`;
+  if (triggerType !== 'manual' && triggerType !== 'user_message') {
+    if (analyzingLocks.has(lockKey)) {
+      const lockTime = analyzingLocks.get(lockKey);
+      const lockAge = Date.now() - lockTime;
+      // 如果锁超过10分钟，可能是异常情况，清除锁
+      if (lockAge > 600000) {
+        console.warn(`⚠️  [AI分析] 检测到异常锁（超过10分钟），清除: ${lockKey}`);
+        analyzingLocks.delete(lockKey);
+      } else {
+        console.log(`⏸️  [AI分析] 用户 ${userId} 的 ${triggerType} 分析正在进行中（${Math.round(lockAge/1000)}秒前开始），跳过重复请求`);
+        return { success: false, error: '分析正在进行中，请勿重复提交' };
+      }
+    }
+    
+    // 设置分析锁
+    analyzingLocks.set(lockKey, Date.now());
+    console.log(`🔒 [AI分析] 设置分析锁: ${lockKey}`);
+  }
+  
+  try {
+    const userConfig = await loadUserConfig(userId);
   const config = userConfig.toObject ? userConfig.toObject() : userConfig;
   
   if (!config.ai_analysis?.enabled) {
@@ -4997,12 +5022,25 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
       const clearCooldownMinutes = 5; // 清除后5分钟内不自动分析
       const clearCooldownTime = new Date(Date.now() - clearCooldownMinutes * 60 * 1000);
       
+      // 添加时间窗口检查：排除最近30秒内可能正在被分析的消息
+      // 这样可以避免多个触发源同时分析相同的消息
+      const analysisCooldownTime = new Date(Date.now() - 30000); // 30秒前
+      
       const query = Log.find({ 
         userId: userIdObj, 
         ai_analyzed: false,
         $or: [
           { ai_cleared_at: null }, // 从未被清除过
           { ai_cleared_at: { $lt: clearCooldownTime } } // 或者清除时间已经超过5分钟
+        ],
+        // 排除最近30秒内可能正在被分析的消息（通过检查更新时间）
+        $and: [
+          {
+            $or: [
+              { updated_at: { $exists: false } }, // 没有更新时间字段（旧数据）
+              { updated_at: { $lt: analysisCooldownTime } } // 或者更新时间在30秒前
+            ]
+          }
         ]
       }).sort({ time: -1 }).limit(maxMessages);
       unanalyzedMessages = await query;
@@ -5165,6 +5203,13 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
   } catch (error) {
     console.error('❌ AI 分析过程出错:', error);
     return { success: false, error: error.message };
+  } finally {
+    // 释放分析锁（无论成功还是失败都要释放）
+    if (triggerType !== 'manual' && triggerType !== 'user_message') {
+      const lockKey = `${userId}_${triggerType}`;
+      analyzingLocks.delete(lockKey);
+      console.log(`🔓 [AI分析] 释放分析锁: ${lockKey}`);
+    }
   }
 }
 
