@@ -10,7 +10,8 @@ BACKUP_NAME="backup_${TIMESTAMP}"
 
 echo "📦 开始备份 Telegram Monitor 数据..."
 
-# 创建备份目录
+# 创建备份目录（确保主目录存在）
+mkdir -p "${BACKUP_DIR}"
 mkdir -p "${BACKUP_DIR}/${BACKUP_NAME}"
 
 # 备份配置文件

@@ -3170,7 +3170,7 @@ function checkSessionFileExists(sessionPath) {
       if (fs.existsSync(sessionPath) && fs.statSync(sessionPath).isFile()) {
         const stats = fs.statSync(sessionPath);
         if (stats.size > 0) {
-          console.log(`✅ 找到 session 文件（绝对路径）: ${sessionPath} (${stats.size} 字节)`);
+          console.log(`✅ [Session检查] 找到 session 文件（绝对路径）: ${sessionPath} (${stats.size} 字节)`);
           return true;
         }
       }
@@ -3178,7 +3178,7 @@ function checkSessionFileExists(sessionPath) {
       if (fs.existsSync(sessionPathWithExt) && fs.statSync(sessionPathWithExt).isFile()) {
         const stats = fs.statSync(sessionPathWithExt);
         if (stats.size > 0) {
-          console.log(`✅ 找到 session 文件（绝对路径）: ${sessionPathWithExt} (${stats.size} 字节)`);
+          console.log(`✅ [Session检查] 找到 session 文件（绝对路径）: ${sessionPathWithExt} (${stats.size} 字节)`);
           return true;
         }
       }
@@ -3186,7 +3186,47 @@ function checkSessionFileExists(sessionPath) {
       // 忽略错误
     }
     
-    console.log(`❌ 未找到 session 文件: ${sessionPath} (尝试过的路径: ${possibleBasePaths.join(', ')})`);
+    // 如果精确匹配失败，扫描整个 session 目录，查找任何有效的 .session 文件
+    // 这样可以处理生成了多个 session 文件的情况（例如：telegram.session 和 telegram_xxx.session）
+    console.log(`🔍 [Session检查] 精确匹配失败，扫描 session 目录查找所有 .session 文件...`);
+    for (const basePath of possibleBasePaths) {
+      try {
+        if (!fs.existsSync(basePath) || !fs.statSync(basePath).isDirectory()) {
+          continue;
+        }
+        
+        // 扫描目录中的所有文件
+        const files = fs.readdirSync(basePath);
+        let foundSessions = [];
+        for (const file of files) {
+          // 查找所有 .session 文件（排除 journal 文件）
+          if (file.endsWith('.session') && !file.endsWith('.session-journal')) {
+            const sessionFile = path.join(basePath, file);
+            try {
+              const stats = fs.statSync(sessionFile);
+              if (stats.isFile() && stats.size > 0) {
+                foundSessions.push({ file: sessionFile, size: stats.size });
+              }
+            } catch (err) {
+              // 继续检查下一个文件
+              continue;
+            }
+          }
+        }
+        
+        if (foundSessions.length > 0) {
+          console.log(`✅ [Session检查] 在 ${basePath} 找到 ${foundSessions.length} 个 session 文件:`);
+          foundSessions.forEach(s => console.log(`   - ${s.file} (${s.size} 字节)`));
+          // 找到任何有效的 session 文件就认为已登录
+          return true;
+        }
+      } catch (err) {
+        // 继续检查下一个路径
+        continue;
+      }
+    }
+    
+    console.log(`❌ [Session检查] 未找到 session 文件: ${sessionPath} (尝试过的路径: ${possibleBasePaths.join(', ')})`);
     return false;
   } catch (error) {
     console.error('检查 session 文件失败:', error);
