@@ -38,6 +38,7 @@ services:
       - /app/node_modules
       - ./logs/api:/app/logs
       - ./data/session:/app/data/session:ro  # 挂载 session 目录（只读），用于检查登录状态
+      - ./backups:/app/backups  # 挂载备份目录，确保备份文件在宿主机可见
       # Docker socket 挂载（用于重启 Telethon 服务）
       # Linux 服务器: 使用 /var/run/docker.sock
       # Windows: 使用 //var/run/docker.sock 或通过 Docker Desktop 配置

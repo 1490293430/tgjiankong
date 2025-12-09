@@ -2361,39 +2361,117 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
     
     console.log('📦 [备份] 开始创建数据备份...');
     
-    const scriptDir = path.resolve(__dirname, '..');
+    // 确定项目根目录
+    // 在容器内，server.js 在 /app/server.js，所以 __dirname 是 /app
+    // 但配置文件在 /app/config.json（因为挂载了 ./backend:/app）
+    // 项目根目录应该是 /app 的上级目录，但容器内没有挂载
+    // 所以我们需要使用 /app 作为工作目录，但备份应该保存到挂载的目录
+    
+    // 检查容器内路径
+    const containerAppDir = '/app';
+    const containerConfigPath = path.join(containerAppDir, 'config.json');
+    
+    // 确定项目根目录（容器内）
+    let scriptDir = null;
+    
+    // 如果 /app/config.json 存在，说明在容器内，使用 /app 作为工作目录
+    if (fs.existsSync(containerConfigPath)) {
+      scriptDir = containerAppDir;
+      console.log(`📁 [备份] 检测到容器内路径，使用: ${scriptDir}`);
+    } else {
+      // 尝试其他路径
+      const possibleRootPaths = [
+        path.resolve(__dirname, '..'),  // 相对于 server.js 的上级目录
+        '/opt/telegram-monitor',        // 常见部署路径
+        process.cwd()                   // 当前工作目录
+      ];
+      
+      for (const rootPath of possibleRootPaths) {
+        const configPath1 = path.join(rootPath, 'backend', 'config.json');
+        const configPath2 = path.join(rootPath, 'config.json');
+        
+        if (fs.existsSync(configPath1) || fs.existsSync(configPath2)) {
+          scriptDir = rootPath;
+          console.log(`📁 [备份] 检测到项目根目录: ${scriptDir}`);
+          break;
+        }
+      }
+      
+      // 如果都没找到，使用默认路径
+      if (!scriptDir) {
+        scriptDir = path.resolve(__dirname, '..');
+        console.log(`📁 [备份] 使用默认项目根目录: ${scriptDir}`);
+      }
+    }
+    
     const backupDir = path.join(scriptDir, 'backups');
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19).replace('T', '_');
     const backupName = `backup_${timestamp}`;
     const backupPath = path.join(backupDir, backupName);
     
+    console.log(`📁 [备份] 备份目录: ${backupDir}`);
+    console.log(`📁 [备份] 备份路径: ${backupPath}`);
+    
     // 创建备份目录
     if (!fs.existsSync(backupDir)) {
       fs.mkdirSync(backupDir, { recursive: true });
+      console.log(`✅ [备份] 已创建备份目录: ${backupDir}`);
     }
     
     // 创建备份子目录
     fs.mkdirSync(backupPath, { recursive: true });
     
-    // 备份配置文件
-    const configPath = path.join(scriptDir, 'backend', 'config.json');
-    if (fs.existsSync(configPath)) {
-      fs.copyFileSync(configPath, path.join(backupPath, 'config.json'));
-      console.log('✅ [备份] 已备份配置文件: backend/config.json');
-    } else {
-      console.warn('⚠️  [备份] 配置文件不存在: backend/config.json');
+    // 备份配置文件（尝试多个可能的路径）
+    const possibleConfigPaths = [
+      path.join(scriptDir, 'config.json'),            // 容器内: /app/config.json 或 宿主机: 项目根/config.json
+      path.join(scriptDir, 'backend', 'config.json'), // 宿主机: 项目根/backend/config.json
+      path.join(__dirname, 'config.json'),            // 相对于 server.js
+      '/app/config.json'                               // 容器内绝对路径
+    ];
+    
+    let configBacked = false;
+    for (const configPath of possibleConfigPaths) {
+      if (fs.existsSync(configPath)) {
+        fs.copyFileSync(configPath, path.join(backupPath, 'config.json'));
+        console.log(`✅ [备份] 已备份配置文件: ${configPath}`);
+        configBacked = true;
+        break;
+      }
     }
     
-    // 备份 .env 文件
-    const envPath = path.join(scriptDir, '.env');
-    if (fs.existsSync(envPath)) {
-      fs.copyFileSync(envPath, path.join(backupPath, '.env'));
-      console.log('✅ [备份] 已备份环境变量: .env');
+    if (!configBacked) {
+      console.warn(`⚠️  [备份] 配置文件不存在，尝试过的路径: ${possibleConfigPaths.join(', ')}`);
     }
     
-    // 备份数据目录
-    const dataPath = path.join(scriptDir, 'data');
-    if (fs.existsSync(dataPath)) {
+    // 备份 .env 文件（尝试多个可能的路径）
+    const possibleEnvPaths = [
+      path.join(scriptDir, '.env'),
+      '/app/.env',
+      path.join(__dirname, '..', '.env')
+    ];
+    
+    let envBacked = false;
+    for (const envPath of possibleEnvPaths) {
+      if (fs.existsSync(envPath)) {
+        fs.copyFileSync(envPath, path.join(backupPath, '.env'));
+        console.log(`✅ [备份] 已备份环境变量: ${envPath}`);
+        envBacked = true;
+        break;
+      }
+    }
+    
+    // 备份数据目录（尝试多个可能的路径）
+    // 注意：在容器内，data 目录可能挂载在不同的位置
+    const possibleDataPaths = [
+      '/app/data',                      // 容器内挂载的 data 目录（如果挂载了）
+      path.join(scriptDir, 'data'),     // 项目根目录下的 data
+      '/opt/telegram-monitor/data',     // 常见部署路径
+      path.join(__dirname, '..', 'data') // 相对于 server.js
+    ];
+    
+    let dataBacked = false;
+    for (const dataPath of possibleDataPaths) {
+      if (fs.existsSync(dataPath)) {
       const dataFiles = fs.readdirSync(dataPath);
       if (dataFiles.length > 0) {
         const backupDataPath = path.join(backupPath, 'data');
