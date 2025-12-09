@@ -2253,6 +2253,8 @@
                                 const date = new Date(backup.created).toLocaleString('zh-CN');
                                 const sizeMB = (backup.size / 1024 / 1024).toFixed(2);
                                 const backupPath = backup.path || '';
+                                // 转义 HTML 特殊字符
+                                const escapedPath = backupPath.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
                                 return `
                                     <div style="border: 1px solid #e0e0e0; padding: 12px; margin-bottom: 10px; border-radius: 6px; background: #f9f9f9;">
                                         <div style="display: flex; justify-content: space-between; align-items: flex-start;">
@@ -2261,8 +2263,12 @@
                                                 <div style="font-size: 12px; color: #666; margin-bottom: 4px;">
                                                     创建时间: ${date} | 大小: ${sizeMB} MB
                                                 </div>
-                                                <div style="font-size: 12px; color: #999;">
-                                                    存储位置: ${backupPath}
+                                                <div style="font-size: 12px; color: #666; margin-bottom: 4px; padding: 8px; background: #f0f0f0; border-radius: 4px; font-family: 'Courier New', monospace; word-break: break-all; position: relative;">
+                                                    <span style="color: #999; display: block; margin-bottom: 4px;">📁 文件位置:</span>
+                                                    <span style="color: #333; font-weight: 500; display: inline-block; max-width: calc(100% - 80px);">${escapedPath}</span>
+                                                    <button data-backup-path="${backupPath.replace(/"/g, '&quot;')}" onclick="copyToClipboard(this.dataset.backupPath, this)" style="margin-left: 8px; padding: 4px 10px; font-size: 11px; background: #667eea; color: white; border: none; border-radius: 3px; cursor: pointer; vertical-align: top;" title="复制路径">
+                                                        📋 复制
+                                                    </button>
                                                 </div>
                                             </div>
                                             <div style="display: flex; gap: 8px; margin-left: 10px;">
@@ -2286,6 +2292,43 @@
                 console.error('加载备份列表失败:', error);
                 const backupList = document.getElementById('backupList');
                 backupList.innerHTML = '<p style="text-align: center; color: #e74c3c;">加载失败：' + (error.message || '未知错误') + '</p>';
+            }
+        }
+        
+        // 复制文本到剪贴板
+        async function copyToClipboard(text, buttonElement) {
+            try {
+                await navigator.clipboard.writeText(text);
+                const originalText = buttonElement.textContent;
+                buttonElement.textContent = '✅ 已复制';
+                buttonElement.style.background = '#27ae60';
+                setTimeout(() => {
+                    buttonElement.textContent = originalText;
+                    buttonElement.style.background = '#667eea';
+                }, 2000);
+                showToast('✅ 路径已复制到剪贴板', true, 1500);
+            } catch (error) {
+                // 降级方案：使用传统方法
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.opacity = '0';
+                document.body.appendChild(textArea);
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                    const originalText = buttonElement.textContent;
+                    buttonElement.textContent = '✅ 已复制';
+                    buttonElement.style.background = '#27ae60';
+                    setTimeout(() => {
+                        buttonElement.textContent = originalText;
+                        buttonElement.style.background = '#667eea';
+                    }, 2000);
+                    showToast('✅ 路径已复制到剪贴板', true, 1500);
+                } catch (err) {
+                    showToast('❌ 复制失败，请手动复制', false);
+                }
+                document.body.removeChild(textArea);
             }
         }
         
@@ -3398,16 +3441,25 @@
         let telegramLoginInProgress = false; // 登录进行中标志，防止重复点击
         let telegramLoginAbortController = null; // 用于取消正在进行的登录请求
         
-        // 检查 Telegram 登录状态（添加防抖和状态管理）
+        // 检查 Telegram 登录状态（优化版本，提高准确性）
         let telegramStatusCheckInProgress = false;
         let telegramStatusCheckTimer = null;
+        let lastCheckTime = 0;
+        const CHECK_COOLDOWN = 3000; // 3秒冷却时间，避免频繁检查
         
-        async function checkTelegramLoginStatus(force = false) {
+        async function checkTelegramLoginStatus(force = false, retryCount = 0) {
             const statusDiv = document.getElementById('telegramLoginStatus');
             const loggedInDiv = document.getElementById('telegramLoggedIn');
             const notLoggedInDiv = document.getElementById('telegramNotLoggedIn');
             
             if (!statusDiv || !loggedInDiv || !notLoggedInDiv) return;
+            
+            // 冷却时间检查（除非强制刷新）
+            const now = Date.now();
+            if (!force && (now - lastCheckTime) < CHECK_COOLDOWN) {
+                console.log(`⏳ [登录状态] 冷却中，跳过检查 (剩余 ${Math.ceil((CHECK_COOLDOWN - (now - lastCheckTime)) / 1000)}秒)`);
+                return;
+            }
             
             // 如果正在检查中，且不是强制刷新，则等待当前检查完成
             if (telegramStatusCheckInProgress && !force) {
@@ -3430,6 +3482,7 @@
             }
             
             telegramStatusCheckInProgress = true;
+            lastCheckTime = now;
             
             try {
                 // 显示检查状态
@@ -3438,7 +3491,9 @@
                 loggedInDiv.style.display = 'none';
                 notLoggedInDiv.style.display = 'none';
                 
-                const response = await apiRequest('/telegram/login/status');
+                // 添加 force 参数到请求
+                const url = force ? '/telegram/login/status?force=true' : '/telegram/login/status';
+                const response = await apiRequest(url);
                 
                 // 确保响应有效
                 if (response && typeof response.logged_in === 'boolean') {
@@ -3448,12 +3503,27 @@
                         notLoggedInDiv.style.display = 'none';
                         statusDiv.style.display = 'none';
                         
-                        if (response.user) {
-                            const userInfo = response.user;
-                            const userInfoText = `用户：${userInfo.first_name || '未知'}${userInfo.username ? ' (@' + userInfo.username + ')' : ''}`;
+                        // 如果是不确定状态，显示警告
+                        if (response.uncertain) {
                             const userInfoEl = document.getElementById('telegramUserInfo');
                             if (userInfoEl) {
-                                userInfoEl.textContent = userInfoText;
+                                userInfoEl.innerHTML = `<span style="color: #f39c12;">⚠️ ${response.message || '状态不确定'}</span>`;
+                            }
+                            // 5秒后自动重试一次
+                            setTimeout(() => {
+                                if (!telegramStatusCheckInProgress) {
+                                    checkTelegramLoginStatus(true, retryCount + 1);
+                                }
+                            }, 5000);
+                        } else {
+                            // 确定已登录
+                            if (response.user) {
+                                const userInfo = response.user;
+                                const userInfoText = `用户：${userInfo.first_name || '未知'}${userInfo.username ? ' (@' + userInfo.username + ')' : ''}`;
+                                const userInfoEl = document.getElementById('telegramUserInfo');
+                                if (userInfoEl) {
+                                    userInfoEl.textContent = userInfoText;
+                                }
                             }
                         }
                     } else {
@@ -3461,20 +3531,50 @@
                         loggedInDiv.style.display = 'none';
                         notLoggedInDiv.style.display = 'block';
                         statusDiv.style.display = 'none';
+                        
+                        // 如果检查失败但可能是临时错误，自动重试一次
+                        if (retryCount === 0 && response.message && (
+                            response.message.includes('超时') ||
+                            response.message.includes('网络') ||
+                            response.message.includes('连接') ||
+                            response.message.includes('容器未运行')
+                        )) {
+                            console.log('🔄 [登录状态] 检测到临时错误，3秒后重试...');
+                            setTimeout(() => {
+                                if (!telegramStatusCheckInProgress) {
+                                    checkTelegramLoginStatus(true, retryCount + 1);
+                                }
+                            }, 3000);
+                        }
                     }
                 } else {
                     // 响应格式异常，显示未登录状态
-                    console.warn('Telegram 登录状态响应格式异常:', response);
+                    console.warn('⚠️ [登录状态] 响应格式异常:', response);
                     loggedInDiv.style.display = 'none';
                     notLoggedInDiv.style.display = 'block';
                     statusDiv.style.display = 'none';
                 }
             } catch (error) {
-                console.error('检查 Telegram 登录状态失败:', error);
-                // 出错时显示未登录状态，而不是错误信息
-                loggedInDiv.style.display = 'none';
-                notLoggedInDiv.style.display = 'block';
-                statusDiv.style.display = 'none';
+                console.error('❌ [登录状态] 检查失败:', error);
+                
+                // 如果是网络错误，自动重试一次
+                if (retryCount === 0 && (
+                    error.message?.includes('网络') ||
+                    error.message?.includes('timeout') ||
+                    error.message?.includes('连接')
+                )) {
+                    console.log('🔄 [登录状态] 网络错误，3秒后重试...');
+                    setTimeout(() => {
+                        if (!telegramStatusCheckInProgress) {
+                            checkTelegramLoginStatus(true, retryCount + 1);
+                        }
+                    }, 3000);
+                } else {
+                    // 其他错误，显示未登录状态
+                    loggedInDiv.style.display = 'none';
+                    notLoggedInDiv.style.display = 'block';
+                    statusDiv.style.display = 'none';
+                }
             } finally {
                 telegramStatusCheckInProgress = false;
             }

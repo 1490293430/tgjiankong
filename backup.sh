@@ -27,11 +27,78 @@ if [ -f "${SCRIPT_DIR}/.env" ]; then
     echo "✅ 已备份环境变量: .env"
 fi
 
-# 备份数据目录
+# 备份 MongoDB 数据库（使用 mongodump 导出，确保数据重构时能完整恢复）
+echo "🗄️  备份 MongoDB 数据库..."
+MONGO_CONTAINER="tg_mongo"
+MONGO_DB="tglogs"
+
+# 临时禁用错误退出，允许 MongoDB 备份失败
+set +e
+
+if docker ps --format '{{.Names}}' | grep -q "^${MONGO_CONTAINER}$"; then
+    # MongoDB 容器正在运行，使用 mongodump 导出
+    MONGO_DUMP_DIR="${BACKUP_DIR}/${BACKUP_NAME}/mongo_dump"
+    mkdir -p "${MONGO_DUMP_DIR}"
+    
+    # 尝试使用 mongodump 导出数据库
+    DUMP_SUCCESS=false
+    if docker exec "${MONGO_CONTAINER}" mongodump --db="${MONGO_DB}" --out=/tmp/mongo_dump --quiet 2>/dev/null; then
+        # 从容器中复制导出的数据
+        if docker cp "${MONGO_CONTAINER}:/tmp/mongo_dump/${MONGO_DB}" "${MONGO_DUMP_DIR}/" 2>/dev/null; then
+            # 清理容器内的临时文件
+            docker exec "${MONGO_CONTAINER}" rm -rf /tmp/mongo_dump 2>/dev/null || true
+            
+            if [ -d "${MONGO_DUMP_DIR}/${MONGO_DB}" ] && [ "$(ls -A ${MONGO_DUMP_DIR}/${MONGO_DB} 2>/dev/null)" ]; then
+                echo "✅ 已备份 MongoDB 数据库: ${MONGO_DB} (mongodump)"
+                DUMP_SUCCESS=true
+            else
+                echo "⚠️  MongoDB 数据库导出目录为空"
+                rm -rf "${MONGO_DUMP_DIR}"
+            fi
+        else
+            echo "⚠️  无法从容器复制 MongoDB 导出数据"
+            docker exec "${MONGO_CONTAINER}" rm -rf /tmp/mongo_dump 2>/dev/null || true
+            rm -rf "${MONGO_DUMP_DIR}"
+        fi
+    else
+        echo "⚠️  MongoDB 数据库导出失败（尝试使用 mongosh 导出）"
+        # 尝试使用 mongosh 导出（MongoDB 6+）
+        if docker exec "${MONGO_CONTAINER}" mongosh "${MONGO_DB}" --quiet --eval "db.getCollectionNames()" >/dev/null 2>&1; then
+            echo "   提示：MongoDB 容器运行正常，但 mongodump 可能不可用"
+            echo "   将使用数据文件备份作为替代方案"
+        fi
+        rm -rf "${MONGO_DUMP_DIR}"
+    fi
+else
+    echo "⚠️  MongoDB 容器未运行，跳过数据库导出"
+    echo "   提示：如果 MongoDB 数据文件在 data/mongo/ 目录中，将通过数据目录备份"
+fi
+
+# 恢复错误退出
+set -e
+
+# 备份数据目录（包括 MongoDB 数据文件，作为备用）
 if [ -d "${SCRIPT_DIR}/data" ]; then
-    if [ "$(ls -A ${SCRIPT_DIR}/data)" ]; then
-        cp -r "${SCRIPT_DIR}/data" "${BACKUP_DIR}/${BACKUP_NAME}/data"
-        echo "✅ 已备份数据目录: data/"
+    if [ "$(ls -A ${SCRIPT_DIR}/data 2>/dev/null)" ]; then
+        # 排除 mongo 目录（如果已经用 mongodump 备份了）
+        if [ -d "${BACKUP_DIR}/${BACKUP_NAME}/mongo_dump/${MONGO_DB}" ]; then
+            # 只备份 session 目录
+            if [ -d "${SCRIPT_DIR}/data/session" ]; then
+                mkdir -p "${BACKUP_DIR}/${BACKUP_NAME}/data"
+                cp -r "${SCRIPT_DIR}/data/session" "${BACKUP_DIR}/${BACKUP_NAME}/data/session" 2>/dev/null || true
+                echo "✅ 已备份 session 目录: data/session/"
+            fi
+            # 也备份 mongo 目录作为备用（以防 mongodump 不完整）
+            if [ -d "${SCRIPT_DIR}/data/mongo" ]; then
+                mkdir -p "${BACKUP_DIR}/${BACKUP_NAME}/data"
+                cp -r "${SCRIPT_DIR}/data/mongo" "${BACKUP_DIR}/${BACKUP_NAME}/data/mongo" 2>/dev/null || true
+                echo "✅ 已备份 MongoDB 数据文件: data/mongo/ (备用)"
+            fi
+        else
+            # 如果没有 mongodump 备份，完整备份 data 目录
+            cp -r "${SCRIPT_DIR}/data" "${BACKUP_DIR}/${BACKUP_NAME}/data"
+            echo "✅ 已备份数据目录: data/"
+        fi
     else
         echo "⚠️  数据目录为空"
     fi
@@ -46,7 +113,8 @@ cat > "${BACKUP_DIR}/${BACKUP_NAME}/backup_info.txt" <<EOF
 备份内容:
 - 配置文件 (backend/config.json)
 - 环境变量 (.env)
-- 数据目录 (data/)
+- MongoDB 数据库导出 (mongo_dump/) - 用于数据重构
+- 数据目录 (data/) - 包含 session 和 MongoDB 数据文件（备用）
 EOF
 
 # 压缩备份（可选）

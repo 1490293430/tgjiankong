@@ -4273,10 +4273,26 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0, allow
   }
 }
 
-// 检查 Telegram 登录状态
+// 登录状态检查缓存（避免频繁检查）
+const loginStatusCache = new Map();
+const CACHE_TTL = 10000; // 缓存10秒
+
+// 检查 Telegram 登录状态（优化版本，提高准确性）
 app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.userId;
+    const forceRefresh = req.query.force === 'true';
+    
+    // 检查缓存（除非强制刷新）
+    if (!forceRefresh) {
+      const cacheKey = `login_status_${userId}`;
+      const cached = loginStatusCache.get(cacheKey);
+      if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
+        console.log(`📋 [登录状态] 使用缓存结果 (userId: ${userId})`);
+        return res.json(cached.result);
+      }
+    }
+    
     const userConfig = await loadUserConfig(userId);
     const config = userConfig.toObject ? userConfig.toObject() : userConfig;
     
@@ -4284,10 +4300,11 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
     const apiHash = config.telegram?.api_hash || '';
     
     if (!apiId || !apiHash) {
-      return res.json({
+      const result = {
         logged_in: false,
         message: '请先配置 API_ID 和 API_HASH'
-      });
+      };
+      return res.json(result);
     }
     
     // 验证输入
@@ -4302,70 +4319,110 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
     const sessionExists = checkSessionFileExists(sessionPath);
     
     if (!sessionExists) {
-      // 如果 session 文件不存在，直接返回未登录，不需要容器
-      return res.json({
+      // 如果 session 文件不存在，直接返回未登录
+      const result = {
         logged_in: false,
         message: '未登录（session 文件不存在）'
+      };
+      // 缓存结果
+      loginStatusCache.set(`login_status_${userId}`, {
+        result,
+        timestamp: Date.now()
       });
+      return res.json(result);
     }
     
+    // session 文件存在，尝试通过 Telethon 验证
+    let checkResult = null;
+    let checkError = null;
+    
     try {
-      // 使用安全的脚本调用方式（session 文件存在时才需要容器验证）
-      // 允许创建临时容器，因为即使容器未运行也可以检查登录状态
-      const result = await execTelethonLoginScript('check', [
-        sessionPath,
-        validatedApiId.toString(),
-        validatedApiHash
-      ], 0, true); // allowCreateTemp = true，允许使用 docker run 检查状态
-      
-      if (result.success) {
-        if (result.logged_in) {
-        res.json({
-            logged_in: true,
-            message: '已登录',
-          user: result.user || null
-        });
-      } else {
-          // session 文件存在但未登录，可能文件已损坏或无效
-        res.json({
-          logged_in: false,
-            message: 'session 文件存在但未登录，可能需要重新登录'
-          });
-        }
-      } else {
-        // 脚本执行失败，但 session 文件存在，尝试返回更详细的信息
-        const errorMsg = result.error || '无法检查登录状态';
-        console.error(`检查登录状态失败: ${errorMsg}`);
-        res.json({
-          logged_in: false,
-          message: `无法验证登录状态：${errorMsg}（session 文件存在）`
-        });
-      }
+      // 使用安全的脚本调用方式，允许创建临时容器
+      // 增加超时时间到30秒，给足够时间连接 Telegram
+      const originalTimeout = 30000; // 30秒超时
+      checkResult = await Promise.race([
+        execTelethonLoginScript('check', [
+          sessionPath,
+          validatedApiId.toString(),
+          validatedApiHash
+        ], 0, true), // allowCreateTemp = true
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('检查超时（30秒）')), originalTimeout)
+        )
+      ]);
     } catch (error) {
-      console.error('检查登录状态失败:', error);
-      
-      // 即使出错，如果 session 文件存在，也返回更友好的提示
-      const errorMsg = error.message || '未知错误';
-      
-      // 如果容器未运行，但 session 文件存在，提示可以尝试登录或启动容器
-      if (error.message && (
-        error.message.includes('无法找到运行中的 Telethon 容器') ||
-        error.message.includes('容器不存在') ||
-        error.message.includes('已退出')
-      )) {
-      res.json({
-        logged_in: false,
-          message: 'session 文件存在，但无法验证登录状态（Telethon 容器未运行）。可以尝试重新登录或启动容器'
+      checkError = error;
+      console.warn(`⚠️  [登录状态] 检查失败 (userId: ${userId}):`, error.message);
+    }
+    
+    // 分析检查结果
+    if (checkResult && checkResult.success) {
+      if (checkResult.logged_in) {
+        // 已登录
+        const result = {
+          logged_in: true,
+          message: '已登录',
+          user: checkResult.user || null
+        };
+        // 缓存成功结果（缓存时间更长）
+        loginStatusCache.set(`login_status_${userId}`, {
+          result,
+          timestamp: Date.now()
         });
+        return res.json(result);
       } else {
-        res.json({
+        // session 文件存在但未登录
+        const result = {
           logged_in: false,
-          message: `无法检查登录状态：${errorMsg}（session 文件存在）`
+          message: 'session 文件存在但未登录，可能需要重新登录'
+        };
+        loginStatusCache.set(`login_status_${userId}`, {
+          result,
+          timestamp: Date.now()
         });
+        return res.json(result);
+      }
+    } else {
+      // 检查失败，但 session 文件存在
+      // 根据错误类型判断可能的登录状态
+      const errorMsg = checkError?.message || checkResult?.error || '无法检查登录状态';
+      
+      // 判断是否为网络或临时错误（这些情况下，如果 session 文件存在，很可能已登录）
+      const isTemporaryError = errorMsg.includes('超时') || 
+                               errorMsg.includes('timeout') ||
+                               errorMsg.includes('网络') ||
+                               errorMsg.includes('network') ||
+                               errorMsg.includes('连接') ||
+                               errorMsg.includes('connection') ||
+                               errorMsg.includes('容器未运行') ||
+                               errorMsg.includes('容器不存在') ||
+                               errorMsg.includes('已退出');
+      
+      if (isTemporaryError) {
+        // 临时错误：session 文件存在，很可能已登录，但无法验证
+        const result = {
+          logged_in: true, // 乐观判断：session 文件存在 + 临时错误 = 可能已登录
+          message: `session 文件存在，但无法验证登录状态（${errorMsg}）。如果实际未登录，请尝试重新登录`,
+          uncertain: true // 标记为不确定状态
+        };
+        // 临时错误不缓存，下次再检查
+        return res.json(result);
+      } else {
+        // 其他错误：可能是 session 文件损坏或配置错误
+        const result = {
+          logged_in: false,
+          message: `无法验证登录状态：${errorMsg}。session 文件存在，但验证失败，可能需要重新登录`
+        };
+        // 缓存失败结果（短时间）
+        loginStatusCache.set(`login_status_${userId}`, {
+          result,
+          timestamp: Date.now()
+        });
+        return res.json(result);
       }
     }
   } catch (error) {
-    console.error('检查登录状态失败:', error);
+    console.error('❌ [登录状态] 检查失败:', error);
     res.status(500).json({ error: '检查登录状态失败：' + error.message });
   }
 });
