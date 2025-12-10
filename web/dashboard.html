@@ -2859,7 +2859,8 @@
                     await loadRecentLogs(true); // 重置并加载
                 } else if (activeTab === 'config') {
                     await loadConfig();
-                    // loadConfig 内部会调用 checkTelegramLoginStatus，这里不需要重复调用
+                    // loadConfig 内部会调用 checkTelegramLoginStatus，但为了确保刷新，我们再次强制刷新
+                    await checkTelegramLoginStatus(true); // 强制刷新登录状态
                 } else if (activeTab === 'ai') {
                     await loadAIStats();
                     await loadAISummaries();
@@ -2868,6 +2869,12 @@
                 } else if (activeTab === 'settings') {
                     await loadUsers();
                 }
+                
+                // 无论当前标签页是什么，都强制刷新登录状态（确保切换账号后立即显示正确的登录状态）
+                // 延迟一下，确保 Telethon 服务已经重启完成
+                setTimeout(async () => {
+                    await checkTelegramLoginStatus(true); // 强制刷新登录状态
+                }, 2000); // 延迟2秒，等待 Telethon 服务重启完成
                 
                 // 重新检查用户管理权限
                 await checkAndShowUserManagement();

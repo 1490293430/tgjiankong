@@ -848,6 +848,13 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
     targetUser.last_login = new Date();
     await targetUser.save();
     
+    // 清除旧用户和新用户的登录状态缓存
+    const oldUserId = currentUser._id.toString();
+    const newUserId = targetUser._id.toString();
+    loginStatusCache.delete(`login_status_${oldUserId}`);
+    loginStatusCache.delete(`login_status_${newUserId}`);
+    console.log(`🗑️  已清除用户 ${oldUserId} 和 ${newUserId} 的登录状态缓存`);
+    
     // 更新全局配置文件并同步用户配置（异步执行，不阻塞响应）
     setTimeout(async () => {
       try {
@@ -4178,8 +4185,12 @@ async function syncUserConfigAndRestartTelethon(userId) {
         console.log(`   - channels: ${configToSync.channels?.length || 0} 个`);
       }
     
+    // 清除用户配置缓存，确保下次读取时获取最新配置
+    userConfigCache.delete(`user_config_${userId}`);
+    console.log(`🗑️  已清除用户 ${userId} 的配置缓存`);
+    
     // 重启 Telethon 服务以应用新配置
-    const restartSuccess = await restartTelethonService();
+    const restartSuccess = await restartTelethonService(userId);
     if (restartSuccess) {
       console.log(`✅ 已重启 Telethon 服务以应用用户 ${userId} 的配置`);
     } else {
@@ -4194,7 +4205,7 @@ async function syncUserConfigAndRestartTelethon(userId) {
 }
 
 // 重启 Telethon 服务
-async function restartTelethonService() {
+async function restartTelethonService(userId = null) {
   try {
     const Docker = require('dockerode');
     const dockerSocketPaths = [
@@ -4242,6 +4253,13 @@ async function restartTelethonService() {
     const containerInfo = await container.inspect();
     const state = containerInfo.State;
     
+    // 如果提供了 userId，尝试更新容器的环境变量
+    // 注意：更新环境变量需要重新创建容器，这里我们只记录日志
+    // Telethon 服务会优先从配置文件读取 user_id，所以即使环境变量是旧值也没关系
+    if (userId) {
+      console.log(`📝 准备重启 Telethon 服务以应用用户 ${userId} 的配置（配置文件已更新）`);
+    }
+    
     // 如果容器正在重启，先停止它
     if (state.Restarting) {
       console.log('⚠️  容器正在重启中，先停止容器...');
@@ -4255,8 +4273,8 @@ async function restartTelethonService() {
     } else if (state.Running) {
       // 如果容器正在运行，直接重启
       await container.restart({ t: 10 });
-    console.log('✅ Telethon 服务已重启');
-    return true;
+      console.log('✅ Telethon 服务已重启');
+      return true;
     }
     
     // 启动容器
