@@ -952,20 +952,32 @@ app.post('/api/config', authMiddleware, async (req, res) => {
     if (incoming.ai_analysis) {
       // 合并原有配置，避免关闭时丢失配置
       const existingAI = currentConfig.ai_analysis || {};
-      // 保留所有原有配置，只更新前端发送的字段
+      // ✅ 修复：智能合并配置，避免空值覆盖原有配置
+      // 对于字符串字段，如果前端发送的是空字符串，则保留原有值
+      // 对于其他字段，如果前端发送的值是有效的，则更新；否则保留原有值
       incoming.ai_analysis = {
         ...existingAI,
-        ...incoming.ai_analysis,
-        // ✅ 如果前端没有发送 API Key（因为我们不返回），则保留原有值
-        openai_api_key: incoming.ai_analysis.openai_api_key || existingAI.openai_api_key || '',
-        // 确保数值类型正确（前端可能发送字符串）
-        message_count_threshold: Number(incoming.ai_analysis.message_count_threshold) || existingAI.message_count_threshold || 50,
-        time_interval_minutes: Number(incoming.ai_analysis.time_interval_minutes) || existingAI.time_interval_minutes || 30,
-        max_messages_per_analysis: Number(incoming.ai_analysis.max_messages_per_analysis) || existingAI.max_messages_per_analysis || 500,
-        // 明确保留固定用户触发相关配置
-        ai_trigger_enabled: incoming.ai_analysis.ai_trigger_enabled !== undefined ? incoming.ai_analysis.ai_trigger_enabled : existingAI.ai_trigger_enabled || false,
+        // enabled 字段总是更新（因为这是开关状态）
+        enabled: incoming.ai_analysis.enabled !== undefined ? Boolean(incoming.ai_analysis.enabled) : existingAI.enabled || false,
+        // ✅ 如果前端没有发送 API Key 或发送的是空字符串，则保留原有值
+        openai_api_key: (incoming.ai_analysis.openai_api_key && incoming.ai_analysis.openai_api_key.trim()) ? incoming.ai_analysis.openai_api_key.trim() : (existingAI.openai_api_key || ''),
+        // 字符串字段：如果前端发送了非空值，则更新；否则保留原有值
+        openai_base_url: (incoming.ai_analysis.openai_base_url && incoming.ai_analysis.openai_base_url.trim()) ? incoming.ai_analysis.openai_base_url.trim() : (existingAI.openai_base_url || 'https://api.openai.com/v1'),
+        openai_model: (incoming.ai_analysis.openai_model && incoming.ai_analysis.openai_model.trim()) ? incoming.ai_analysis.openai_model.trim() : (existingAI.openai_model || 'gpt-3.5-turbo'),
+        analysis_trigger_type: (incoming.ai_analysis.analysis_trigger_type && ['time', 'count'].includes(incoming.ai_analysis.analysis_trigger_type)) ? incoming.ai_analysis.analysis_trigger_type : (existingAI.analysis_trigger_type || 'time'),
+        analysis_prompt: (incoming.ai_analysis.analysis_prompt !== undefined && incoming.ai_analysis.analysis_prompt !== null) ? String(incoming.ai_analysis.analysis_prompt) : (existingAI.analysis_prompt || '请分析以下 Telegram 消息，提供：1) 整体情感倾向（积极/中性/消极）；2) 主要内容分类；3) 关键主题和摘要；4) 重要关键词'),
+        // 数值字段：确保数值类型正确，如果无效则保留原有值
+        message_count_threshold: (incoming.ai_analysis.message_count_threshold !== undefined && incoming.ai_analysis.message_count_threshold !== null && !isNaN(Number(incoming.ai_analysis.message_count_threshold))) ? Number(incoming.ai_analysis.message_count_threshold) : (existingAI.message_count_threshold || 50),
+        time_interval_minutes: (incoming.ai_analysis.time_interval_minutes !== undefined && incoming.ai_analysis.time_interval_minutes !== null && !isNaN(Number(incoming.ai_analysis.time_interval_minutes))) ? Number(incoming.ai_analysis.time_interval_minutes) : (existingAI.time_interval_minutes || 30),
+        max_messages_per_analysis: (incoming.ai_analysis.max_messages_per_analysis !== undefined && incoming.ai_analysis.max_messages_per_analysis !== null && !isNaN(Number(incoming.ai_analysis.max_messages_per_analysis))) ? Number(incoming.ai_analysis.max_messages_per_analysis) : (existingAI.max_messages_per_analysis || 500),
+        // 布尔字段：如果前端发送了值，则更新；否则保留原有值
+        ai_send_telegram: incoming.ai_analysis.ai_send_telegram !== undefined ? Boolean(incoming.ai_analysis.ai_send_telegram) : (existingAI.ai_send_telegram !== undefined ? existingAI.ai_send_telegram : true),
+        ai_send_email: incoming.ai_analysis.ai_send_email !== undefined ? Boolean(incoming.ai_analysis.ai_send_email) : (existingAI.ai_send_email || false),
+        ai_send_webhook: incoming.ai_analysis.ai_send_webhook !== undefined ? Boolean(incoming.ai_analysis.ai_send_webhook) : (existingAI.ai_send_webhook || false),
+        // 固定用户触发相关配置
+        ai_trigger_enabled: incoming.ai_analysis.ai_trigger_enabled !== undefined ? Boolean(incoming.ai_analysis.ai_trigger_enabled) : (existingAI.ai_trigger_enabled || false),
         ai_trigger_users: incoming.ai_analysis.ai_trigger_users !== undefined ? (Array.isArray(incoming.ai_analysis.ai_trigger_users) ? incoming.ai_analysis.ai_trigger_users : []) : (existingAI.ai_trigger_users || []),
-        ai_trigger_prompt: incoming.ai_analysis.ai_trigger_prompt !== undefined ? (incoming.ai_analysis.ai_trigger_prompt || '') : (existingAI.ai_trigger_prompt || '')
+        ai_trigger_prompt: incoming.ai_analysis.ai_trigger_prompt !== undefined ? String(incoming.ai_analysis.ai_trigger_prompt || '') : (existingAI.ai_trigger_prompt || '')
       };
       
       console.log(`📋 [配置保存] ai_analysis 配置 - enabled: ${incoming.ai_analysis.enabled}, trigger_type: ${incoming.ai_analysis.analysis_trigger_type}, count_threshold: ${incoming.ai_analysis.message_count_threshold} (类型: ${typeof incoming.ai_analysis.message_count_threshold}), time_interval: ${incoming.ai_analysis.time_interval_minutes} (类型: ${typeof incoming.ai_analysis.time_interval_minutes}), trigger_enabled: ${incoming.ai_analysis.ai_trigger_enabled}`);
@@ -2400,6 +2412,65 @@ app.post('/api/ai/analyze-now', authMiddleware, async (req, res) => {
 
 // ===== 数据备份与恢复 API =====
 
+// 辅助函数：检测项目根目录（与备份功能使用相同的逻辑）
+function detectProjectRoot() {
+  // 检查容器内路径
+  const containerAppDir = '/app';
+  const containerConfigPath = path.join(containerAppDir, 'config.json');
+  
+  // 如果 /app/config.json 存在，说明在容器内，使用 /app 作为工作目录
+  if (fs.existsSync(containerConfigPath)) {
+    return containerAppDir;
+  }
+  
+  // 尝试其他路径
+  const possibleRootPaths = [
+    path.resolve(__dirname, '..'),  // 相对于 server.js 的上级目录
+    '/opt/telegram-monitor',        // 常见部署路径
+    process.cwd()                   // 当前工作目录
+  ];
+  
+  for (const rootPath of possibleRootPaths) {
+    const configPath1 = path.join(rootPath, 'backend', 'config.json');
+    const configPath2 = path.join(rootPath, 'config.json');
+    
+    if (fs.existsSync(configPath1) || fs.existsSync(configPath2)) {
+      return rootPath;
+    }
+  }
+  
+  // 如果都没找到，使用默认路径
+  return path.resolve(__dirname, '..');
+}
+
+// 辅助函数：递归复制目录（跨平台，不使用 shell 命令）
+function copyDirectorySync(src, dest) {
+  if (!fs.existsSync(src)) {
+    throw new Error(`源目录不存在: ${src}`);
+  }
+  
+  // 创建目标目录
+  if (!fs.existsSync(dest)) {
+    fs.mkdirSync(dest, { recursive: true });
+  }
+  
+  // 读取源目录内容
+  const entries = fs.readdirSync(src, { withFileTypes: true });
+  
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    
+    if (entry.isDirectory()) {
+      // 递归复制子目录
+      copyDirectorySync(srcPath, destPath);
+    } else {
+      // 复制文件
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
+}
+
 // 创建数据备份
 app.post('/api/backup', authMiddleware, async (req, res) => {
   try {
@@ -2412,48 +2483,9 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
     
     console.log('📦 [备份] 开始创建数据备份...');
     
-    // 确定项目根目录
-    // 在容器内，server.js 在 /app/server.js，所以 __dirname 是 /app
-    // 但配置文件在 /app/config.json（因为挂载了 ./backend:/app）
-    // 项目根目录应该是 /app 的上级目录，但容器内没有挂载
-    // 所以我们需要使用 /app 作为工作目录，但备份应该保存到挂载的目录
-    
-    // 检查容器内路径
-    const containerAppDir = '/app';
-    const containerConfigPath = path.join(containerAppDir, 'config.json');
-    
-    // 确定项目根目录（容器内）
-    let scriptDir = null;
-    
-    // 如果 /app/config.json 存在，说明在容器内，使用 /app 作为工作目录
-    if (fs.existsSync(containerConfigPath)) {
-      scriptDir = containerAppDir;
-      console.log(`📁 [备份] 检测到容器内路径，使用: ${scriptDir}`);
-    } else {
-      // 尝试其他路径
-      const possibleRootPaths = [
-        path.resolve(__dirname, '..'),  // 相对于 server.js 的上级目录
-        '/opt/telegram-monitor',        // 常见部署路径
-        process.cwd()                   // 当前工作目录
-      ];
-      
-      for (const rootPath of possibleRootPaths) {
-        const configPath1 = path.join(rootPath, 'backend', 'config.json');
-        const configPath2 = path.join(rootPath, 'config.json');
-        
-        if (fs.existsSync(configPath1) || fs.existsSync(configPath2)) {
-          scriptDir = rootPath;
-          console.log(`📁 [备份] 检测到项目根目录: ${scriptDir}`);
-          break;
-        }
-      }
-      
-      // 如果都没找到，使用默认路径
-      if (!scriptDir) {
-        scriptDir = path.resolve(__dirname, '..');
-        console.log(`📁 [备份] 使用默认项目根目录: ${scriptDir}`);
-      }
-    }
+    // 确定项目根目录（使用统一的检测函数）
+    const scriptDir = detectProjectRoot();
+    console.log(`📁 [备份] 使用项目根目录: ${scriptDir}`);
     
     const backupDir = path.join(scriptDir, 'backups');
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19).replace('T', '_');
@@ -2690,38 +2722,8 @@ app.get('/api/backup/list', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: '权限不足：仅管理员可查看备份列表' });
     }
     
-    // 使用与备份创建相同的路径检测逻辑
-    const containerAppDir = '/app';
-    const containerConfigPath = path.join(containerAppDir, 'config.json');
-    
-    let scriptDir = null;
-    
-    // 如果 /app/config.json 存在，说明在容器内，使用 /app 作为工作目录
-    if (fs.existsSync(containerConfigPath)) {
-      scriptDir = containerAppDir;
-    } else {
-      // 尝试其他路径
-      const possibleRootPaths = [
-        path.resolve(__dirname, '..'),  // 相对于 server.js 的上级目录
-        '/opt/telegram-monitor',        // 常见部署路径
-        process.cwd()                   // 当前工作目录
-      ];
-      
-      for (const rootPath of possibleRootPaths) {
-        const configPath1 = path.join(rootPath, 'backend', 'config.json');
-        const configPath2 = path.join(rootPath, 'config.json');
-        
-        if (fs.existsSync(configPath1) || fs.existsSync(configPath2)) {
-          scriptDir = rootPath;
-          break;
-        }
-      }
-      
-      // 如果都没找到，使用默认路径
-      if (!scriptDir) {
-        scriptDir = path.resolve(__dirname, '..');
-      }
-    }
+    // 使用统一的路径检测函数
+    const scriptDir = detectProjectRoot();
     
     const backupDir = path.join(scriptDir, 'backups');
     console.log(`📁 [备份列表] 使用备份目录: ${backupDir}`);
@@ -2806,107 +2808,167 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
     
     console.log(`📥 [恢复] 开始恢复备份: ${backupName}`);
     
-    const scriptDir = path.resolve(__dirname, '..');
+    // 确定项目根目录（使用统一的检测函数）
+    const scriptDir = detectProjectRoot();
+    console.log(`📁 [恢复] 使用项目根目录: ${scriptDir}`);
+    
     const backupDir = path.join(scriptDir, 'backups');
     const backupPath = path.join(backupDir, backupName);
     
     // 检查备份文件是否存在
     if (!fs.existsSync(backupPath)) {
-      return res.status(404).json({ error: '备份文件不存在' });
+      console.error(`❌ [恢复] 备份文件不存在: ${backupPath}`);
+      return res.status(404).json({ error: `备份文件不存在: ${backupName}` });
     }
     
-    // 执行恢复脚本（通过传入备份文件名）
-    const restoreScript = path.join(scriptDir, 'restore.sh');
-    
-    if (!fs.existsSync(restoreScript)) {
-      return res.status(500).json({ error: '恢复脚本不存在' });
-    }
-    
-    // 由于restore.sh是交互式的，我们需要创建一个非交互式版本
-    // 或者直接执行恢复操作
     const isTarGz = backupName.endsWith('.tar.gz');
     const tempDir = isTarGz ? path.join(scriptDir, 'temp_restore') : null;
     
     try {
+      let extractedDir = null;
+      
       // 如果是压缩文件，先解压
       if (isTarGz) {
+        console.log(`📂 [恢复] 解压备份文件: ${backupName}`);
         if (!fs.existsSync(tempDir)) {
           fs.mkdirSync(tempDir, { recursive: true });
         }
-        await execAsync(`tar -xzf "${backupPath}" -C "${tempDir}"`, {
-          cwd: scriptDir,
-          timeout: 300000
-        });
         
-        const extractedDir = path.join(tempDir, backupName.replace('.tar.gz', ''));
-        
-        // 恢复配置文件
-        const configSource = path.join(extractedDir, 'config.json');
-        const configDest = path.join(scriptDir, 'backend', 'config.json');
-        if (fs.existsSync(configSource)) {
-          fs.copyFileSync(configSource, configDest);
-          console.log('✅ [恢复] 已恢复配置文件');
-        }
-        
-        // 恢复.env文件
-        const envSource = path.join(extractedDir, '.env');
-        const envDest = path.join(scriptDir, '.env');
-        if (fs.existsSync(envSource)) {
-          fs.copyFileSync(envSource, envDest);
-          console.log('✅ [恢复] 已恢复环境变量文件');
-        }
-        
-        // 恢复数据目录
-        const dataSource = path.join(extractedDir, 'data');
-        const dataDest = path.join(scriptDir, 'data');
-        if (fs.existsSync(dataSource)) {
-          // 备份现有数据
-          if (fs.existsSync(dataDest)) {
-            const backupDataPath = `${dataDest}.backup.${Date.now()}`;
-            fs.renameSync(dataDest, backupDataPath);
-            console.log(`✅ [恢复] 已备份现有数据到: ${backupDataPath}`);
-          }
-          // 复制恢复数据
-          await execAsync(`cp -r "${dataSource}" "${dataDest}"`, {
+        try {
+          await execAsync(`tar -xzf "${backupPath}" -C "${tempDir}"`, {
             cwd: scriptDir,
             timeout: 300000
           });
-          console.log('✅ [恢复] 已恢复数据目录');
-        }
-        
-        // 清理临时目录
-        if (fs.existsSync(tempDir)) {
-          fs.rmSync(tempDir, { recursive: true, force: true });
+          extractedDir = path.join(tempDir, backupName.replace('.tar.gz', ''));
+          
+          if (!fs.existsSync(extractedDir)) {
+            throw new Error(`解压后未找到目录: ${extractedDir}`);
+          }
+          console.log(`✅ [恢复] 解压完成: ${extractedDir}`);
+        } catch (tarError) {
+          // 在 Windows 上 tar 命令可能不可用，尝试使用 Node.js 解压
+          console.warn(`⚠️  [恢复] tar 命令失败，尝试使用 Node.js 解压: ${tarError.message}`);
+          // 这里可以添加使用 Node.js 解压 tar.gz 的逻辑，但为了简化，先报错
+          throw new Error(`解压失败: ${tarError.message}。如果是在 Windows 上，请确保已安装 tar 工具或使用 WSL。`);
         }
       } else {
-        // 如果是目录
-        const configSource = path.join(backupPath, 'config.json');
-        const configDest = path.join(scriptDir, 'backend', 'config.json');
-        if (fs.existsSync(configSource)) {
-          fs.copyFileSync(configSource, configDest);
-          console.log('✅ [恢复] 已恢复配置文件');
-        }
-        
-        const envSource = path.join(backupPath, '.env');
-        const envDest = path.join(scriptDir, '.env');
-        if (fs.existsSync(envSource)) {
-          fs.copyFileSync(envSource, envDest);
-          console.log('✅ [恢复] 已恢复环境变量文件');
-        }
-        
-        const dataSource = path.join(backupPath, 'data');
-        const dataDest = path.join(scriptDir, 'data');
-        if (fs.existsSync(dataSource)) {
-          if (fs.existsSync(dataDest)) {
-            const backupDataPath = `${dataDest}.backup.${Date.now()}`;
-            fs.renameSync(dataDest, backupDataPath);
-            console.log(`✅ [恢复] 已备份现有数据到: ${backupDataPath}`);
+        // 如果是目录，直接使用
+        extractedDir = backupPath;
+      }
+      
+      // 恢复配置文件（尝试多个可能的路径）
+      const configSource = path.join(extractedDir, 'config.json');
+      const possibleConfigDests = [
+        path.join(scriptDir, 'backend', 'config.json'),  // 宿主机路径
+        path.join(scriptDir, 'config.json'),              // 容器内路径
+        path.join(__dirname, 'config.json')               // 相对于 server.js
+      ];
+      
+      let configRestored = false;
+      if (fs.existsSync(configSource)) {
+        for (const configDest of possibleConfigDests) {
+          try {
+            // 确保目标目录存在
+            const destDir = path.dirname(configDest);
+            if (!fs.existsSync(destDir)) {
+              fs.mkdirSync(destDir, { recursive: true });
+            }
+            fs.copyFileSync(configSource, configDest);
+            console.log(`✅ [恢复] 已恢复配置文件: ${configDest}`);
+            configRestored = true;
+            break;
+          } catch (copyError) {
+            console.warn(`⚠️  [恢复] 无法复制到 ${configDest}: ${copyError.message}`);
           }
-          await execAsync(`cp -r "${dataSource}" "${dataDest}"`, {
-            cwd: scriptDir,
-            timeout: 300000
-          });
-          console.log('✅ [恢复] 已恢复数据目录');
+        }
+        if (!configRestored) {
+          console.warn(`⚠️  [恢复] 配置文件恢复失败，尝试过的路径: ${possibleConfigDests.join(', ')}`);
+        }
+      } else {
+        console.warn(`⚠️  [恢复] 备份中未找到配置文件: ${configSource}`);
+      }
+      
+      // 恢复.env文件（尝试多个可能的路径）
+      const envSource = path.join(extractedDir, '.env');
+      const possibleEnvDests = [
+        path.join(scriptDir, '.env'),
+        path.join(__dirname, '..', '.env')
+      ];
+      
+      let envRestored = false;
+      if (fs.existsSync(envSource)) {
+        for (const envDest of possibleEnvDests) {
+          try {
+            fs.copyFileSync(envSource, envDest);
+            console.log(`✅ [恢复] 已恢复环境变量文件: ${envDest}`);
+            envRestored = true;
+            break;
+          } catch (copyError) {
+            console.warn(`⚠️  [恢复] 无法复制到 ${envDest}: ${copyError.message}`);
+          }
+        }
+        if (!envRestored) {
+          console.warn(`⚠️  [恢复] 环境变量文件恢复失败，尝试过的路径: ${possibleEnvDests.join(', ')}`);
+        }
+      } else {
+        console.warn(`⚠️  [恢复] 备份中未找到环境变量文件: ${envSource}`);
+      }
+      
+      // 恢复数据目录（使用 Node.js API，跨平台）
+      const dataSource = path.join(extractedDir, 'data');
+      const possibleDataDests = [
+        path.join(scriptDir, 'data'),
+        '/app/data',  // 容器内路径
+        path.join(__dirname, '..', 'data')
+      ];
+      
+      let dataRestored = false;
+      if (fs.existsSync(dataSource)) {
+        for (const dataDest of possibleDataDests) {
+          try {
+            // 备份现有数据
+            if (fs.existsSync(dataDest)) {
+              const backupDataPath = `${dataDest}.backup.${Date.now()}`;
+              fs.renameSync(dataDest, backupDataPath);
+              console.log(`✅ [恢复] 已备份现有数据到: ${backupDataPath}`);
+            }
+            
+            // 使用 Node.js API 复制目录（跨平台）
+            copyDirectorySync(dataSource, dataDest);
+            console.log(`✅ [恢复] 已恢复数据目录: ${dataDest}`);
+            dataRestored = true;
+            break;
+          } catch (copyError) {
+            console.warn(`⚠️  [恢复] 无法复制数据目录到 ${dataDest}: ${copyError.message}`);
+            // 如果备份了现有数据但复制失败，尝试恢复备份
+            const backupDataPath = `${dataDest}.backup.${Date.now() - 1000}`;
+            if (fs.existsSync(backupDataPath)) {
+              try {
+                if (fs.existsSync(dataDest)) {
+                  fs.rmSync(dataDest, { recursive: true, force: true });
+                }
+                fs.renameSync(backupDataPath, dataDest);
+                console.log(`✅ [恢复] 已恢复原有数据目录`);
+              } catch (restoreError) {
+                console.error(`❌ [恢复] 恢复原有数据失败: ${restoreError.message}`);
+              }
+            }
+          }
+        }
+        if (!dataRestored) {
+          console.warn(`⚠️  [恢复] 数据目录恢复失败，尝试过的路径: ${possibleDataDests.join(', ')}`);
+        }
+      } else {
+        console.warn(`⚠️  [恢复] 备份中未找到数据目录: ${dataSource}`);
+      }
+      
+      // 清理临时目录
+      if (tempDir && fs.existsSync(tempDir)) {
+        try {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+          console.log(`✅ [恢复] 已清理临时目录: ${tempDir}`);
+        } catch (cleanError) {
+          console.warn(`⚠️  [恢复] 清理临时目录失败: ${cleanError.message}`);
         }
       }
       
@@ -2946,38 +3008,8 @@ app.delete('/api/backup/:backupName', authMiddleware, async (req, res) => {
     
     console.log(`🗑️  [删除备份] 开始删除备份: ${backupName}`);
     
-    // 使用与备份创建和列表相同的路径检测逻辑
-    const containerAppDir = '/app';
-    const containerConfigPath = path.join(containerAppDir, 'config.json');
-    
-    let scriptDir = null;
-    
-    // 如果 /app/config.json 存在，说明在容器内，使用 /app 作为工作目录
-    if (fs.existsSync(containerConfigPath)) {
-      scriptDir = containerAppDir;
-    } else {
-      // 尝试其他路径
-      const possibleRootPaths = [
-        path.resolve(__dirname, '..'),  // 相对于 server.js 的上级目录
-        '/opt/telegram-monitor',        // 常见部署路径
-        process.cwd()                   // 当前工作目录
-      ];
-      
-      for (const rootPath of possibleRootPaths) {
-        const configPath1 = path.join(rootPath, 'backend', 'config.json');
-        const configPath2 = path.join(rootPath, 'config.json');
-        
-        if (fs.existsSync(configPath1) || fs.existsSync(configPath2)) {
-          scriptDir = rootPath;
-          break;
-        }
-      }
-      
-      // 如果都没找到，使用默认路径
-      if (!scriptDir) {
-        scriptDir = path.resolve(__dirname, '..');
-      }
-    }
+    // 使用统一的路径检测函数
+    const scriptDir = detectProjectRoot();
     
     const backupDir = path.join(scriptDir, 'backups');
     const backupPath = path.join(backupDir, backupName);

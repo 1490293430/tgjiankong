@@ -2189,7 +2189,8 @@
                 const aiEnable = config.ai_analysis?.enabled || false;
                 document.getElementById('enableAI').checked = aiEnable;
                 
-                if (aiEnable && config.ai_analysis) {
+                // ✅ 修复：无论enable状态如何，都要填充AI配置字段，确保配置能正确保存和恢复
+                if (config.ai_analysis) {
                     // 🔒 OpenAI API Key 不发送给前端，使用占位符
                     document.getElementById('openaiApiKey').placeholder = '🔒 已隐藏 - 如果需要更改请输入新值 (sk-...)';
                     document.getElementById('openaiApiKey').value = '';
@@ -2206,7 +2207,7 @@
                     document.getElementById('enableAITrigger').checked = config.ai_analysis.ai_trigger_enabled || false;
                     document.getElementById('aiTriggerUsers').value = (config.ai_analysis.ai_trigger_users || []).join('\n');
                     document.getElementById('aiTriggerPrompt').value = config.ai_analysis.ai_trigger_prompt || '';
-                    document.getElementById('aiConfig').style.display = 'block';
+                    document.getElementById('aiConfig').style.display = aiEnable ? 'block' : 'none';
                     toggleAnalysisTriggerOptions();
                     toggleAITriggerConfig();
                 }
