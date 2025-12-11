@@ -3415,38 +3415,70 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
           }
         }
         
-        // 等待容器完全停止
+        // 等待容器完全停止并释放文件句柄
         if (telethonContainerStopped) {
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          console.log(`⏳ [恢复] 等待容器完全停止并释放文件句柄...`);
+          await new Promise(resolve => setTimeout(resolve, 5000)); // 增加到5秒
         }
         
+        // 重试机制：最多尝试3次
+        let retryCount = 0;
+        const maxRetries = 3;
+        
         for (const sessionDest of possibleSessionDests) {
-          try {
-            // 如果目标目录存在，先尝试重命名备份
-            if (fs.existsSync(sessionDest)) {
-              const backupSessionPath = `${sessionDest}.backup.${Date.now()}`;
-              try {
-                fs.renameSync(sessionDest, backupSessionPath);
-                console.log(`✅ [恢复] 已备份现有 session 到: ${backupSessionPath}`);
-              } catch (renameError) {
-                // 如果重命名失败（目录被占用），尝试先删除再复制
-                console.warn(`⚠️  [恢复] 无法重命名 session 目录（可能被占用），尝试删除后复制: ${renameError.message}`);
+          while (retryCount < maxRetries) {
+            try {
+              // 如果目标目录存在，先尝试重命名备份
+              if (fs.existsSync(sessionDest)) {
+                const backupSessionPath = `${sessionDest}.backup.${Date.now()}`;
                 try {
-                  // 尝试删除目录（可能需要递归删除文件）
-                  fs.rmSync(sessionDest, { recursive: true, force: true });
-                  console.log(`✅ [恢复] 已删除现有 session 目录`);
-                } catch (deleteError) {
-                  // 如果删除也失败，尝试复制到临时位置
-                  const tempSessionPath = `${sessionDest}.restore.${Date.now()}`;
-                  copyDirectorySync(sessionSource, tempSessionPath);
-                  console.warn(`⚠️  [恢复] session 目录被占用，已复制到临时位置: ${tempSessionPath}`);
-                  console.warn(`⚠️  [恢复] 请手动停止服务后，将 ${tempSessionPath} 重命名为 ${sessionDest}`);
-                  sessionRestored = true; // 标记为已处理
-                  break;
+                  fs.renameSync(sessionDest, backupSessionPath);
+                  console.log(`✅ [恢复] 已备份现有 session 到: ${backupSessionPath}`);
+                  break; // 成功，退出重试循环
+                } catch (renameError) {
+                  retryCount++;
+                  if (retryCount >= maxRetries) {
+                    // 如果重命名失败（目录被占用），尝试先删除再复制
+                    console.warn(`⚠️  [恢复] 无法重命名 session 目录（可能被占用），尝试删除后复制: ${renameError.message}`);
+                    try {
+                      // 等待更长时间后重试删除
+                      await new Promise(resolve => setTimeout(resolve, 3000));
+                      // 尝试删除目录（可能需要递归删除文件）
+                      fs.rmSync(sessionDest, { recursive: true, force: true });
+                      console.log(`✅ [恢复] 已删除现有 session 目录`);
+                      break; // 成功，退出重试循环
+                    } catch (deleteError) {
+                      // 如果删除也失败，尝试复制到临时位置
+                      const tempSessionPath = `${sessionDest}.restore.${Date.now()}`;
+                      copyDirectorySync(sessionSource, tempSessionPath);
+                      console.warn(`⚠️  [恢复] session 目录被占用，已复制到临时位置: ${tempSessionPath}`);
+                      console.warn(`⚠️  [恢复] 请手动停止服务后，将 ${tempSessionPath} 重命名为 ${sessionDest}`);
+                      sessionRestored = true; // 标记为已处理
+                      break; // 退出重试循环
+                    }
+                  } else {
+                    console.log(`⏳ [恢复] 重试 ${retryCount}/${maxRetries}：等待文件系统释放...`);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                  }
                 }
+              } else {
+                break; // 目录不存在，直接退出重试循环
               }
+            } catch (error) {
+              retryCount++;
+              if (retryCount >= maxRetries) {
+                throw error;
+              }
+              console.log(`⏳ [恢复] 重试 ${retryCount}/${maxRetries}：${error.message}`);
+              await new Promise(resolve => setTimeout(resolve, 2000));
             }
-            
+          }
+          
+          // 重置重试计数
+          retryCount = 0;
+          
+          // 如果目录已备份或删除，继续复制
+          try {
             // 确保目标目录的父目录存在
             const parentDir = path.dirname(sessionDest);
             if (!fs.existsSync(parentDir)) {
