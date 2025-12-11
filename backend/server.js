@@ -3376,7 +3376,50 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
       ];
       
       let sessionRestored = false;
+      let telethonContainerStopped = false;
+      
       if (fs.existsSync(sessionSource)) {
+        // 先尝试停止使用 session 目录的容器（telethon/listener）
+        try {
+          const Docker = require('dockerode');
+          const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+          
+          // 尝试停止 telethon/listener 容器
+          const containerNames = ['tg_listener', 'telethon', 'listener'];
+          for (const containerName of containerNames) {
+            try {
+              const container = docker.getContainer(containerName);
+              const containerInfo = await container.inspect();
+              
+              if (containerInfo.State.Running) {
+                console.log(`🛑 [恢复] 停止容器 ${containerName} 以释放 session 目录...`);
+                await container.stop({ t: 10 }); // 10秒超时
+                telethonContainerStopped = true;
+                console.log(`✅ [恢复] 已停止容器 ${containerName}`);
+              }
+            } catch (containerError) {
+              // 容器不存在或已停止，忽略
+            }
+          }
+        } catch (dockerError) {
+          console.warn(`⚠️  [恢复] 无法通过 Docker API 停止容器: ${dockerError.message}`);
+          // 尝试使用 shell 命令
+          try {
+            await execAsync('docker stop tg_listener telethon listener 2>/dev/null || true', {
+              timeout: 15000
+            });
+            telethonContainerStopped = true;
+            console.log(`✅ [恢复] 已通过 shell 命令停止容器`);
+          } catch (shellError) {
+            console.warn(`⚠️  [恢复] 无法停止容器，将尝试其他方法: ${shellError.message}`);
+          }
+        }
+        
+        // 等待容器完全停止
+        if (telethonContainerStopped) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+        
         for (const sessionDest of possibleSessionDests) {
           try {
             // 如果目标目录存在，先尝试重命名备份
@@ -3393,7 +3436,7 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
                   fs.rmSync(sessionDest, { recursive: true, force: true });
                   console.log(`✅ [恢复] 已删除现有 session 目录`);
                 } catch (deleteError) {
-                  // 如果删除也失败，尝试复制到临时位置，然后提示用户手动处理
+                  // 如果删除也失败，尝试复制到临时位置
                   const tempSessionPath = `${sessionDest}.restore.${Date.now()}`;
                   copyDirectorySync(sessionSource, tempSessionPath);
                   console.warn(`⚠️  [恢复] session 目录被占用，已复制到临时位置: ${tempSessionPath}`);
@@ -3427,6 +3470,41 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
               break;
             } catch (tempCopyError) {
               console.error(`❌ [恢复] 无法复制 session 到临时位置: ${tempCopyError.message}`);
+            }
+          }
+        }
+        
+        // 如果之前停止了容器，现在重新启动
+        if (telethonContainerStopped) {
+          try {
+            const Docker = require('dockerode');
+            const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+            
+            const containerNames = ['tg_listener', 'telethon', 'listener'];
+            for (const containerName of containerNames) {
+              try {
+                const container = docker.getContainer(containerName);
+                const containerInfo = await container.inspect();
+                
+                if (!containerInfo.State.Running) {
+                  console.log(`▶️  [恢复] 重新启动容器 ${containerName}...`);
+                  await container.start();
+                  console.log(`✅ [恢复] 已启动容器 ${containerName}`);
+                }
+              } catch (containerError) {
+                // 容器不存在，忽略
+              }
+            }
+          } catch (dockerError) {
+            console.warn(`⚠️  [恢复] 无法通过 Docker API 启动容器: ${dockerError.message}`);
+            // 尝试使用 shell 命令
+            try {
+              await execAsync('docker start tg_listener telethon listener 2>/dev/null || true', {
+                timeout: 15000
+              });
+              console.log(`✅ [恢复] 已通过 shell 命令启动容器`);
+            } catch (shellError) {
+              console.warn(`⚠️  [恢复] 无法启动容器，请手动启动: ${shellError.message}`);
             }
           }
         }
