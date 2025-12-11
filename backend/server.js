@@ -3112,39 +3112,58 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
         
         try {
           // 查找备份的数据库目录
-          let dbBackupPath = path.join(mongoDumpSource, mongoDbName);
-          console.log(`🔍 [恢复] 查找数据库备份目录: ${dbBackupPath}`);
+          // mongodump 可能有两种格式：
+          // 1. mongo_dump/tglogs/ (包含数据库名称子目录)
+          // 2. mongo_dump/ (直接包含集合文件 .bson)
+          let dbBackupPath = null;
+          console.log(`🔍 [恢复] 查找数据库备份目录...`);
           
-          if (!fs.existsSync(dbBackupPath)) {
-            // 可能备份在子目录中
-            console.log(`🔍 [恢复] 标准路径不存在，查找子目录...`);
-            const subDirs = fs.readdirSync(mongoDumpSource);
-            console.log(`🔍 [恢复] 找到子目录: ${subDirs.join(', ')}`);
+          // 首先检查 mongo_dump 目录是否直接包含 .bson 文件（格式2）
+          const mongoDumpFiles = fs.readdirSync(mongoDumpSource);
+          const hasBsonFiles = mongoDumpFiles.some(f => f.endsWith('.bson') || f.endsWith('.metadata.json'));
+          
+          if (hasBsonFiles) {
+            // 格式2：集合文件直接在 mongo_dump 目录下
+            console.log(`✅ [恢复] 检测到备份格式：集合文件直接在 mongo_dump 目录下`);
+            dbBackupPath = mongoDumpSource;
+            console.log(`✅ [恢复] 使用备份路径: ${dbBackupPath}`);
+          } else {
+            // 格式1：查找数据库名称子目录
+            dbBackupPath = path.join(mongoDumpSource, mongoDbName);
+            console.log(`🔍 [恢复] 查找数据库备份目录: ${dbBackupPath}`);
             
-            if (subDirs.length > 0) {
-              // 查找包含数据库备份的目录
-              for (const subDir of subDirs) {
-                const possiblePath = path.join(mongoDumpSource, subDir, mongoDbName);
-                if (fs.existsSync(possiblePath)) {
-                  console.log(`✅ [恢复] 找到数据库备份: ${possiblePath}`);
-                  dbBackupPath = possiblePath;
-                  break;
-                }
-                // 也可能子目录本身就是数据库目录
-                const subDirPath = path.join(mongoDumpSource, subDir);
-                const subDirStat = fs.statSync(subDirPath);
-                if (subDirStat.isDirectory()) {
-                  const collections = fs.readdirSync(subDirPath);
-                  if (collections.some(c => c.endsWith('.bson') || c.endsWith('.metadata.json'))) {
-                    console.log(`✅ [恢复] 找到数据库备份（直接包含集合）: ${subDirPath}`);
-                    dbBackupPath = subDirPath;
-                    break;
+            if (!fs.existsSync(dbBackupPath)) {
+              // 可能备份在子目录中
+              console.log(`🔍 [恢复] 标准路径不存在，查找子目录...`);
+              console.log(`🔍 [恢复] 找到子目录: ${mongoDumpFiles.join(', ')}`);
+              
+              if (mongoDumpFiles.length > 0) {
+                // 查找包含数据库备份的目录
+                for (const subDir of mongoDumpFiles) {
+                  const subDirPath = path.join(mongoDumpSource, subDir);
+                  const subDirStat = fs.statSync(subDirPath);
+                  
+                  if (subDirStat.isDirectory()) {
+                    // 检查是否是数据库名称目录
+                    if (subDir === mongoDbName) {
+                      console.log(`✅ [恢复] 找到数据库备份目录: ${subDirPath}`);
+                      dbBackupPath = subDirPath;
+                      break;
+                    }
+                    
+                    // 检查是否包含集合文件
+                    const collections = fs.readdirSync(subDirPath);
+                    if (collections.some(c => c.endsWith('.bson') || c.endsWith('.metadata.json'))) {
+                      console.log(`✅ [恢复] 找到数据库备份（子目录包含集合）: ${subDirPath}`);
+                      dbBackupPath = subDirPath;
+                      break;
+                    }
                   }
                 }
               }
+            } else {
+              console.log(`✅ [恢复] 找到数据库备份: ${dbBackupPath}`);
             }
-          } else {
-            console.log(`✅ [恢复] 找到数据库备份: ${dbBackupPath}`);
           }
           
           if (fs.existsSync(dbBackupPath)) {
@@ -3157,7 +3176,6 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
               console.log(`📦 [恢复] 使用 Docker API 复制备份到容器...`);
               
               // 创建容器内的临时目录
-              const containerBackupPath = `/tmp/mongo_restore/${mongoDbName}`;
               const execCreate = await container.exec({
                 Cmd: ['mkdir', '-p', '/tmp/mongo_restore'],
                 AttachStdout: true,
@@ -3171,9 +3189,24 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
               });
               
               // 创建 tar 文件
+              // 如果 dbBackupPath 就是 mongoDumpSource，说明集合文件直接在 mongo_dump 目录下
+              // 需要打包整个目录；否则只打包数据库子目录
               const tempTarPath = path.join(extractedDir, 'mongo_restore_temp.tar');
-              const tarDir = path.dirname(dbBackupPath);
-              const tarName = path.basename(dbBackupPath);
+              let tarDir, tarName, containerBackupPath;
+              
+              if (dbBackupPath === mongoDumpSource) {
+                // 格式2：集合文件直接在 mongo_dump 目录下
+                tarDir = path.dirname(mongoDumpSource);
+                tarName = path.basename(mongoDumpSource);
+                containerBackupPath = `/tmp/mongo_restore/${tarName}`;
+                console.log(`📦 [恢复] 备份格式：集合文件直接在目录下，容器路径: ${containerBackupPath}`);
+              } else {
+                // 格式1：数据库子目录
+                tarDir = path.dirname(dbBackupPath);
+                tarName = path.basename(dbBackupPath);
+                containerBackupPath = `/tmp/mongo_restore/${tarName}`;
+                console.log(`📦 [恢复] 备份格式：数据库子目录，容器路径: ${containerBackupPath}`);
+              }
               
               console.log(`📦 [恢复] 创建 tar 文件: ${tempTarPath} (从 ${tarDir}/${tarName})`);
               
@@ -3205,6 +3238,8 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
               console.log(`📦 [恢复] 备份文件已复制到容器，开始执行 mongorestore...`);
               
               // 在容器内执行 mongorestore
+              // 如果备份路径就是 mongo_dump 目录，mongorestore 会自动检测数据库名称
+              // 但我们需要指定目标数据库名称
               const restoreExec = await container.exec({
                 Cmd: ['mongorestore', '--db', mongoDbName, '--drop', containerBackupPath],
                 AttachStdout: true,
