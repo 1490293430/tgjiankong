@@ -161,7 +161,7 @@ if [ -n "${API_HASH:-}" ]; then
   sed -i "s|^API_HASH=.*|API_HASH=${API_HASH}|" .env
 fi
 
-mkdir -p data/mongo data/session logs/api logs/telethon
+mkdir -p data/mongo data/session logs/api logs/telethon backups
 
 # Create default config.json if not exists (prevent Docker from creating it as directory)
 if [ ! -f backend/config.json ]; then
@@ -193,7 +193,7 @@ echo "[验证] 检查服务健康状态..."
 # 检查 API 服务
 API_OK=false
 for i in {1..12}; do
-  if docker compose logs api --tail 10 2>/dev/null | grep -q "API 服务运行在端口 3000"; then
+  if docker compose logs api --tail 10 2>/dev/null | grep -q "API 服务运行在端口"; then
     echo "✅ API 服务正常运行"
     API_OK=true
     break

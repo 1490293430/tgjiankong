@@ -2543,61 +2543,120 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
       }
     }
     
-    // 备份数据目录（尝试多个可能的路径）
-    // 注意：在容器内，data 目录可能挂载在不同的位置
-    const possibleDataPaths = [
-      '/app/data',                      // 容器内挂载的 data 目录（如果挂载了）
-      path.join(scriptDir, 'data'),     // 项目根目录下的 data
-      '/opt/telegram-monitor/data',     // 常见部署路径
-      path.join(__dirname, '..', 'data') // 相对于 server.js
+    // 备份 MongoDB 数据（使用 mongodump，确保数据完整性）
+    // 优先使用 mongodump 备份，如果失败则回退到文件系统备份
+    const mongoBackupPath = path.join(backupPath, 'mongo_dump');
+    let mongoBacked = false;
+    
+    try {
+      console.log('📊 [备份] 开始使用 mongodump 备份 MongoDB 数据...');
+      
+      // 尝试使用容器内的 mongodump（如果可用）
+      // 或者使用宿主机的 mongodump
+      const mongoContainerName = 'tg_mongo';
+      const mongoDbName = 'tglogs';
+      
+      // 方法1：使用 Docker exec 在容器内执行 mongodump
+      try {
+        await execAsync(`docker exec ${mongoContainerName} mongodump --db ${mongoDbName} --out /tmp/mongo_backup`, {
+          timeout: 300000
+        });
+        
+        // 从容器复制备份文件到宿主机
+        const containerBackupPath = `/tmp/mongo_backup/${mongoDbName}`;
+        await execAsync(`docker cp ${mongoContainerName}:${containerBackupPath} "${mongoBackupPath}"`, {
+          timeout: 300000
+        });
+        
+        // 清理容器内的临时文件
+        await execAsync(`docker exec ${mongoContainerName} rm -rf /tmp/mongo_backup`, {
+          timeout: 60000
+        }).catch(() => {}); // 忽略清理错误
+        
+        console.log(`✅ [备份] 已使用 mongodump 备份 MongoDB 数据: ${mongoBackupPath}`);
+        mongoBacked = true;
+      } catch (dockerError) {
+        console.warn(`⚠️  [备份] Docker mongodump 失败: ${dockerError.message}`);
+        console.log('📊 [备份] 尝试使用本地 mongodump...');
+        
+        // 方法2：使用本地 mongodump（如果已安装）
+        try {
+          fs.mkdirSync(mongoBackupPath, { recursive: true });
+          await execAsync(`mongodump --host localhost:27017 --db ${mongoDbName} --out "${mongoBackupPath}"`, {
+            timeout: 300000
+          });
+          console.log(`✅ [备份] 已使用本地 mongodump 备份 MongoDB 数据: ${mongoBackupPath}`);
+          mongoBacked = true;
+        } catch (localError) {
+          console.warn(`⚠️  [备份] 本地 mongodump 失败: ${localError.message}`);
+          throw new Error('mongodump 不可用，将使用文件系统备份');
+        }
+      }
+    } catch (mongoError) {
+      console.warn(`⚠️  [备份] MongoDB 备份失败，回退到文件系统备份: ${mongoError.message}`);
+      
+      // 回退方案：备份数据目录（文件系统备份）
+      const possibleDataPaths = [
+        '/app/data',                      // 容器内挂载的 data 目录（如果挂载了）
+        path.join(scriptDir, 'data'),     // 项目根目录下的 data
+        '/opt/telegram-monitor/data',     // 常见部署路径
+        path.join(__dirname, '..', 'data') // 相对于 server.js
+      ];
+      
+      for (const dataPath of possibleDataPaths) {
+        if (fs.existsSync(dataPath)) {
+          const mongoDataPath = path.join(dataPath, 'mongo');
+          if (fs.existsSync(mongoDataPath)) {
+            const dataFiles = fs.readdirSync(mongoDataPath);
+            if (dataFiles.length > 0) {
+              const backupDataPath = path.join(backupPath, 'data');
+              fs.mkdirSync(backupDataPath, { recursive: true });
+              
+              // 只备份 mongo 子目录
+              const backupMongoPath = path.join(backupDataPath, 'mongo');
+              copyDirectorySync(mongoDataPath, backupMongoPath);
+              
+              console.log(`✅ [备份] 已备份 MongoDB 数据目录（文件系统）: ${mongoDataPath}`);
+              mongoBacked = true;
+              break;
+            }
+          }
+        }
+      }
+      
+      if (!mongoBacked) {
+        console.warn(`⚠️  [备份] MongoDB 数据备份失败，尝试过的路径: ${possibleDataPaths.join(', ')}`);
+      }
+    }
+    
+    // 备份 session 目录（Telegram 登录凭证）
+    const possibleSessionPaths = [
+      '/app/data/session',
+      path.join(scriptDir, 'data', 'session'),
+      '/opt/telegram-monitor/data/session',
+      path.join(__dirname, '..', 'data', 'session')
     ];
     
-    let dataBacked = false;
-    for (const dataPath of possibleDataPaths) {
-      if (fs.existsSync(dataPath)) {
-        const dataFiles = fs.readdirSync(dataPath);
-        if (dataFiles.length > 0) {
+    let sessionBacked = false;
+    for (const sessionPath of possibleSessionPaths) {
+      if (fs.existsSync(sessionPath)) {
+        const sessionFiles = fs.readdirSync(sessionPath);
+        if (sessionFiles.length > 0) {
           const backupDataPath = path.join(backupPath, 'data');
           fs.mkdirSync(backupDataPath, { recursive: true });
           
-          // 复制数据目录内容
-          for (const item of dataFiles) {
-            const sourcePath = path.join(dataPath, item);
-            const destPath = path.join(backupDataPath, item);
-            const stat = fs.statSync(sourcePath);
-            
-            if (stat.isDirectory()) {
-              // 递归复制目录
-              const copyDir = (src, dest) => {
-                fs.mkdirSync(dest, { recursive: true });
-                const entries = fs.readdirSync(src);
-                for (const entry of entries) {
-                  const srcPath = path.join(src, entry);
-                  const destPath = path.join(dest, entry);
-                  const entryStat = fs.statSync(srcPath);
-                  if (entryStat.isDirectory()) {
-                    copyDir(srcPath, destPath);
-                  } else {
-                    fs.copyFileSync(srcPath, destPath);
-                  }
-                }
-              };
-              copyDir(sourcePath, destPath);
-            } else {
-              fs.copyFileSync(sourcePath, destPath);
-            }
-          }
-          console.log(`✅ [备份] 已备份数据目录: ${dataPath}`);
-          dataBacked = true;
-          break; // 找到数据目录后退出循环
-        } else {
-          console.warn(`⚠️  [备份] 数据目录为空: ${dataPath}`);
+          const backupSessionPath = path.join(backupDataPath, 'session');
+          copyDirectorySync(sessionPath, backupSessionPath);
+          
+          console.log(`✅ [备份] 已备份 session 目录: ${sessionPath}`);
+          sessionBacked = true;
+          break;
         }
       }
     }
     
-    if (!dataBacked) {
-      console.warn(`⚠️  [备份] 数据目录不存在，尝试过的路径: ${possibleDataPaths.join(', ')}`);
+    if (!sessionBacked) {
+      console.warn(`⚠️  [备份] session 目录不存在或为空`);
     }
     
     // 创建备份信息文件
@@ -2607,7 +2666,10 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
 备份内容:
 - 配置文件 (backend/config.json)
 - 环境变量 (.env)
-- 数据目录 (data/)
+- MongoDB 数据库 (使用 mongodump，包含所有用户配置和用户数据)
+- Session 文件 (Telegram 登录凭证)
+
+备份方式: ${mongoBacked ? 'mongodump (推荐)' : '文件系统备份'}
 `;
     fs.writeFileSync(backupInfoPath, backupInfo);
     
@@ -2914,16 +2976,86 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
         console.warn(`⚠️  [恢复] 备份中未找到环境变量文件: ${envSource}`);
       }
       
-      // 恢复数据目录（使用 Node.js API，跨平台）
-      const dataSource = path.join(extractedDir, 'data');
-      const possibleDataDests = [
-        path.join(scriptDir, 'data'),
-        '/app/data',  // 容器内路径
-        path.join(__dirname, '..', 'data')
-      ];
+      // 恢复 MongoDB 数据（优先使用 mongorestore）
+      const mongoDumpSource = path.join(extractedDir, 'mongo_dump');
+      const mongoDataSource = path.join(extractedDir, 'data', 'mongo');
+      const mongoContainerName = 'tg_mongo';
+      const mongoDbName = 'tglogs';
       
-      let dataRestored = false;
-      if (fs.existsSync(dataSource)) {
+      let mongoRestored = false;
+      
+      // 方法1：如果存在 mongodump 备份，使用 mongorestore
+      if (fs.existsSync(mongoDumpSource)) {
+        console.log('📊 [恢复] 检测到 mongodump 备份，使用 mongorestore 恢复...');
+        
+        try {
+          // 查找备份的数据库目录
+          const dbBackupPath = path.join(mongoDumpSource, mongoDbName);
+          if (!fs.existsSync(dbBackupPath)) {
+            // 可能备份在子目录中
+            const subDirs = fs.readdirSync(mongoDumpSource);
+            if (subDirs.length > 0) {
+              const firstSubDir = path.join(mongoDumpSource, subDirs[0], mongoDbName);
+              if (fs.existsSync(firstSubDir)) {
+                // 复制到标准位置
+                const tempDbPath = path.join(mongoDumpSource, mongoDbName);
+                copyDirectorySync(firstSubDir, tempDbPath);
+              }
+            }
+          }
+          
+          if (fs.existsSync(dbBackupPath)) {
+            // 使用 Docker exec 在容器内执行 mongorestore
+            try {
+              // 先复制备份文件到容器
+              const containerBackupPath = `/tmp/mongo_restore/${mongoDbName}`;
+              await execAsync(`docker cp "${dbBackupPath}" ${mongoContainerName}:${containerBackupPath}`, {
+                timeout: 300000
+              });
+              
+              // 在容器内执行 mongorestore
+              await execAsync(`docker exec ${mongoContainerName} mongorestore --db ${mongoDbName} --drop "${containerBackupPath}"`, {
+                timeout: 300000
+              });
+              
+              // 清理容器内的临时文件
+              await execAsync(`docker exec ${mongoContainerName} rm -rf /tmp/mongo_restore`, {
+                timeout: 60000
+              }).catch(() => {});
+              
+              console.log(`✅ [恢复] 已使用 mongorestore 恢复 MongoDB 数据`);
+              mongoRestored = true;
+            } catch (dockerError) {
+              console.warn(`⚠️  [恢复] Docker mongorestore 失败: ${dockerError.message}`);
+              console.log('📊 [恢复] 尝试使用本地 mongorestore...');
+              
+              // 方法2：使用本地 mongorestore
+              try {
+                await execAsync(`mongorestore --host localhost:27017 --db ${mongoDbName} --drop "${dbBackupPath}"`, {
+                  timeout: 300000
+                });
+                console.log(`✅ [恢复] 已使用本地 mongorestore 恢复 MongoDB 数据`);
+                mongoRestored = true;
+              } catch (localError) {
+                console.warn(`⚠️  [恢复] 本地 mongorestore 失败: ${localError.message}`);
+              }
+            }
+          }
+        } catch (mongoError) {
+          console.warn(`⚠️  [恢复] MongoDB 恢复失败: ${mongoError.message}`);
+        }
+      }
+      
+      // 方法2：如果 mongodump 恢复失败或不存在，使用文件系统恢复
+      if (!mongoRestored && fs.existsSync(mongoDataSource)) {
+        console.log('📊 [恢复] 使用文件系统恢复 MongoDB 数据...');
+        
+        const possibleDataDests = [
+          path.join(scriptDir, 'data', 'mongo'),
+          '/app/data/mongo',  // 容器内路径
+          path.join(__dirname, '..', 'data', 'mongo')
+        ];
+        
         for (const dataDest of possibleDataDests) {
           try {
             // 备份现有数据
@@ -2934,32 +3066,47 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
             }
             
             // 使用 Node.js API 复制目录（跨平台）
-            copyDirectorySync(dataSource, dataDest);
-            console.log(`✅ [恢复] 已恢复数据目录: ${dataDest}`);
-            dataRestored = true;
+            copyDirectorySync(mongoDataSource, dataDest);
+            console.log(`✅ [恢复] 已恢复 MongoDB 数据目录: ${dataDest}`);
+            mongoRestored = true;
             break;
           } catch (copyError) {
             console.warn(`⚠️  [恢复] 无法复制数据目录到 ${dataDest}: ${copyError.message}`);
-            // 如果备份了现有数据但复制失败，尝试恢复备份
-            const backupDataPath = `${dataDest}.backup.${Date.now() - 1000}`;
-            if (fs.existsSync(backupDataPath)) {
-              try {
-                if (fs.existsSync(dataDest)) {
-                  fs.rmSync(dataDest, { recursive: true, force: true });
-                }
-                fs.renameSync(backupDataPath, dataDest);
-                console.log(`✅ [恢复] 已恢复原有数据目录`);
-              } catch (restoreError) {
-                console.error(`❌ [恢复] 恢复原有数据失败: ${restoreError.message}`);
-              }
-            }
           }
         }
-        if (!dataRestored) {
-          console.warn(`⚠️  [恢复] 数据目录恢复失败，尝试过的路径: ${possibleDataDests.join(', ')}`);
+      }
+      
+      if (!mongoRestored) {
+        console.warn(`⚠️  [恢复] MongoDB 数据恢复失败`);
+      }
+      
+      // 恢复 session 目录
+      const sessionSource = path.join(extractedDir, 'data', 'session');
+      const possibleSessionDests = [
+        path.join(scriptDir, 'data', 'session'),
+        '/app/data/session',
+        path.join(__dirname, '..', 'data', 'session')
+      ];
+      
+      let sessionRestored = false;
+      if (fs.existsSync(sessionSource)) {
+        for (const sessionDest of possibleSessionDests) {
+          try {
+            // 备份现有 session
+            if (fs.existsSync(sessionDest)) {
+              const backupSessionPath = `${sessionDest}.backup.${Date.now()}`;
+              fs.renameSync(sessionDest, backupSessionPath);
+              console.log(`✅ [恢复] 已备份现有 session 到: ${backupSessionPath}`);
+            }
+            
+            copyDirectorySync(sessionSource, sessionDest);
+            console.log(`✅ [恢复] 已恢复 session 目录: ${sessionDest}`);
+            sessionRestored = true;
+            break;
+          } catch (copyError) {
+            console.warn(`⚠️  [恢复] 无法复制 session 目录到 ${sessionDest}: ${copyError.message}`);
+          }
         }
-      } else {
-        console.warn(`⚠️  [恢复] 备份中未找到数据目录: ${dataSource}`);
       }
       
       // 清理临时目录
