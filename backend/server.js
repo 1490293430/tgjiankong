@@ -2659,17 +2659,102 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
       console.warn(`⚠️  [备份] session 目录不存在或为空`);
     }
     
+    // 额外导出用户配置快照（JSON格式，方便查看）
+    try {
+      console.log('📋 [备份] 导出用户配置快照...');
+      const mongoose = require('mongoose');
+      const UserConfig = require('./userConfigModel');
+      const User = require('./userModel');
+      
+      // 确保MongoDB连接
+      if (mongoose.connection.readyState === 1) {
+        const userConfigs = await UserConfig.find({}).lean();
+        const users = await User.find({}).select('-password_hash').lean();
+        
+        const configSnapshot = {
+          backup_time: new Date().toISOString(),
+          users: users.map(u => ({
+            _id: u._id.toString(),
+            username: u.username,
+            is_active: u.is_active,
+            parent_account_id: u.parent_account_id ? u.parent_account_id.toString() : null
+          })),
+          user_configs: userConfigs.map(uc => ({
+            userId: uc.userId.toString(),
+            keywords: uc.keywords || [],
+            channels: uc.channels || [],
+            alert_keywords: uc.alert_keywords || [],
+            alert_regex: uc.alert_regex || [],
+            alert_target: uc.alert_target || '',
+            log_all_messages: uc.log_all_messages || false,
+            telegram: {
+              api_id: uc.telegram?.api_id || 0,
+              api_hash: uc.telegram?.api_hash ? '***已隐藏***' : ''
+            },
+            alert_actions: {
+              telegram: uc.alert_actions?.telegram !== false,
+              email: {
+                enable: uc.alert_actions?.email?.enable || false,
+                smtp_host: uc.alert_actions?.email?.smtp_host || '',
+                smtp_port: uc.alert_actions?.email?.smtp_port || 465,
+                username: uc.alert_actions?.email?.username || '',
+                to: uc.alert_actions?.email?.to || '',
+                password: uc.alert_actions?.email?.password ? '***已隐藏***' : ''
+              },
+              webhook: {
+                enable: uc.alert_actions?.webhook?.enable || false,
+                url: uc.alert_actions?.webhook?.url || ''
+              }
+            },
+            ai_analysis: {
+              enabled: uc.ai_analysis?.enabled || false,
+              openai_api_key: uc.ai_analysis?.openai_api_key ? '***已隐藏***' : '',
+              openai_model: uc.ai_analysis?.openai_model || 'gpt-3.5-turbo',
+              openai_base_url: uc.ai_analysis?.openai_base_url || 'https://api.openai.com/v1',
+              analysis_trigger_type: uc.ai_analysis?.analysis_trigger_type || 'time',
+              time_interval_minutes: uc.ai_analysis?.time_interval_minutes || 30,
+              message_count_threshold: uc.ai_analysis?.message_count_threshold || 50,
+              max_messages_per_analysis: uc.ai_analysis?.max_messages_per_analysis || 500,
+              analysis_prompt: uc.ai_analysis?.analysis_prompt || '',
+              ai_send_telegram: uc.ai_analysis?.ai_send_telegram !== false,
+              ai_send_email: uc.ai_analysis?.ai_send_email || false,
+              ai_send_webhook: uc.ai_analysis?.ai_send_webhook || false,
+              ai_trigger_enabled: uc.ai_analysis?.ai_trigger_enabled || false,
+              ai_trigger_users: uc.ai_analysis?.ai_trigger_users || [],
+              ai_trigger_prompt: uc.ai_analysis?.ai_trigger_prompt || ''
+            }
+          }))
+        };
+        
+        const snapshotPath = path.join(backupPath, 'user_configs_snapshot.json');
+        fs.writeFileSync(snapshotPath, JSON.stringify(configSnapshot, null, 2));
+        console.log(`✅ [备份] 已导出用户配置快照: ${snapshotPath}`);
+      } else {
+        console.warn('⚠️  [备份] MongoDB 未连接，跳过用户配置快照导出');
+      }
+    } catch (snapshotError) {
+      console.warn(`⚠️  [备份] 导出用户配置快照失败: ${snapshotError.message}`);
+    }
+    
     // 创建备份信息文件
     const backupInfoPath = path.join(backupPath, 'backup_info.txt');
     const backupInfo = `备份时间: ${new Date().toLocaleString('zh-CN')}
 备份路径: ${backupPath}
 备份内容:
-- 配置文件 (backend/config.json)
+- 配置文件 (backend/config.json) - 注意：这只是默认模板，实际配置在MongoDB中
 - 环境变量 (.env)
-- MongoDB 数据库 (使用 mongodump，包含所有用户配置和用户数据)
+- MongoDB 数据库 (使用 ${mongoBacked ? 'mongodump (推荐)' : '文件系统备份'})
+  * 包含所有用户配置（keywords, channels, alert_keywords, ai_analysis等）
+  * 包含所有用户账号信息
+  * 包含所有消息日志
+  * 包含所有AI分析结果
+- 用户配置快照 (user_configs_snapshot.json) - JSON格式，方便查看
 - Session 文件 (Telegram 登录凭证)
 
-备份方式: ${mongoBacked ? 'mongodump (推荐)' : '文件系统备份'}
+重要提示：
+- 用户的实际配置存储在MongoDB的userconfigs集合中，不在config.json中
+- config.json只是默认模板文件
+- 恢复时使用mongorestore恢复MongoDB数据即可恢复所有用户配置
 `;
     fs.writeFileSync(backupInfoPath, backupInfo);
     
