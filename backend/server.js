@@ -3112,59 +3112,189 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
         
         try {
           // 查找备份的数据库目录
-          const dbBackupPath = path.join(mongoDumpSource, mongoDbName);
+          let dbBackupPath = path.join(mongoDumpSource, mongoDbName);
+          console.log(`🔍 [恢复] 查找数据库备份目录: ${dbBackupPath}`);
+          
           if (!fs.existsSync(dbBackupPath)) {
             // 可能备份在子目录中
+            console.log(`🔍 [恢复] 标准路径不存在，查找子目录...`);
             const subDirs = fs.readdirSync(mongoDumpSource);
+            console.log(`🔍 [恢复] 找到子目录: ${subDirs.join(', ')}`);
+            
             if (subDirs.length > 0) {
-              const firstSubDir = path.join(mongoDumpSource, subDirs[0], mongoDbName);
-              if (fs.existsSync(firstSubDir)) {
-                // 复制到标准位置
-                const tempDbPath = path.join(mongoDumpSource, mongoDbName);
-                copyDirectorySync(firstSubDir, tempDbPath);
+              // 查找包含数据库备份的目录
+              for (const subDir of subDirs) {
+                const possiblePath = path.join(mongoDumpSource, subDir, mongoDbName);
+                if (fs.existsSync(possiblePath)) {
+                  console.log(`✅ [恢复] 找到数据库备份: ${possiblePath}`);
+                  dbBackupPath = possiblePath;
+                  break;
+                }
+                // 也可能子目录本身就是数据库目录
+                const subDirPath = path.join(mongoDumpSource, subDir);
+                const subDirStat = fs.statSync(subDirPath);
+                if (subDirStat.isDirectory()) {
+                  const collections = fs.readdirSync(subDirPath);
+                  if (collections.some(c => c.endsWith('.bson') || c.endsWith('.metadata.json'))) {
+                    console.log(`✅ [恢复] 找到数据库备份（直接包含集合）: ${subDirPath}`);
+                    dbBackupPath = subDirPath;
+                    break;
+                  }
+                }
               }
             }
+          } else {
+            console.log(`✅ [恢复] 找到数据库备份: ${dbBackupPath}`);
           }
           
           if (fs.existsSync(dbBackupPath)) {
-            // 使用 Docker exec 在容器内执行 mongorestore
+            // 使用 Docker API (dockerode) 在容器内执行 mongorestore
             try {
-              // 先复制备份文件到容器
+              const Docker = require('dockerode');
+              const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+              const container = docker.getContainer(mongoContainerName);
+              
+              console.log(`📦 [恢复] 使用 Docker API 复制备份到容器...`);
+              
+              // 创建容器内的临时目录
               const containerBackupPath = `/tmp/mongo_restore/${mongoDbName}`;
-              await execAsync(`docker cp "${dbBackupPath}" ${mongoContainerName}:${containerBackupPath}`, {
-                timeout: 300000
+              const execCreate = await container.exec({
+                Cmd: ['mkdir', '-p', '/tmp/mongo_restore'],
+                AttachStdout: true,
+                AttachStderr: true
+              });
+              const createStream = await execCreate.start({ hijack: true, stdin: false });
+              await new Promise((resolve, reject) => {
+                createStream.on('end', resolve);
+                createStream.on('error', reject);
+                createStream.resume(); // 消费流
               });
               
+              // 创建 tar 文件
+              const tempTarPath = path.join(extractedDir, 'mongo_restore_temp.tar');
+              const tarDir = path.dirname(dbBackupPath);
+              const tarName = path.basename(dbBackupPath);
+              
+              console.log(`📦 [恢复] 创建 tar 文件: ${tempTarPath} (从 ${tarDir}/${tarName})`);
+              
+              try {
+                await execAsync(`tar -cf "${tempTarPath}" -C "${tarDir}" "${tarName}"`, {
+                  timeout: 300000
+                });
+              } catch (tarError) {
+                console.warn(`⚠️  [恢复] tar 命令失败，尝试使用 Node.js 创建 tar: ${tarError.message}`);
+                // 如果 tar 命令不可用，使用 Node.js 的 archiver 或直接复制
+                // 由于 dockerode 的 putArchive 需要 tar 格式，我们尝试使用其他方法
+                throw new Error(`无法创建 tar 文件，请确保系统已安装 tar 命令`);
+              }
+              
+              // 使用 Docker API 上传 tar 文件到容器
+              console.log(`📦 [恢复] 上传 tar 文件到容器...`);
+              const tarStream = fs.createReadStream(tempTarPath);
+              await container.putArchive(tarStream, {
+                path: '/tmp/mongo_restore'
+              });
+              
+              // 删除临时 tar 文件
+              try {
+                fs.unlinkSync(tempTarPath);
+              } catch (unlinkError) {
+                console.warn(`⚠️  [恢复] 删除临时 tar 文件失败: ${unlinkError.message}`);
+              }
+              
+              console.log(`📦 [恢复] 备份文件已复制到容器，开始执行 mongorestore...`);
+              
               // 在容器内执行 mongorestore
-              await execAsync(`docker exec ${mongoContainerName} mongorestore --db ${mongoDbName} --drop "${containerBackupPath}"`, {
-                timeout: 300000
+              const restoreExec = await container.exec({
+                Cmd: ['mongorestore', '--db', mongoDbName, '--drop', containerBackupPath],
+                AttachStdout: true,
+                AttachStderr: true
+              });
+              
+              const restoreStream = await restoreExec.start({ hijack: true, stdin: false });
+              let restoreOutput = '';
+              
+              await new Promise((resolve, reject) => {
+                restoreStream.on('data', (chunk) => {
+                  restoreOutput += chunk.toString();
+                });
+                restoreStream.on('end', () => {
+                  if (restoreOutput) {
+                    console.log(`📊 [恢复] mongorestore 输出: ${restoreOutput.substring(0, 1000)}`);
+                  }
+                  resolve();
+                });
+                restoreStream.on('error', reject);
+                
+                setTimeout(() => {
+                  restoreStream.destroy();
+                  reject(new Error('mongorestore 执行超时'));
+                }, 300000);
               });
               
               // 清理容器内的临时文件
-              await execAsync(`docker exec ${mongoContainerName} rm -rf /tmp/mongo_restore`, {
-                timeout: 60000
-              }).catch(() => {});
-              
-              console.log(`✅ [恢复] 已使用 mongorestore 恢复 MongoDB 数据`);
-              mongoRestored = true;
-            } catch (dockerError) {
-              console.warn(`⚠️  [恢复] Docker mongorestore 失败: ${dockerError.message}`);
-              console.log('📊 [恢复] 尝试使用本地 mongorestore...');
-              
-              // 方法2：使用本地 mongorestore
               try {
-                await execAsync(`mongorestore --host localhost:27017 --db ${mongoDbName} --drop "${dbBackupPath}"`, {
+                const cleanupExec = await container.exec({
+                  Cmd: ['rm', '-rf', '/tmp/mongo_restore'],
+                  AttachStdout: true,
+                  AttachStderr: true
+                });
+                await cleanupExec.start({ hijack: true, stdin: false });
+              } catch (cleanupError) {
+                // 忽略清理错误
+              }
+              
+              console.log(`✅ [恢复] 已使用 Docker API mongorestore 恢复 MongoDB 数据`);
+              mongoRestored = true;
+            } catch (dockerApiError) {
+              console.error(`❌ [恢复] Docker API mongorestore 失败: ${dockerApiError.message}`);
+              console.error(`❌ [恢复] 错误堆栈: ${dockerApiError.stack}`);
+              console.log('📊 [恢复] 尝试使用 shell 命令...');
+              
+              // 方法2：尝试使用 shell 命令（如果 Docker CLI 可用）
+              try {
+                // 先复制备份文件到容器
+                const containerBackupPath = `/tmp/mongo_restore/${mongoDbName}`;
+                await execAsync(`docker cp "${dbBackupPath}" ${mongoContainerName}:${containerBackupPath}`, {
                   timeout: 300000
                 });
-                console.log(`✅ [恢复] 已使用本地 mongorestore 恢复 MongoDB 数据`);
+                
+                // 在容器内执行 mongorestore
+                await execAsync(`docker exec ${mongoContainerName} mongorestore --db ${mongoDbName} --drop "${containerBackupPath}"`, {
+                  timeout: 300000
+                });
+                
+                // 清理容器内的临时文件
+                await execAsync(`docker exec ${mongoContainerName} rm -rf /tmp/mongo_restore`, {
+                  timeout: 60000
+                }).catch(() => {});
+                
+                console.log(`✅ [恢复] 已使用 shell 命令 mongorestore 恢复 MongoDB 数据`);
                 mongoRestored = true;
-              } catch (localError) {
-                console.warn(`⚠️  [恢复] 本地 mongorestore 失败: ${localError.message}`);
+              } catch (dockerShellError) {
+                console.error(`❌ [恢复] Shell 命令 mongorestore 失败: ${dockerShellError.message}`);
+                console.log('📊 [恢复] 尝试使用本地 mongorestore...');
+                
+                // 方法3：使用本地 mongorestore（如果已安装）
+                try {
+                  await execAsync(`mongorestore --host mongo:27017 --db ${mongoDbName} --drop "${dbBackupPath}"`, {
+                    timeout: 300000
+                  });
+                  console.log(`✅ [恢复] 已使用本地 mongorestore 恢复 MongoDB 数据`);
+                  mongoRestored = true;
+                } catch (localError) {
+                  console.error(`❌ [恢复] 本地 mongorestore 失败: ${localError.message}`);
+                  throw new Error(`所有 mongorestore 方法都失败: ${localError.message}`);
+                }
               }
             }
+          } else {
+            console.error(`❌ [恢复] 未找到数据库备份目录: ${dbBackupPath}`);
+            console.error(`❌ [恢复] mongo_dump 目录内容: ${fs.readdirSync(mongoDumpSource).join(', ')}`);
           }
         } catch (mongoError) {
-          console.warn(`⚠️  [恢复] MongoDB 恢复失败: ${mongoError.message}`);
+          console.error(`❌ [恢复] MongoDB 恢复失败: ${mongoError.message}`);
+          console.error(`❌ [恢复] 错误堆栈: ${mongoError.stack}`);
         }
       }
       
@@ -3214,21 +3344,59 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
       if (fs.existsSync(sessionSource)) {
         for (const sessionDest of possibleSessionDests) {
           try {
-            // 备份现有 session
+            // 如果目标目录存在，先尝试重命名备份
             if (fs.existsSync(sessionDest)) {
               const backupSessionPath = `${sessionDest}.backup.${Date.now()}`;
-              fs.renameSync(sessionDest, backupSessionPath);
-              console.log(`✅ [恢复] 已备份现有 session 到: ${backupSessionPath}`);
+              try {
+                fs.renameSync(sessionDest, backupSessionPath);
+                console.log(`✅ [恢复] 已备份现有 session 到: ${backupSessionPath}`);
+              } catch (renameError) {
+                // 如果重命名失败（目录被占用），尝试先删除再复制
+                console.warn(`⚠️  [恢复] 无法重命名 session 目录（可能被占用），尝试删除后复制: ${renameError.message}`);
+                try {
+                  // 尝试删除目录（可能需要递归删除文件）
+                  fs.rmSync(sessionDest, { recursive: true, force: true });
+                  console.log(`✅ [恢复] 已删除现有 session 目录`);
+                } catch (deleteError) {
+                  // 如果删除也失败，尝试复制到临时位置，然后提示用户手动处理
+                  const tempSessionPath = `${sessionDest}.restore.${Date.now()}`;
+                  copyDirectorySync(sessionSource, tempSessionPath);
+                  console.warn(`⚠️  [恢复] session 目录被占用，已复制到临时位置: ${tempSessionPath}`);
+                  console.warn(`⚠️  [恢复] 请手动停止服务后，将 ${tempSessionPath} 重命名为 ${sessionDest}`);
+                  sessionRestored = true; // 标记为已处理
+                  break;
+                }
+              }
             }
             
+            // 确保目标目录的父目录存在
+            const parentDir = path.dirname(sessionDest);
+            if (!fs.existsSync(parentDir)) {
+              fs.mkdirSync(parentDir, { recursive: true });
+            }
+            
+            // 复制 session 目录
             copyDirectorySync(sessionSource, sessionDest);
             console.log(`✅ [恢复] 已恢复 session 目录: ${sessionDest}`);
             sessionRestored = true;
             break;
           } catch (copyError) {
             console.warn(`⚠️  [恢复] 无法复制 session 目录到 ${sessionDest}: ${copyError.message}`);
+            // 如果复制失败，尝试复制到临时位置
+            try {
+              const tempSessionPath = `${sessionDest}.restore.${Date.now()}`;
+              copyDirectorySync(sessionSource, tempSessionPath);
+              console.warn(`⚠️  [恢复] session 目录恢复失败，已复制到临时位置: ${tempSessionPath}`);
+              console.warn(`⚠️  [恢复] 请手动停止服务后，将 ${tempSessionPath} 重命名为 ${sessionDest}`);
+              sessionRestored = true; // 标记为已处理
+              break;
+            } catch (tempCopyError) {
+              console.error(`❌ [恢复] 无法复制 session 到临时位置: ${tempCopyError.message}`);
+            }
           }
         }
+      } else {
+        console.log(`ℹ️  [恢复] 备份中未找到 session 目录，跳过恢复`);
       }
       
       // 清理临时目录
