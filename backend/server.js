@@ -2543,62 +2543,98 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
       }
     }
     
-    // 备份 MongoDB 数据（使用 mongodump，确保数据完整性）
-    // 优先使用 mongodump 备份，如果失败则回退到文件系统备份
+    // 备份 MongoDB 数据（使用多种方法，确保数据完整性）
     const mongoBackupPath = path.join(backupPath, 'mongo_dump');
     let mongoBacked = false;
     
     try {
-      console.log('📊 [备份] 开始使用 mongodump 备份 MongoDB 数据...');
+      console.log('📊 [备份] 开始备份 MongoDB 数据...');
       
-      // 尝试使用容器内的 mongodump（如果可用）
-      // 或者使用宿主机的 mongodump
       const mongoContainerName = 'tg_mongo';
       const mongoDbName = 'tglogs';
       
-      // 方法1：使用 Docker exec 在容器内执行 mongodump
+      // 方法1：使用 Docker API (dockerode) 在容器内执行 mongodump
       try {
-        await execAsync(`docker exec ${mongoContainerName} mongodump --db ${mongoDbName} --out /tmp/mongo_backup`, {
-          timeout: 300000
+        const Docker = require('dockerode');
+        const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+        const container = docker.getContainer(mongoContainerName);
+        
+        // 在容器内执行 mongodump
+        const exec = await container.exec({
+          Cmd: ['mongodump', '--db', mongoDbName, '--out', '/tmp/mongo_backup'],
+          AttachStdout: true,
+          AttachStderr: true
+        });
+        
+        const stream = await exec.start({ hijack: true, stdin: false });
+        await new Promise((resolve, reject) => {
+          let output = '';
+          stream.on('data', (chunk) => {
+            output += chunk.toString();
+          });
+          stream.on('end', () => {
+            resolve(output);
+          });
+          stream.on('error', reject);
+          
+          setTimeout(() => {
+            stream.destroy();
+            reject(new Error('mongodump 执行超时'));
+          }, 300000);
         });
         
         // 从容器复制备份文件到宿主机
         const containerBackupPath = `/tmp/mongo_backup/${mongoDbName}`;
-        await execAsync(`docker cp ${mongoContainerName}:${containerBackupPath} "${mongoBackupPath}"`, {
-          timeout: 300000
+        const tarStream = await container.getArchive({ path: containerBackupPath });
+        
+        // 保存 tar 流到临时文件，然后解压
+        const tempTarPath = path.join(backupPath, 'mongo_backup_temp.tar');
+        const writeStream = fs.createWriteStream(tempTarPath);
+        
+        await new Promise((resolve, reject) => {
+          tarStream.pipe(writeStream);
+          writeStream.on('finish', resolve);
+          writeStream.on('error', reject);
+          tarStream.on('error', reject);
         });
         
-        // 清理容器内的临时文件
-        await execAsync(`docker exec ${mongoContainerName} rm -rf /tmp/mongo_backup`, {
-          timeout: 60000
-        }).catch(() => {}); // 忽略清理错误
-        
-        console.log(`✅ [备份] 已使用 mongodump 备份 MongoDB 数据: ${mongoBackupPath}`);
-        mongoBacked = true;
-      } catch (dockerError) {
-        console.warn(`⚠️  [备份] Docker mongodump 失败: ${dockerError.message}`);
-        console.log('📊 [备份] 尝试使用本地 mongodump...');
-        
-        // 方法2：使用本地 mongodump（如果已安装）
+        // 解压 tar 文件（如果 tar 命令可用）
         try {
           fs.mkdirSync(mongoBackupPath, { recursive: true });
-          await execAsync(`mongodump --host localhost:27017 --db ${mongoDbName} --out "${mongoBackupPath}"`, {
+          await execAsync(`tar -xf "${tempTarPath}" -C "${mongoBackupPath}" --strip-components=1`, {
             timeout: 300000
           });
-          console.log(`✅ [备份] 已使用本地 mongodump 备份 MongoDB 数据: ${mongoBackupPath}`);
-          mongoBacked = true;
-        } catch (localError) {
-          console.warn(`⚠️  [备份] 本地 mongodump 失败: ${localError.message}`);
-          throw new Error('mongodump 不可用，将使用文件系统备份');
+          fs.unlinkSync(tempTarPath);
+        } catch (tarError) {
+          console.warn(`⚠️  [备份] tar 解压失败，尝试使用 Node.js 方法: ${tarError.message}`);
+          // 如果 tar 命令不可用，保留 tar 文件，恢复时再处理
         }
+        
+        // 清理容器内的临时文件
+        try {
+          const cleanupExec = await container.exec({
+            Cmd: ['rm', '-rf', '/tmp/mongo_backup'],
+            AttachStdout: true,
+            AttachStderr: true
+          });
+          await cleanupExec.start({ hijack: true, stdin: false });
+        } catch (cleanupError) {
+          // 忽略清理错误
+        }
+        
+        console.log(`✅ [备份] 已使用 Docker API mongodump 备份 MongoDB 数据: ${mongoBackupPath}`);
+        mongoBacked = true;
+      } catch (dockerApiError) {
+        console.warn(`⚠️  [备份] Docker API mongodump 失败: ${dockerApiError.message}`);
+        throw dockerApiError;
       }
     } catch (mongoError) {
-      console.warn(`⚠️  [备份] MongoDB 备份失败，回退到文件系统备份: ${mongoError.message}`);
+      console.warn(`⚠️  [备份] MongoDB 备份失败，尝试文件系统备份: ${mongoError.message}`);
       
       // 回退方案：备份数据目录（文件系统备份）
+      // 注意：在容器内，data/mongo 可能没有挂载，需要从宿主机路径查找
       const possibleDataPaths = [
-        '/app/data',                      // 容器内挂载的 data 目录（如果挂载了）
-        path.join(scriptDir, 'data'),     // 项目根目录下的 data
+        path.join(scriptDir, 'data'),     // 项目根目录下的 data（宿主机路径）
         '/opt/telegram-monitor/data',     // 常见部署路径
         path.join(__dirname, '..', 'data') // 相对于 server.js
       ];
@@ -2626,6 +2662,7 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
       
       if (!mongoBacked) {
         console.warn(`⚠️  [备份] MongoDB 数据备份失败，尝试过的路径: ${possibleDataPaths.join(', ')}`);
+        console.warn(`⚠️  [备份] 注意：MongoDB 数据可能未备份，恢复时可能无法恢复用户配置！`);
       }
     }
     
