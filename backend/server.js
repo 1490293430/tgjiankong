@@ -4362,6 +4362,104 @@ async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHost
 const sessionFileCache = new Map();
 const SESSION_CACHE_TTL = 5000; // 5秒缓存
 
+// 检查 Docker volume 中的 session 文件是否存在（多开模式）
+async function checkSessionFileInVolume(userId) {
+  try {
+    const cacheKey = `volume_session_${userId}`;
+    const cached = sessionFileCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp) < SESSION_CACHE_TTL) {
+      return cached.exists;
+    }
+    
+    const Docker = require('dockerode');
+    const dockerSocketPaths = [
+      '/var/run/docker.sock',
+      process.env.DOCKER_HOST?.replace('unix://', '') || null
+    ].filter(Boolean);
+    
+    let docker = null;
+    for (const socketPath of dockerSocketPaths) {
+      if (fs.existsSync(socketPath)) {
+        try {
+          docker = new Docker({ socketPath });
+          await docker.ping();
+          break;
+        } catch (e) {
+          // 继续尝试下一个路径
+        }
+      }
+    }
+    
+    if (!docker) {
+      console.warn('⚠️  无法连接到 Docker，无法检查 volume 中的 session 文件');
+      return false;
+    }
+    
+    // 检查 volume 是否存在
+    const volumeName = 'tg_session';
+    let volume = null;
+    try {
+      volume = docker.getVolume(volumeName);
+      await volume.inspect();
+    } catch (e) {
+      // volume 不存在
+      sessionFileCache.set(cacheKey, { exists: false, timestamp: Date.now() });
+      return false;
+    }
+    
+    // 使用临时容器检查 volume 中的 session 文件
+    const volumeSessionFileName = `user_${userId}.session`;
+    const tempContainerName = `tg_session_check_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const alpineImage = 'alpine:latest';
+    
+    try {
+      const tempContainer = await docker.createContainer({
+        Image: alpineImage,
+        name: tempContainerName,
+        Cmd: ['sh', '-c', 'sleep 1'],
+        HostConfig: {
+          Binds: [
+            `${volumeName}:/tmp/session_volume`
+          ]
+        }
+      });
+      
+      await tempContainer.start();
+      
+      const exec = await tempContainer.exec({
+        Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "exists" || echo "not_exists"`],
+        AttachStdout: true,
+        AttachStderr: true
+      });
+      
+      const stream = await exec.start({ hijack: true, stdin: false });
+      let output = '';
+      await new Promise((resolve) => {
+        stream.on('data', (chunk) => {
+          output += chunk.toString();
+        });
+        stream.on('end', resolve);
+      });
+      
+      const exists = output.trim().includes('exists');
+      
+      await tempContainer.stop();
+      await tempContainer.remove();
+      
+      // 缓存结果
+      sessionFileCache.set(cacheKey, { exists, timestamp: Date.now() });
+      return exists;
+    } catch (checkError) {
+      console.warn(`⚠️  检查 volume 中的 session 文件失败: ${checkError.message}`);
+      sessionFileCache.set(cacheKey, { exists: false, timestamp: Date.now() });
+      return false;
+    }
+  } catch (error) {
+    console.error('检查 volume session 文件失败:', error);
+    return false;
+  }
+}
+
 function checkSessionFileExists(sessionPath) {
   try {
     // 检查缓存
@@ -5605,11 +5703,11 @@ async function startMultiLoginContainer(userId) {
       MONGO_URL: process.env.MONGO_URL || 'mongodb://mongo:27017/tglogs',
       API_URL: process.env.API_URL || 'http://api:3000',
       CONFIG_PATH: `/app/config_${userId}.json`,
-      // 多开模式：SESSION_PATH设置为 /app/session_data/user
-      // 由于USER_ID环境变量会设置，monitor.py会使用 SESSION_PATH_{USER_ID} = /app/session_data/user_${userId}
-      // 使用 /app/session_data 而不是 /app/session，避免 Docker overlay 文件系统只读问题
-      // 这样session文件是 /app/session_data/user_${userId}.session，与单开模式的 /app/session/telegram.session 不冲突
-      SESSION_PATH: `/app/session_data/user`,
+      // 多开模式：SESSION_PATH设置为 /tmp/session_volume/user
+      // 由于USER_ID环境变量会设置，monitor.py会使用 SESSION_PATH_{USER_ID} = /tmp/session_volume/user_${userId}
+      // 直接使用 volume 挂载点，避免 Docker overlay 文件系统只读问题
+      // 这样session文件是 /tmp/session_volume/user_${userId}.session，与单开模式的 /app/session/telegram.session 不冲突
+      SESSION_PATH: `/tmp/session_volume/user`,
       API_ID: process.env.API_ID || '',
       API_HASH: process.env.API_HASH || '',
       // USER_ID环境变量用于从后端API获取用户配置，同时用于构建session路径
@@ -6077,21 +6175,22 @@ async function startMultiLoginContainer(userId) {
       const projectRoot = '/opt/telegram-monitor';
       
       // 构建宿主机路径
-      const hostBackendPath = path.join(projectRoot, 'backend');
+      const hostConfigPath = path.join(projectRoot, 'backend', `config_${userId}.json`);
       const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
       
       console.log(`📂 [多开登录] 使用项目根目录: ${projectRoot}`);
-      console.log(`📂 [多开登录] 挂载路径: backend=${hostBackendPath}, session=volume:${sessionVolumeName}, logs=${hostLogsPath}`);
+      console.log(`📂 [多开登录] 挂载路径: config=${hostConfigPath}, session=volume:${sessionVolumeName}, logs=${hostLogsPath}`);
       
       // 创建容器
-      // 使用 Docker Volume 替代 bind mount，避免 overlay 文件系统只读问题
+      // 注意：不挂载整个 /app 目录，代码在镜像中
+      // 只挂载配置文件、session volume 和 logs 目录
       container = await docker.createContainer({
         Image: containerImage,
         name: containerName,
         Env: Object.entries(envVars).map(([k, v]) => `${k}=${v}`),
         HostConfig: {
           Binds: [
-            `${hostBackendPath}:/app:ro`,
+            `${hostConfigPath}:/app/config_${userId}.json:ro`,
             `${sessionVolumeName}:/tmp/session_volume`,
             `${hostLogsPath}:/app/logs:rw`
           ],
@@ -6136,7 +6235,7 @@ async function startMultiLoginContainer(userId) {
             await container.remove();
             // 重新创建容器（使用 volume）
             const projectRoot = '/opt/telegram-monitor';
-            const hostBackendPath = path.join(projectRoot, 'backend');
+            const hostConfigPath = path.join(projectRoot, 'backend', `config_${userId}.json`);
             const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
             
             container = await docker.createContainer({
@@ -6145,8 +6244,8 @@ async function startMultiLoginContainer(userId) {
               Env: Object.entries(envVars).map(([k, v]) => `${k}=${v}`),
               HostConfig: {
                 Binds: [
-                  `${hostBackendPath}:/app:ro`,
-                  `${sessionVolumeName}:/app/session`,
+                  `${hostConfigPath}:/app/config_${userId}.json:ro`,
+                  `${sessionVolumeName}:/tmp/session_volume`,
                   `${hostLogsPath}:/app/logs:rw`
                 ],
                 NetworkMode: 'tg-network',
@@ -6403,6 +6502,30 @@ const CACHE_TTL = 30000; // 缓存30秒（从10秒增加到30秒，减少检查�
 const userConfigCache = new Map();
 const CONFIG_CACHE_TTL = 60000; // 配置缓存60秒
 
+// 获取用户的 session 路径（支持单开和多开模式）
+async function getSessionPath(userId) {
+  try {
+    // 检查是否启用多开登录
+    const accountId = await getAccountId(userId);
+    const config = await loadUserConfig(accountId.toString());
+    const multiLoginEnabled = config.multi_login_enabled || false;
+    
+    if (multiLoginEnabled) {
+      // 多开模式：session 文件在 Docker volume 中
+      // 路径格式：/tmp/session_volume/user_${userId}.session
+      return `/tmp/session_volume/user_${userId}`;
+    } else {
+      // 单开模式：session 文件在 bind mount 目录中
+      // 路径格式：/app/session/telegram 或 /app/session/telegram_${userId}
+      return userId ? `/app/session/telegram_${userId}` : '/app/session/telegram';
+    }
+  } catch (error) {
+    // 如果获取配置失败，默认使用单开模式路径
+    console.warn(`⚠️  [登录状态] 获取配置失败，使用默认路径: ${error.message}`);
+    return userId ? `/app/session/telegram_${userId}` : '/app/session/telegram';
+  }
+}
+
 // 检查 Telegram 登录状态（优化版本，提高准确性）
 app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
   try {
@@ -6419,12 +6542,35 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       }
     }
     
-    // 快速检查 session 文件（不依赖 MongoDB 查询）
-    const sessionPath = userId 
-      ? `/app/session/telegram_${userId}`
-      : '/app/session/telegram';
+    // 检查是否启用多开登录（需要查询配置）
+    let multiLoginEnabled = false;
+    let sessionExists = false;
+    let sessionPath = null;
     
-    const sessionExists = checkSessionFileExists(sessionPath);
+    try {
+      // 获取用户配置以检查多开登录状态
+      const userConfig = await loadUserConfig(userId);
+      multiLoginEnabled = userConfig.multi_login_enabled || false;
+      
+      if (multiLoginEnabled) {
+        // 多开模式：检查 Docker volume 中的 session 文件
+        sessionPath = `/tmp/session_volume/user_${userId}`;
+        sessionExists = await checkSessionFileInVolume(userId);
+      } else {
+        // 单开模式：检查本地文件系统中的 session 文件
+        sessionPath = userId 
+          ? `/app/session/telegram_${userId}`
+          : '/app/session/telegram';
+        sessionExists = checkSessionFileExists(sessionPath);
+      }
+    } catch (configError) {
+      // 配置查询失败，回退到单开模式检查
+      console.warn(`⚠️  查询用户配置失败，使用单开模式检查: ${configError.message}`);
+      sessionPath = userId 
+        ? `/app/session/telegram_${userId}`
+        : '/app/session/telegram';
+      sessionExists = checkSessionFileExists(sessionPath);
+    }
     
     // 如果 session 文件不存在，直接返回（不需要查询配置）
     if (!sessionExists) {
