@@ -5605,10 +5605,11 @@ async function startMultiLoginContainer(userId) {
       MONGO_URL: process.env.MONGO_URL || 'mongodb://mongo:27017/tglogs',
       API_URL: process.env.API_URL || 'http://api:3000',
       CONFIG_PATH: `/app/config_${userId}.json`,
-      // 多开模式：SESSION_PATH设置为 /app/session/user
-      // 由于USER_ID环境变量会设置，monitor.py会使用 SESSION_PATH_{USER_ID} = /app/session/user_${userId}
-      // 这样session文件是 data/session/user_${userId}.session，与单开模式的 data/session/telegram.session 不冲突
-      SESSION_PATH: `/app/session/user`,
+      // 多开模式：SESSION_PATH设置为 /app/session_data/user
+      // 由于USER_ID环境变量会设置，monitor.py会使用 SESSION_PATH_{USER_ID} = /app/session_data/user_${userId}
+      // 使用 /app/session_data 而不是 /app/session，避免 Docker overlay 文件系统只读问题
+      // 这样session文件是 /app/session_data/user_${userId}.session，与单开模式的 /app/session/telegram.session 不冲突
+      SESSION_PATH: `/app/session_data/user`,
       API_ID: process.env.API_ID || '',
       API_HASH: process.env.API_HASH || '',
       // USER_ID环境变量用于从后端API获取用户配置，同时用于构建session路径
@@ -5627,7 +5628,24 @@ async function startMultiLoginContainer(userId) {
       // 如果使用的是 bind mount 而不是 volume，需要重新创建
       if (containerInfo.Mounts && containerInfo.Mounts.length > 0) {
         for (const mount of containerInfo.Mounts) {
-          if (mount.Destination === '/app/session') {
+          if (mount.Destination === '/app/session' || mount.Destination === '/app/session_data') {
+            // 检查挂载目标路径是否正确（应该是 /app/session_data）
+            if (mount.Destination !== '/app/session_data') {
+              console.warn(`⚠️  [多开登录] 检测到容器使用错误的挂载路径: ${mount.Destination} (应该是 /app/session_data)`);
+              console.log(`🗑️  [多开登录] 将删除旧容器并重新创建...`);
+              try {
+                if (containerInfo.State.Running) {
+                  await container.stop();
+                }
+                await container.remove();
+                needRecreate = true;
+                container = null;
+              } catch (removeError) {
+                console.warn(`⚠️  [多开登录] 删除旧容器失败: ${removeError.message}`);
+                // 继续尝试创建新容器，可能会因为名称冲突而失败
+              }
+              break;
+            }
             // 检查是否使用 volume（volume 的 Source 路径通常包含 /var/lib/docker/volumes/）
             const isVolume = mount.Source && mount.Source.includes('/var/lib/docker/volumes/');
             // 检查是否是错误的 bind mount（如 /data/session 或 /opt/telegram-monitor/data/session）
@@ -5748,7 +5766,7 @@ async function startMultiLoginContainer(userId) {
         HostConfig: {
           Binds: [
             `${hostBackendPath}:/app:ro`,
-            `${sessionVolumeName}:/app/session`,
+            `${sessionVolumeName}:/app/session_data`,
             `${hostLogsPath}:/app/logs:rw`
           ],
           NetworkMode: 'tg-network',
