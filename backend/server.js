@@ -8768,7 +8768,8 @@ process.on('SIGINT', () => {
 });
 
 // 启动服务器
-app.listen(PORT, () => {
+// 在 Docker 容器中必须监听 0.0.0.0，否则其他容器无法访问
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ API 服务运行在端口 ${PORT}`);
   console.log(`📝 默认用户名: admin`);
   console.log(`📝 默认密码: admin123`);
