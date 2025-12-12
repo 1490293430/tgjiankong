@@ -4426,21 +4426,12 @@ async function checkSessionFileInVolume(userId) {
     // 使用临时容器检查 volume 中的 session 文件
     const volumeSessionFileName = `user_${userId}.session`;
     const tempContainerName = `tg_session_check_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    // 使用已存在的镜像（优先使用 alpine:latest，如果不存在则使用 python:3.11-slim）
-    let alpineImage = 'python:3.11-slim';
     
     try {
-      // 先尝试检查 alpine:latest 是否存在
-      try {
-        const alpineImg = docker.getImage('alpine:latest');
-        await alpineImg.inspect();
-        alpineImage = 'alpine:latest';
-      } catch (e) {
-        // alpine:latest 不存在，使用 python:3.11-slim（应该已经存在）
-      }
+      const tempImage = await getTempContainerImage(docker);
       
       const tempContainer = await docker.createContainer({
-        Image: alpineImage,
+        Image: tempImage,
         name: tempContainerName,
         Cmd: ['sh', '-c', 'sleep 1'],
         HostConfig: {
@@ -5556,6 +5547,35 @@ async function getOrCreateSessionVolume(docker) {
   }
 }
 
+// 获取用于临时容器的镜像名称（优先使用 alpine:latest，如果不存在则使用 telethon 镜像）
+async function getTempContainerImage(docker) {
+  try {
+    // 先尝试使用 alpine:latest（更轻量）
+    const alpineImg = docker.getImage('alpine:latest');
+    await alpineImg.inspect();
+    return 'alpine:latest';
+  } catch (e) {
+    // alpine:latest 不存在，尝试查找 telethon 镜像
+    const images = await docker.listImages();
+    for (const img of images) {
+      const tags = img.RepoTags || [];
+      for (const tag of tags) {
+        if ((tag.includes('tg_listener') || tag.includes('telethon')) && !tag.includes('<none>')) {
+          return tag;
+        }
+      }
+    }
+    // 如果都找不到，尝试使用 python:3.11-slim（作为最后的备选）
+    try {
+      const pythonImg = docker.getImage('python:3.11-slim');
+      await pythonImg.inspect();
+      return 'python:3.11-slim';
+    } catch (e2) {
+      throw new Error('无法找到可用的临时容器镜像（alpine:latest、telethon 或 python:3.11-slim）');
+    }
+  }
+}
+
 // 迁移旧 session 文件到 volume
 async function migrateSessionFilesToVolume(docker, volumeName) {
   try {
@@ -5577,7 +5597,7 @@ async function migrateSessionFilesToVolume(docker, volumeName) {
     
     // 创建一个临时容器来访问 volume 并复制文件
     const tempContainerName = `tg_session_migrate_${Date.now()}`;
-    const containerImage = 'alpine:latest';
+    const containerImage = await getTempContainerImage(docker);
     
     try {
       // 创建临时容器
@@ -5670,6 +5690,10 @@ async function startMultiLoginContainer(userId) {
     // 获取或创建 session volume
     const sessionVolumeName = await getOrCreateSessionVolume(docker);
     
+    // 加载用户配置以获取 API_ID 和 API_HASH
+    const userConfig = await loadUserConfig(userId.toString());
+    const configObj = userConfig.toObject ? userConfig.toObject() : userConfig;
+    
     const containerName = `tg_listener_${userId}`;
     
     // 查找Telethon镜像（提升到函数作用域，以便在错误处理中使用）
@@ -5758,26 +5782,16 @@ async function startMultiLoginContainer(userId) {
     
     // 检查 volume 中是否已有 session 文件
     const tempContainerName = `tg_session_check_${Date.now()}`;
-    // 使用 python:3.11-slim 镜像（应该已经存在，因为 telethon 容器使用它）
-    let alpineImage = 'python:3.11-slim';
     let sessionExistsInVolume = false;
     
     console.log(`🔍 [多开登录] 检查 volume 中是否存在 session 文件: ${volumeSessionFileName}`);
     
     try {
-      // 先尝试拉取或使用 alpine:latest，如果失败则使用 python:3.11-slim
-      try {
-        const alpineImg = docker.getImage('alpine:latest');
-        await alpineImg.inspect();
-        alpineImage = 'alpine:latest';
-      } catch (e) {
-        // alpine:latest 不存在，使用 python:3.11-slim
-        console.log(`ℹ️  [多开登录] alpine:latest 不存在，使用 python:3.11-slim`);
-      }
+      const tempImage = await getTempContainerImage(docker);
       
       // 创建临时容器检查 volume 中是否有 session 文件
       const tempContainer = await docker.createContainer({
-        Image: alpineImage,
+        Image: tempImage,
         name: tempContainerName,
         Cmd: ['sh', '-c', 'sleep 1'],
         HostConfig: {
@@ -6089,26 +6103,16 @@ async function startMultiLoginContainer(userId) {
       
       // 检查 volume 中是否已有 session 文件
       const tempContainerName = `tg_session_check_${Date.now()}`;
-    // 使用已存在的镜像（优先使用 alpine:latest，如果不存在则使用 python:3.11-slim）
-    let alpineImage = 'python:3.11-slim';
-    let sessionExistsInVolume = false;
-    
-    console.log(`🔍 [多开登录] 检查 volume 中是否存在 session 文件: ${volumeSessionFileName}`);
-    
-    try {
-      // 先尝试检查 alpine:latest 是否存在
-      try {
-        const alpineImg = docker.getImage('alpine:latest');
-        await alpineImg.inspect();
-        alpineImage = 'alpine:latest';
-      } catch (e) {
-        // alpine:latest 不存在，使用 python:3.11-slim（应该已经存在）
-        console.log(`ℹ️  [多开登录] alpine:latest 不存在，使用 python:3.11-slim`);
-      }
+      let sessionExistsInVolume = false;
       
-      // 创建临时容器检查 volume 中是否有 session 文件
-      const tempContainer = await docker.createContainer({
-        Image: alpineImage,
+      console.log(`🔍 [多开登录] 检查 volume 中是否存在 session 文件: ${volumeSessionFileName}`);
+      
+      try {
+        const tempImage = await getTempContainerImage(docker);
+        
+        // 创建临时容器检查 volume 中是否有 session 文件
+        const tempContainer = await docker.createContainer({
+          Image: tempImage,
           name: tempContainerName,
           Cmd: ['sh', '-c', 'sleep 1'],
           HostConfig: {
