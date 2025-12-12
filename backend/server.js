@@ -9351,6 +9351,136 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
+// 启动时初始化多开登录容器
+async function initializeMultiLoginContainers() {
+  try {
+    console.log('🔄 [启动初始化] 开始检查多开登录模式...');
+    
+    const Docker = require('dockerode');
+    const dockerSocketPaths = [
+      '/var/run/docker.sock',
+      process.env.DOCKER_HOST?.replace('unix://', '') || null
+    ].filter(Boolean);
+    
+    let docker = null;
+    for (const socketPath of dockerSocketPaths) {
+      if (fs.existsSync(socketPath)) {
+        try {
+          docker = new Docker({ socketPath });
+          await docker.ping();
+          break;
+        } catch (e) {
+          // 继续尝试下一个路径
+        }
+      }
+    }
+    
+    if (!docker) {
+      console.warn('⚠️  [启动初始化] 无法连接到 Docker，跳过多开登录初始化');
+      return;
+    }
+    
+    // 获取所有主账号
+    const mainAccounts = await User.find({ 
+      is_active: true, 
+      parent_account_id: null 
+    });
+    
+    for (const account of mainAccounts) {
+      try {
+        const accountConfig = await loadUserConfig(account._id.toString());
+        const multiLoginEnabled = accountConfig.multi_login_enabled || false;
+        
+        if (!multiLoginEnabled) {
+          continue; // 该账号未启用多开登录，跳过
+        }
+        
+        console.log(`🔍 [启动初始化] 账号 ${account.username} 已启用多开登录，检查已登录账号...`);
+        
+        // 停止主容器（如果正在运行），并禁用自动重启
+        try {
+          const containers = await docker.listContainers({ all: true });
+          const mainContainer = containers.find(c => {
+            if (!c.Names || c.Names.length === 0) return false;
+            return c.Names.some(name => {
+              const cleanName = name.replace(/^\//, '');
+              return cleanName === 'tg_listener';
+            });
+          });
+          
+          if (mainContainer) {
+            const container = docker.getContainer(mainContainer.Id);
+            const inspect = await container.inspect();
+            
+            // 停止主容器（如果正在运行）
+            if (inspect.State.Running || inspect.State.Restarting) {
+              console.log(`🛑 [启动初始化] 停止主容器 tg_listener（多开模式下不使用）...`);
+              try {
+                await container.stop({ t: 10 });
+                console.log(`✅ [启动初始化] 主容器已停止`);
+                
+                // 注意：由于 docker-compose 的 restart: on-failure:5 策略，
+                // 主容器在正常停止后不会自动重启（只有在失败退出时才会重启）
+                // 但如果 docker-compose up 或重启服务，主容器可能会重新启动
+                // 因此每次切换到多开模式时，都需要确保主容器已停止
+              } catch (stopError) {
+                console.warn(`⚠️  [启动初始化] 停止主容器失败: ${stopError.message}`);
+              }
+            } else {
+              console.log(`ℹ️  [启动初始化] 主容器 tg_listener 已停止，无需操作`);
+            }
+          }
+        } catch (stopError) {
+          console.warn(`⚠️  [启动初始化] 停止主容器失败: ${stopError.message}`);
+        }
+        
+        // 获取该账号下的所有用户（包括主账号和子账号）
+        const accountIdObj = new mongoose.Types.ObjectId(account._id);
+        const accountUsers = await User.find({
+          $or: [
+            { _id: accountIdObj },
+            { parent_account_id: accountIdObj }
+          ]
+        }).select('_id username').lean();
+        
+        // 为每个已登录的用户启动独立容器
+        for (const user of accountUsers) {
+          try {
+            const userId = user._id.toString();
+            const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
+            const sessionPath = path.join(PROJECT_ROOT, 'data', 'session', `user_${userId}.session`);
+            
+            // 检查 session 文件是否存在
+            if (fs.existsSync(sessionPath)) {
+              const stats = fs.statSync(sessionPath);
+              if (stats.isFile() && stats.size > 0) {
+                console.log(`✅ [启动初始化] 用户 ${user.username} (${userId}) 已登录，启动独立容器...`);
+                
+                // 启动该用户的独立容器
+                await syncUserConfigAndStartMultiLoginContainer(userId);
+                
+                // 等待一小段时间，避免同时启动太多容器
+                await new Promise(resolve => setTimeout(resolve, 1000));
+              }
+            } else {
+              console.log(`⏭️  [启动初始化] 用户 ${user.username} (${userId}) 未登录，跳过`);
+            }
+          } catch (userError) {
+            console.error(`❌ [启动初始化] 启动用户 ${user.username} 的容器失败: ${userError.message}`);
+          }
+        }
+      } catch (accountError) {
+        console.error(`❌ [启动初始化] 处理账号 ${account.username} 失败: ${accountError.message}`);
+      }
+    }
+    
+    console.log('✅ [启动初始化] 多开登录容器初始化完成');
+  } catch (error) {
+    console.error('❌ [启动初始化] 初始化多开登录容器失败:', error.message);
+    // 不抛出错误，让服务继续启动
+  }
+}
+
 // 启动服务器
 // 在 Docker 容器中必须监听 0.0.0.0，否则其他容器无法访问
 app.listen(PORT, '0.0.0.0', () => {
@@ -9358,6 +9488,11 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📝 默认用户名: admin`);
   console.log(`📝 默认密码: admin123`);
   console.log(`⚠️  请及时修改默认密码！`);
+  
+  // 启动时初始化多开登录容器（延迟执行，等待数据库连接）
+  setTimeout(async () => {
+    await initializeMultiLoginContainers();
+  }, 5000); // 延迟5秒，确保数据库连接和用户数据已加载
   
   // 启动 AI 分析
   setTimeout(async () => {
