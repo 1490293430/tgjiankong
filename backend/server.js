@@ -6965,14 +6965,116 @@ app.post('/api/telegram/credentials/delete', authMiddleware, async (req, res) =>
       }
     }
     
-    // 3. 清除登录状态缓存
+    // 3. 清除登录状态缓存，并立即设置为未登录状态
     const cacheKey = `login_status_${userId}`;
     loginStatusCache.delete(cacheKey);
+    // 立即设置登录状态为未登录，确保删除后立即生效
+    loginStatusCache.set(cacheKey, {
+      result: {
+        logged_in: false,
+        message: '未登录（凭证已删除）'
+      },
+      timestamp: Date.now()
+    });
+    
+    // 清除 session 文件缓存（包括 volume 和本地路径的缓存）
     sessionFileCache.clear();
+    // 明确清除 volume session 缓存，并设置为不存在
+    const volumeCacheKey = `volume_session_${userId}`;
+    sessionFileCache.delete(volumeCacheKey);
+    // 立即设置 volume session 缓存为不存在，确保删除后立即生效
+    sessionFileCache.set(volumeCacheKey, { exists: false, timestamp: Date.now() });
     
     // 4. 清除用户配置缓存（如果存在）
     const configCacheKey = `user_config_${userId}`;
     userConfigCache.delete(configCacheKey);
+    
+    // 5. 立即验证删除结果，确保缓存反映最新状态
+    // 重新检查 volume 中的文件是否存在（不使用缓存）
+    try {
+      const Docker = require('dockerode');
+      const dockerSocketPaths = [
+        '/var/run/docker.sock',
+        process.env.DOCKER_HOST?.replace('unix://', '') || null
+      ].filter(Boolean);
+      
+      let docker = null;
+      for (const socketPath of dockerSocketPaths) {
+        if (fs.existsSync(socketPath)) {
+          try {
+            docker = new Docker({ socketPath });
+            await docker.ping();
+            break;
+          } catch (e) {
+            // 继续尝试下一个路径
+          }
+        }
+      }
+      
+      if (docker) {
+        const volumeName = 'tg_session';
+        const volumeSessionFileName = `user_${userId}.session`;
+        
+        try {
+          const volume = docker.getVolume(volumeName);
+          await volume.inspect();
+          
+          // 使用临时容器验证文件是否真的被删除
+          const tempImage = await getTempContainerImage(docker);
+          const verifyContainerName = `tg_session_verify_delete_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          
+          try {
+            const verifyContainer = await docker.createContainer({
+              Image: tempImage,
+              name: verifyContainerName,
+              Cmd: ['sh', '-c', 'sleep 1'],
+              HostConfig: {
+                Binds: [
+                  `${volumeName}:/tmp/session_volume`
+                ]
+              }
+            });
+            
+            await verifyContainer.start();
+            
+            const verifyExec = await verifyContainer.exec({
+              Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "exists" || echo "not_exists"`],
+              AttachStdout: true,
+              AttachStderr: true
+            });
+            
+            const verifyStream = await verifyExec.start({ hijack: true, stdin: false });
+            let verifyOutput = '';
+            await new Promise((resolve) => {
+              verifyStream.on('data', (chunk) => {
+                verifyOutput += chunk.toString();
+              });
+              verifyStream.on('end', resolve);
+            });
+            
+            const stillExists = verifyOutput.trim().includes('exists');
+            
+            await verifyContainer.stop();
+            await verifyContainer.remove();
+            
+            // 更新缓存为最新状态
+            sessionFileCache.set(volumeCacheKey, { exists: stillExists, timestamp: Date.now() });
+            
+            if (stillExists) {
+              console.warn(`⚠️  [删除凭证] 验证发现文件仍然存在: ${volumeSessionFileName}`);
+            } else {
+              console.log(`✅ [删除凭证] 验证确认文件已删除: ${volumeSessionFileName}`);
+            }
+          } catch (e) {
+            console.warn(`⚠️  [删除凭证] 验证删除结果失败: ${e.message}`);
+          }
+        } catch (e) {
+          // volume 不存在，跳过验证
+        }
+      }
+    } catch (error) {
+      console.warn(`⚠️  [删除凭证] 验证删除结果时出错: ${error.message}`);
+    }
     
     console.log(`✅ [删除凭证] 删除完成，共删除 ${deletedFiles.length} 个文件`);
     
