@@ -12,7 +12,6 @@ import signal
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.errors import RpcError
 import aiohttp
 from aiohttp import web
 import motor.motor_asyncio
@@ -1020,8 +1019,9 @@ async def main():
                     logger.info("✅ [授权检查] 客户端启动成功，session 有效（is_user_authorized() 可能不准确）")
                     is_authorized = True
                     start_success = True
-                except RpcError as rpc_error:
-                    # 检查是否是 AUTH_KEY_UNREGISTERED 错误
+                except Exception as rpc_error:
+                    # 检查是否是 RPC 错误（AUTH_KEY_UNREGISTERED，错误代码 401）
+                    # Telethon 的 RPC 错误通常有 code 和 message 属性
                     if hasattr(rpc_error, 'code') and rpc_error.code == 401:
                         # AUTH_KEY_UNREGISTERED 错误，说明 session 文件中的认证密钥无效
                         retry_count = max_retries  # 直接标记为失败，不重试

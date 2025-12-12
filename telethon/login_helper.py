@@ -8,7 +8,7 @@ import os
 import asyncio
 import json
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError, FloodWaitError, RpcError
+from telethon.errors import SessionPasswordNeededError, FloodWaitError
 
 async def check_login_status(session_path, api_id, api_hash):
     """检查登录状态"""
@@ -266,12 +266,15 @@ async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, 
                         log_debug(f"✅ Session 文件验证成功")
                     else:
                         log_debug(f"⚠️  警告：验证用户 ID 不匹配！")
-                except RpcError as rpc_err:
-                    # 检查是否是 AUTH_KEY_UNREGISTERED 错误
+                except Exception as rpc_err:
+                    # 检查是否是 RPC 错误（AUTH_KEY_UNREGISTERED，错误代码 401）
+                    # Telethon 的 RPC 错误通常有 code 和 message 属性
                     if hasattr(rpc_err, 'code') and rpc_err.code == 401:
                         log_debug(f"❌ AUTH_KEY_UNREGISTERED: Session 文件中的认证密钥无效: {rpc_err}")
+                    elif hasattr(rpc_err, 'code'):
+                        log_debug(f"⚠️  RPC 错误 (code: {rpc_err.code}): {rpc_err}")
                     else:
-                        log_debug(f"⚠️  RpcError: {rpc_err}")
+                        log_debug(f"⚠️  错误: {rpc_err}")
                 except EOFError as eof_err:
                     log_debug(f"❌ EOFError: Session 文件无效，无法启动客户端: {eof_err}")
                 except asyncio.TimeoutError:
