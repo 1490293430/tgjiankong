@@ -468,14 +468,24 @@
             border-radius: 8px;
         }
         
-        @keyframes slideInRight {
+        @keyframes slideIn {
             from {
-                opacity: 0;
                 transform: translateX(100%);
+                opacity: 0;
             }
             to {
-                opacity: 1;
                 transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(100%);
+                opacity: 0;
             }
         }
         
@@ -1262,65 +1272,28 @@
             });
         })();
         
-        // 显示底部全宽提示条
-        function showToast(message, isSuccess = true, duration = null) {
-            const toast = document.getElementById('toastNotification');
-            if (!toast) return;
-            
-            // 清除之前的定时器（如果有）
-            if (toast._hideTimer) {
-                clearTimeout(toast._hideTimer);
-                toast._hideTimer = null;
-            }
-            
-            // 先隐藏之前的提示（如果有）
-            toast.style.display = 'none';
-            
-            // 设置内容和样式
+        // 显示 Toast 提示（与注册成功提示完全一致）
+        function showToast(message, isSuccess = true) {
+            const toast = document.createElement('div');
+            toast.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: ${isSuccess ? '#27ae60' : '#e74c3c'};
+                color: white;
+                padding: 15px 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                z-index: 10000;
+                animation: slideIn 0.3s ease-out;
+            `;
             toast.textContent = message;
-            toast.className = 'toast-notification ' + (isSuccess ? 'success' : 'error');
+            document.body.appendChild(toast);
             
-            // 重置样式，确保动画能正常播放
-            // 先设置为初始状态（在右侧外部）
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateX(100%)';
-            toast.style.transition = '';
-            toast.style.animation = 'none';
-            toast.style.display = 'block';
-            
-            // 强制重新计算样式，确保动画生效
-            void toast.offsetWidth;
-            
-            // 显示提示框，从右上角滑入
-            toast.style.animation = 'slideInRight 0.4s ease-out';
-            
-            // 等待动画完成后设置最终状态
             setTimeout(() => {
-                if (toast) {
-                    toast.style.opacity = '1';
-                    toast.style.transform = 'translateX(0)';
-                }
-            }, 50);
-            
-            // 自动隐藏（如果指定了 duration 则使用，否则使用默认值）
-            const displayDuration = duration !== null ? duration : (isSuccess ? 4000 : 6000);
-            toast._hideTimer = setTimeout(() => {
-                if (toast) {
-                    // 淡出并向右滑出动画
-                    toast.style.transition = 'opacity 0.3s ease-out, transform 0.3s ease-out';
-                    toast.style.opacity = '0';
-                    toast.style.transform = 'translateX(100%)';
-                    setTimeout(() => {
-                        if (toast) {
-                            toast.style.display = 'none';
-                            toast.style.transition = '';
-                            toast.style.opacity = '';
-                            toast.style.transform = '';
-                            toast.style.animation = '';
-                        }
-                    }, 300);
-                }
-            }, displayDuration);
+                toast.style.animation = 'slideOut 0.3s ease-out';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
         }
         
         // 更新 SSE 连接状态显示
