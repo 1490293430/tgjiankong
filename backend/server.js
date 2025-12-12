@@ -7644,8 +7644,8 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
         sessionFileCache.delete(volumeCacheKey);
         
         // 等待一小段时间确保 session 文件完全写入 volume（在清理容器之前）
-        console.log(`⏳ [登录验证] 等待 2 秒确保文件同步到 volume...`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log(`⏳ [登录验证] 等待 3 秒确保文件同步到 volume...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
         
         // 在清理容器之前，先检查文件是否已写入 volume
         console.log(`🔍 [登录验证] 在清理容器前检查 volume 中的 session 文件...`);
@@ -7654,6 +7654,7 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
           const docker = new Docker({ socketPath: '/var/run/docker.sock' });
           const volumeName = 'tg_session';
           const volumeSessionFileName = `user_${userId}.session`;
+          const volumeJournalFileName = `user_${userId}.session-journal`;
           
           // 创建临时容器检查文件（使用不同的容器，不依赖登录容器）
           const tempImage = await getTempContainerImage(docker);
@@ -7688,9 +7689,9 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
           
           console.log(`📂 [登录验证] Volume 目录内容:\n${listOutput}`);
           
-          // 检查 session 文件是否存在
+          // 检查 session 文件是否存在且大小大于 0
           const checkExec = await checkContainer.exec({
-            Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && stat /tmp/session_volume/${volumeSessionFileName} || echo "文件不存在"`],
+            Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && stat -c "%s %n" /tmp/session_volume/${volumeSessionFileName} || echo "文件不存在"`],
             AttachStdout: true,
             AttachStderr: true
           });
@@ -7705,6 +7706,61 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
           });
           
           console.log(`📄 [登录验证] Session 文件检查结果:\n${checkOutput}`);
+          
+          // 检查 journal 文件是否存在（如果存在，说明文件正在写入中）
+          const journalCheckExec = await checkContainer.exec({
+            Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeJournalFileName} && echo "journal_exists:$(stat -c "%s" /tmp/session_volume/${volumeJournalFileName})" || echo "journal_not_exists"`],
+            AttachStdout: true,
+            AttachStderr: true
+          });
+          
+          const journalCheckStream = await journalCheckExec.start({ hijack: true, stdin: false });
+          let journalCheckOutput = '';
+          journalCheckStream.on('data', (chunk) => {
+            journalCheckOutput += chunk.toString();
+          });
+          await new Promise((resolve) => {
+            journalCheckStream.on('end', resolve);
+          });
+          
+          console.log(`📄 [登录验证] Journal 文件检查结果: ${journalCheckOutput.trim()}`);
+          
+          // 如果 journal 文件存在，说明文件正在写入中，需要等待
+          if (journalCheckOutput.trim().includes('journal_exists')) {
+            console.log(`⏳ [登录验证] 检测到 journal 文件存在，文件正在写入中，等待 2 秒...`);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // 再次检查 journal 文件
+            const journalCheckExec2 = await checkContainer.exec({
+              Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeJournalFileName} && echo "journal_still_exists" || echo "journal_removed"`],
+              AttachStdout: true,
+              AttachStderr: true
+            });
+            
+            const journalCheckStream2 = await journalCheckExec2.start({ hijack: true, stdin: false });
+            let journalCheckOutput2 = '';
+            journalCheckStream2.on('data', (chunk) => {
+              journalCheckOutput2 += chunk.toString();
+            });
+            await new Promise((resolve) => {
+              journalCheckStream2.on('end', resolve);
+            });
+            
+            console.log(`📄 [登录验证] Journal 文件再次检查结果: ${journalCheckOutput2.trim()}`);
+          }
+          
+          // 验证 session 文件大小（应该大于 0）
+          const fileSizeMatch = checkOutput.match(/^(\d+)\s+/);
+          if (fileSizeMatch) {
+            const fileSize = parseInt(fileSizeMatch[1]);
+            if (fileSize > 0) {
+              console.log(`✅ [登录验证] Session 文件已保存，大小: ${fileSize} 字节`);
+            } else {
+              console.warn(`⚠️  [登录验证] Session 文件大小为 0，可能未完全写入`);
+            }
+          } else {
+            console.warn(`⚠️  [登录验证] 无法获取 Session 文件大小`);
+          }
           
           await checkContainer.stop();
           await checkContainer.remove();

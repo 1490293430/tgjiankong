@@ -879,18 +879,56 @@ async def main():
         await client.connect()
         logger.info("✅ [客户端启动] 已连接到 Telegram 服务器")
         
-        # 直接使用 start() 方法，它会自动检查 session 是否有效
-        # 如果 session 有效，start() 不会触发交互式输入
-        # 如果 session 无效，start() 会尝试交互式输入（在非交互式环境中会抛出 EOFError）
-        logger.info("🔍 [授权检查] 尝试启动客户端并验证 session...")
+        # 在启动前，先尝试检查 session 文件是否可以读取
+        if session_file and not SESSION_STRING:
+            session_path_with_ext = f"{session_file}.session"
+            if os.path.exists(session_path_with_ext):
+                try:
+                    # 尝试读取 session 文件的前几个字节，验证文件是否可读
+                    with open(session_path_with_ext, 'rb') as f:
+                        header = f.read(16)
+                        logger.info("🔍 [授权检查] Session 文件可读，文件头: %s", header.hex() if header else "空文件")
+                        if len(header) == 0:
+                            logger.warning("⚠️  [授权检查] Session 文件为空！")
+                except Exception as read_error:
+                    logger.warning("⚠️  [授权检查] 无法读取 Session 文件: %s", str(read_error))
         
-        # 尝试启动客户端，如果 session 有效，start() 会直接使用
-        # 如果 session 无效，start() 会抛出 EOFError（尝试交互式输入时）
+        # 先检查授权状态，避免不必要的 start() 调用
+        logger.info("🔍 [授权检查] 检查用户是否已授权...")
+        is_authorized = await client.is_user_authorized()
+        logger.info("🔍 [授权检查] 授权状态: %s", is_authorized)
+        
+        if not is_authorized:
+            await client.disconnect()
+            logger.error("")
+            logger.error("=" * 60)
+            logger.error("❌ Telegram 客户端未授权，Session 文件无效或不存在")
+            logger.error("")
+            logger.error("📱 请先登录 Telegram 才能开始监控消息：")
+            logger.error("   1. 访问 Web 界面")
+            logger.error("   2. 进入 '设置' 标签")
+            logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+            logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
+            logger.error("   5. 登录成功后，重启 Telethon 服务：")
+            logger.error("      docker compose restart telethon")
+            logger.error("")
+            logger.error("⚠️  服务将退出，请完成登录后重启服务")
+            logger.error("=" * 60)
+            logger.error("")
+            # 使用 sys.exit(1) 非正常退出，触发 on-failure 重启策略
+            import sys
+            sys.exit(1)
+        
+        # 如果已授权，使用 start() 方法启动客户端
+        logger.info("🔍 [授权检查] 尝试启动客户端...")
         try:
             await client.start()
             logger.info("✅ [授权检查] 客户端启动成功，session 有效")
-        except EOFError:
+        except EOFError as eof_error:
             # EOFError 表示尝试了交互式输入，说明 session 无效
+            logger.error("🔍 [授权检查] EOFError 详情: %s", str(eof_error))
+            import traceback
+            logger.error("🔍 [授权检查] EOFError 堆栈: %s", traceback.format_exc())
             await client.disconnect()
             logger.error("")
             logger.error("=" * 60)
