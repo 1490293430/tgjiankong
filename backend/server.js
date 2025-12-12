@@ -7310,6 +7310,11 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       let checkError = null;
       
       try {
+        // 检查是否启用多开模式
+        const accountId = await getAccountId(userId);
+        const accountConfig = await loadUserConfig(accountId.toString());
+        const multiLoginEnabled = accountConfig.multi_login_enabled || false;
+        
         // 使用较短的超时时间（3秒），快速失败
         const quickTimeout = 3000; // 3秒超时（进一步减少）
         checkResult = await Promise.race([
@@ -7317,14 +7322,28 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
             sessionPath,
             validatedApiId.toString(),
             validatedApiHash
-          ], 0, true), // allowCreateTemp = true
+          ], 0, true, userId, false), // allowCreateTemp = true, userId, reuseContainer = false
           new Promise((_, reject) => 
             setTimeout(() => reject(new Error('检查超时（3秒）')), quickTimeout)
           )
         ]);
       } catch (error) {
         checkError = error;
-        // 验证失败，返回未登录（必须验证成功才能返回已登录）
+        // 如果验证超时，但 session 文件存在，仍然返回已登录（文件存在说明已经登录过）
+        if (error.message && error.message.includes('超时')) {
+          console.warn(`⚠️  [登录状态] session 文件验证超时，但文件存在，返回已登录: ${error.message}`);
+          const timeoutResult = {
+            logged_in: true,
+            message: '已登录（session 文件存在，验证超时）',
+            uncertain: true
+          };
+          loginStatusCache.set(cacheKey, {
+            result: timeoutResult,
+            timestamp: Date.now()
+          });
+          return res.json(timeoutResult);
+        }
+        // 其他验证失败，返回未登录
         console.warn(`⚠️  [登录状态] session 文件验证失败: ${error.message}`);
         const failedResult = {
           logged_in: false,
