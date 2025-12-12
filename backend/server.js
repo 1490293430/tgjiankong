@@ -6264,10 +6264,20 @@ async function startMultiLoginContainer(userId) {
       // 注意：代码在镜像中（通过 Dockerfile COPY），不需要挂载代码目录
       // 只挂载配置文件、session 目录和 logs 目录
       // 配置文件挂载到 /app/config_${userId}.json，通过 CONFIG_PATH 环境变量指定
+      
+      // 确保 SESSION_PREFIX 正确设置为 'user'
+      if (envVars.SESSION_PREFIX !== 'user') {
+        console.warn(`⚠️  [多开登录] 检测到 envVars.SESSION_PREFIX 错误: ${envVars.SESSION_PREFIX}，正在修正为 'user'`);
+        envVars.SESSION_PREFIX = 'user';
+      }
+      
+      const envArray = Object.entries(envVars).map(([k, v]) => `${k}=${v}`);
+      console.log(`🔍 [多开登录] 创建容器环境变量: SESSION_PREFIX=${envVars.SESSION_PREFIX}, USER_ID=${envVars.USER_ID}`);
+      
       container = await docker.createContainer({
         Image: containerImage,
         name: containerName,
-        Env: Object.entries(envVars).map(([k, v]) => `${k}=${v}`),
+        Env: envArray,
         HostConfig: {
           Binds: [
             `${hostConfigPath}:/app/config_${userId}.json:ro`,
@@ -6280,6 +6290,108 @@ async function startMultiLoginContainer(userId) {
       });
       
       console.log(`✅ [多开登录] 已创建容器 ${containerName}`);
+      
+      // 验证容器的环境变量是否正确
+      let containerValid = false;
+      let retryCount = 0;
+      const maxRetries = 2; // 最多重试2次，避免无限循环
+      
+      while (!containerValid && retryCount < maxRetries) {
+        try {
+          const createdContainerInfo = await container.inspect();
+          if (createdContainerInfo.Config && createdContainerInfo.Config.Env) {
+            const sessionPrefixEnv = createdContainerInfo.Config.Env.find(env => env.startsWith('SESSION_PREFIX='));
+            if (sessionPrefixEnv) {
+              const actualSessionPrefix = sessionPrefixEnv.split('=')[1];
+              if (actualSessionPrefix !== 'user') {
+                console.error(`❌ [多开登录] 容器创建后验证失败：SESSION_PREFIX=${actualSessionPrefix}，应该是 'user'`);
+                if (retryCount < maxRetries - 1) {
+                  console.log(`🗑️  [多开登录] 删除错误容器并重新创建 (重试 ${retryCount + 1}/${maxRetries})...`);
+                  await container.remove({ force: true });
+                  container = null;
+                  // 重新创建容器
+                  container = await docker.createContainer({
+                    Image: containerImage,
+                    name: containerName,
+                    Env: envArray,
+                    HostConfig: {
+                      Binds: [
+                        `${hostConfigPath}:/app/config_${userId}.json:ro`,
+                        `${sessionHostPath}:${sessionContainerPath}:rw`,
+                        `${hostLogsPath}:/app/logs:rw`
+                      ],
+                      NetworkMode: networkName,
+                      RestartPolicy: { Name: 'unless-stopped' }
+                    }
+                  });
+                  console.log(`✅ [多开登录] 已重新创建容器 ${containerName}`);
+                  retryCount++;
+                  continue;
+                } else {
+                  throw new Error(`容器环境变量设置错误，已重试 ${maxRetries} 次仍失败`);
+                }
+              } else {
+                console.log(`✅ [多开登录] 容器环境变量验证通过：SESSION_PREFIX=${actualSessionPrefix}`);
+                containerValid = true;
+              }
+            } else {
+              console.error(`❌ [多开登录] 容器创建后验证失败：缺少 SESSION_PREFIX 环境变量`);
+              if (retryCount < maxRetries - 1) {
+                console.log(`🗑️  [多开登录] 删除错误容器并重新创建 (重试 ${retryCount + 1}/${maxRetries})...`);
+                await container.remove({ force: true });
+                container = null;
+                // 重新创建容器
+                container = await docker.createContainer({
+                  Image: containerImage,
+                  name: containerName,
+                  Env: envArray,
+                  HostConfig: {
+                    Binds: [
+                      `${hostConfigPath}:/app/config_${userId}.json:ro`,
+                      `${sessionHostPath}:${sessionContainerPath}:rw`,
+                      `${hostLogsPath}:/app/logs:rw`
+                    ],
+                    NetworkMode: networkName,
+                    RestartPolicy: { Name: 'unless-stopped' }
+                  }
+                });
+                console.log(`✅ [多开登录] 已重新创建容器 ${containerName}`);
+                retryCount++;
+                continue;
+              } else {
+                throw new Error(`容器缺少 SESSION_PREFIX 环境变量，已重试 ${maxRetries} 次仍失败`);
+              }
+            }
+          } else {
+            console.warn(`⚠️  [多开登录] 无法验证容器环境变量：Config.Env 不存在`);
+            containerValid = true; // 如果无法验证，假设容器正确
+          }
+        } catch (verifyError) {
+          if (retryCount < maxRetries - 1 && verifyError.message.includes('No such container')) {
+            // 容器已被删除，重新创建
+            console.log(`🔄 [多开登录] 容器已被删除，重新创建...`);
+            container = await docker.createContainer({
+              Image: containerImage,
+              name: containerName,
+              Env: envArray,
+              HostConfig: {
+                Binds: [
+                  `${hostConfigPath}:/app/config_${userId}.json:ro`,
+                  `${sessionHostPath}:${sessionContainerPath}:rw`,
+                  `${hostLogsPath}:/app/logs:rw`
+                ],
+                NetworkMode: networkName,
+                RestartPolicy: { Name: 'unless-stopped' }
+              }
+            });
+            console.log(`✅ [多开登录] 已重新创建容器 ${containerName}`);
+            retryCount++;
+            continue;
+          } else {
+            throw verifyError;
+          }
+        }
+      }
     }
     
     // 启动或重启容器
