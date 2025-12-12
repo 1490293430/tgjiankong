@@ -7211,7 +7211,34 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       return res.json(result);
     }
     
-    // session 文件存在，必须验证文件是否有效才能返回已登录
+    // session 文件存在，检查是否启用多开模式
+    // 在多开模式下，如果 session 文件存在就直接返回已登录（不需要验证，避免 database locked）
+    let accountId = null;
+    let multiLoginEnabled = false;
+    try {
+      accountId = await getAccountId(userId);
+      const accountConfig = await loadUserConfig(accountId.toString());
+      multiLoginEnabled = accountConfig.multi_login_enabled || false;
+    } catch (checkError) {
+      // 如果检查失败，继续使用原来的验证逻辑
+      console.warn(`⚠️  [登录状态] 检查多开模式失败: ${checkError.message}`);
+    }
+    
+    // 在多开模式下，如果 session 文件存在，直接返回已登录（避免创建临时容器验证，导致 database locked）
+    if (multiLoginEnabled) {
+      const quickResult = {
+        logged_in: true,
+        message: '已登录（session 文件存在）',
+        uncertain: false
+      };
+      loginStatusCache.set(cacheKey, {
+        result: quickResult,
+        timestamp: Date.now()
+      });
+      return res.json(quickResult);
+    }
+    
+    // 单开模式下，需要验证 session 文件有效性
     // 尝试从缓存获取配置（避免 MongoDB 查询）
     let config = null;
     const configCacheKey = `user_config_${userId}`;
