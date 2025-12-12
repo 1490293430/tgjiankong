@@ -39,6 +39,18 @@ else
     echo "⚠️  配置文件不存在: backend/config.json"
 fi
 
+# 备份多开登录的独立配置文件（config_*.json）
+if [ -d "${SCRIPT_DIR}/backend" ]; then
+    MULTI_LOGIN_CONFIGS=$(find "${SCRIPT_DIR}/backend" -maxdepth 1 -name "config_*.json" 2>/dev/null)
+    if [ -n "${MULTI_LOGIN_CONFIGS}" ]; then
+        mkdir -p "${BACKUP_DIR}/${BACKUP_NAME}/multi_login_configs"
+        for config_file in ${MULTI_LOGIN_CONFIGS}; do
+            cp "${config_file}" "${BACKUP_DIR}/${BACKUP_NAME}/multi_login_configs/$(basename "${config_file}")"
+            echo "✅ 已备份多开登录配置文件: $(basename "${config_file}")"
+        done
+    fi
+fi
+
 # 备份 .env 文件
 if [ -f "${SCRIPT_DIR}/.env" ]; then
     cp "${SCRIPT_DIR}/.env" "${BACKUP_DIR}/${BACKUP_NAME}/.env"
@@ -128,9 +140,17 @@ if cat > "${BACKUP_DIR}/${BACKUP_NAME}/backup_info.txt" <<EOF
 备份路径: ${BACKUP_DIR}/${BACKUP_NAME}
 备份内容:
 - 配置文件 (backend/config.json)
+- 多开登录独立配置文件 (multi_login_configs/config_*.json) - 多开登录模式下每个用户的独立配置
 - 环境变量 (.env)
 - MongoDB 数据库导出 (mongo_dump/) - 用于数据重构
+  * 包含所有用户配置（keywords, channels, alert_keywords, ai_analysis, multi_login_enabled等）
+  * 包含所有用户账号信息
+  * 包含所有消息日志
+  * 包含所有AI分析结果
 - 数据目录 (data/) - 包含 session 和 MongoDB 数据文件（备用）
+  * Session 文件（Telegram 登录凭证）
+    - 单开模式：telegram*.session
+    - 多开模式：user_*.session
 EOF
 then
     echo "✅ 备份信息文件已创建"

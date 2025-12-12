@@ -966,13 +966,35 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
             }
             
             if (docker) {
-              // 查找所有多开容器（tg_listener_* 格式）
+              // 查找当前账号下的所有多开容器（tg_listener_* 格式）
+              // 需要找到该账号下的所有用户（包括主账号和子账号）
+              const accountId = await getAccountId(targetUser._id.toString());
+              const accountIdObj = new mongoose.Types.ObjectId(accountId);
+              const User = require('./userModel');
+              const accountUsers = await User.find({
+                $or: [
+                  { _id: accountIdObj },
+                  { parent_account_id: accountIdObj }
+                ]
+              }).select('_id').lean();
+              const accountUserIds = accountUsers.map(u => u._id.toString());
+              
               const containers = await docker.listContainers({ all: true });
-              const multiLoginContainers = containers.filter(c => 
-                c.Names && c.Names.some(name => 
-                  name.includes('tg_listener_') && !name.includes('tg_listener') // 排除主容器 tg_listener
-                )
-              );
+              const multiLoginContainers = containers.filter(c => {
+                if (!c.Names || c.Names.length === 0) return false;
+                return c.Names.some(name => {
+                  const cleanName = name.replace(/^\//, ''); // 移除开头的 /
+                  // 匹配格式：tg_listener_${userId}，排除主容器 tg_listener
+                  if (cleanName === 'tg_listener') return false;
+                  if (cleanName.startsWith('tg_listener_')) {
+                    // 提取 userId
+                    const containerUserId = cleanName.replace('tg_listener_', '');
+                    // 检查是否属于当前账号
+                    return accountUserIds.includes(containerUserId);
+                  }
+                  return false;
+                });
+              });
               
               if (multiLoginContainers.length > 0) {
                 console.log(`🛑 [切换用户] 检测到多开容器，但多开登录已关闭，清理 ${multiLoginContainers.length} 个多开容器...`);
@@ -1419,15 +1441,39 @@ app.post('/api/config', authMiddleware, async (req, res) => {
             
             if (docker) {
               try {
-                // 查找所有多开容器（tg_listener_* 格式）
-                const containers = await docker.listContainers({ all: true });
-                const multiLoginContainers = containers.filter(c => 
-                  c.Names && c.Names.some(name => 
-                    name.includes('tg_listener_') && !name.includes('tg_listener') // 排除主容器 tg_listener
-                  )
-                );
+                // 查找当前账号下的所有多开容器（tg_listener_* 格式）
+                // 需要找到该账号下的所有用户（包括主账号和子账号）
+                const accountId = await getAccountId(userId);
+                const accountIdObj = new mongoose.Types.ObjectId(accountId);
+                const User = require('./userModel');
+                const accountUsers = await User.find({
+                  $or: [
+                    { _id: accountIdObj },
+                    { parent_account_id: accountIdObj }
+                  ]
+                }).select('_id').lean();
+                const accountUserIds = accountUsers.map(u => u._id.toString());
                 
-                console.log(`🔍 [配置保存] 找到 ${multiLoginContainers.length} 个多开容器`);
+                console.log(`🔍 [配置保存] 账号 ${accountId} 下有 ${accountUserIds.length} 个用户，查找对应的多开容器...`);
+                
+                const containers = await docker.listContainers({ all: true });
+                const multiLoginContainers = containers.filter(c => {
+                  if (!c.Names || c.Names.length === 0) return false;
+                  return c.Names.some(name => {
+                    const cleanName = name.replace(/^\//, ''); // 移除开头的 /
+                    // 匹配格式：tg_listener_${userId}，排除主容器 tg_listener
+                    if (cleanName === 'tg_listener') return false;
+                    if (cleanName.startsWith('tg_listener_')) {
+                      // 提取 userId
+                      const containerUserId = cleanName.replace('tg_listener_', '');
+                      // 检查是否属于当前账号
+                      return accountUserIds.includes(containerUserId);
+                    }
+                    return false;
+                  });
+                });
+                
+                console.log(`🔍 [配置保存] 找到 ${multiLoginContainers.length} 个属于当前账号的多开容器`);
                 
                 for (const containerInfo of multiLoginContainers) {
                   try {
@@ -1462,11 +1508,30 @@ app.post('/api/config', authMiddleware, async (req, res) => {
               console.warn(`⚠️  [配置保存] 无法连接到 Docker，跳过多开容器清理`);
             }
           } else {
-            // 开启多开登录：为当前用户创建多开容器
-            console.log(`🔄 [配置保存] 多开登录已开启，为当前用户创建多开容器...`);
+            // 开启多开登录：为该账号下的所有用户创建多开容器
+            console.log(`🔄 [配置保存] 多开登录已开启，为该账号下的所有用户创建多开容器...`);
             try {
-              await syncUserConfigAndStartMultiLoginContainer(userId);
-              console.log(`✅ [配置保存] 多开登录已开启，已为用户 ${userId} 创建多开容器`);
+              const User = require('./userModel');
+              const accountUsers = await User.find({
+                $or: [
+                  { _id: accountIdObj },
+                  { parent_account_id: accountIdObj }
+                ]
+              }).select('_id').lean();
+              
+              console.log(`🔍 [配置保存] 账号 ${accountId} 下有 ${accountUsers.length} 个用户，为所有用户创建多开容器...`);
+              
+              // 为每个用户创建多开容器
+              for (const user of accountUsers) {
+                try {
+                  await syncUserConfigAndStartMultiLoginContainer(user._id.toString());
+                  console.log(`✅ [配置保存] 已为用户 ${user._id} 创建多开容器`);
+                } catch (createError) {
+                  console.error(`❌ [配置保存] 为用户 ${user._id} 创建多开容器失败: ${createError.message}`);
+                }
+              }
+              
+              console.log(`✅ [配置保存] 多开登录已开启，已为该账号下的所有用户创建多开容器`);
             } catch (createError) {
               console.error(`❌ [配置保存] 创建多开容器失败: ${createError.message}`);
             }
@@ -1556,22 +1621,54 @@ app.post('/api/config/telegram', authMiddleware, async (req, res) => {
     await saveUserConfig(userId, updateData);
     console.log(`✅ [Telegram凭证保存] 配置已保存到数据库`);
     
-    // 同步配置并重启Telethon服务（同步执行，因为需要等待重启完成）
+    // 快速同步配置到文件（不等待重启，异步执行重启）
     try {
-      console.log(`🔄 [Telegram凭证保存] 开始同步配置到全局文件并重启Telethon服务`);
-      await syncUserConfigAndRestartTelethon(userId);
-      console.log(`✅ [Telegram凭证保存] 配置同步完成，Telethon服务已重启`);
-    } catch (syncError) {
-      console.error('❌ [Telegram凭证保存] 同步配置或重启Telethon失败:', syncError.message);
-      console.error('错误堆栈:', syncError.stack);
-      return res.status(500).json({ 
-        error: '配置已保存，但重启Telethon服务失败：' + syncError.message 
+      console.log(`🔄 [Telegram凭证保存] 开始同步配置到全局文件`);
+      
+      // 快速同步配置（只更新配置文件，不重启服务）
+      const globalConfig = loadConfig();
+      globalConfig.user_id = userId.toString();
+      globalConfig.telegram = {
+        api_id: apiIdNum,
+        api_hash: apiHashStr
+      };
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
+      console.log(`✅ [Telegram凭证保存] 配置已同步到全局文件`);
+      
+      // 清除用户配置缓存
+      userConfigCache.delete(`user_config_${userId}`);
+      
+      // 如果是多开登录模式，也需要更新独立配置文件
+      const userConfigPath = path.join(__dirname, `config_${userId}.json`);
+      if (fs.existsSync(userConfigPath)) {
+        try {
+          const userConfigData = JSON.parse(fs.readFileSync(userConfigPath, 'utf-8'));
+          userConfigData.telegram = {
+            api_id: apiIdNum,
+            api_hash: apiHashStr
+          };
+          fs.writeFileSync(userConfigPath, JSON.stringify(userConfigData, null, 2));
+          console.log(`✅ [Telegram凭证保存] 已更新多开登录配置文件: ${userConfigPath}`);
+        } catch (multiConfigError) {
+          console.warn('⚠️ [Telegram凭证保存] 更新多开登录配置文件失败:', multiConfigError.message);
+        }
+      }
+      
+      // 异步重启 Telethon 服务（不阻塞响应）
+      syncUserConfigAndRestartTelethon(userId).catch(err => {
+        console.error('⚠️ [Telegram凭证保存] 异步重启Telethon服务失败（不影响保存）:', err.message);
       });
+      
+      console.log(`✅ [Telegram凭证保存] 配置同步完成，Telethon服务正在后台重启`);
+    } catch (syncError) {
+      console.error('❌ [Telegram凭证保存] 同步配置失败:', syncError.message);
+      // 即使同步失败，配置已保存到数据库，仍然返回成功
+      console.warn('⚠️ [Telegram凭证保存] 配置已保存到数据库，但同步到文件失败，Telethon将在下次重载配置时生效');
     }
     
     res.json({ 
       status: 'ok', 
-      message: 'Telegram API 凭证保存成功，Telethon 服务已重启'
+      message: 'Telegram API 凭证保存成功，Telethon 服务正在后台重启'
     });
   } catch (error) {
     console.error('❌ 保存Telegram凭证失败:', error);
@@ -3881,6 +3978,77 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
             }
           }
           
+          // 验证恢复结果
+          console.log('🔍 [恢复] 验证恢复结果...');
+          const verifyResults = {
+            config: false,
+            env: false,
+            multiLoginConfigs: false,
+            mongo: false,
+            session: false
+          };
+          
+          // 验证配置文件
+          const configPath = path.join(scriptDir, 'backend', 'config.json');
+          if (fs.existsSync(configPath)) {
+            verifyResults.config = true;
+            console.log('✅ [恢复] 配置文件已恢复');
+          } else {
+            console.warn('❌ [恢复] 配置文件恢复失败');
+          }
+          
+          // 验证 .env 文件
+          const envPath = path.join(scriptDir, '.env');
+          if (fs.existsSync(envPath)) {
+            verifyResults.env = true;
+            console.log('✅ [恢复] 环境变量文件已恢复');
+          } else {
+            console.warn('⚠️  [恢复] 环境变量文件未恢复（可能备份中不存在）');
+          }
+          
+          // 验证多开登录配置文件
+          const multiLoginConfigDir = path.join(extractedDir, 'multi_login_configs');
+          if (fs.existsSync(multiLoginConfigDir)) {
+            const backendDir = path.join(scriptDir, 'backend');
+            const restoredConfigs = fs.readdirSync(backendDir).filter(f => f.startsWith('config_') && f.endsWith('.json'));
+            const backupConfigs = fs.readdirSync(multiLoginConfigDir).filter(f => f.startsWith('config_') && f.endsWith('.json'));
+            if (restoredConfigs.length >= backupConfigs.length) {
+              verifyResults.multiLoginConfigs = true;
+              console.log(`✅ [恢复] 多开登录配置文件已恢复（${restoredConfigs.length} 个）`);
+            } else {
+              console.warn(`⚠️  [恢复] 多开登录配置文件恢复不完整（恢复: ${restoredConfigs.length}, 备份: ${backupConfigs.length}）`);
+            }
+          }
+          
+          // 验证 MongoDB 数据
+          if (mongoRestored) {
+            verifyResults.mongo = true;
+            console.log('✅ [恢复] MongoDB 数据库已恢复');
+          } else {
+            console.warn('⚠️  [恢复] MongoDB 数据未恢复');
+          }
+          
+          // 验证 session 文件
+          if (sessionRestored) {
+            verifyResults.session = true;
+            const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
+            const sessionDir = path.join(PROJECT_ROOT, 'data', 'session');
+            if (fs.existsSync(sessionDir)) {
+              const sessionFiles = fs.readdirSync(sessionDir).filter(f => f.endsWith('.session') && !f.endsWith('.session-journal'));
+              console.log(`✅ [恢复] Session 文件已恢复（${sessionFiles.length} 个）`);
+            }
+          } else {
+            console.warn('⚠️  [恢复] Session 文件未恢复');
+          }
+          
+          // 输出验证总结
+          const allVerified = Object.values(verifyResults).every(v => v || !fs.existsSync(extractedDir)); // 如果备份中不存在某些文件，不算失败
+          if (allVerified) {
+            console.log('✅ [恢复] 所有关键数据恢复验证通过');
+          } else {
+            console.warn('⚠️  [恢复] 部分数据恢复验证未通过，请检查上述信息');
+          }
+          
           console.log('✅ [恢复] 后台数据恢复完成');
           
           // 恢复后检查多开登录状态，如果启用则重新创建独立容器
@@ -5415,9 +5583,9 @@ async function syncUserConfigAndRestartTelethon(userId) {
     userConfigCache.delete(`user_config_${userId}`);
     console.log(`🗑️  已清除用户 ${userId} 的配置缓存`);
     
-    // 在重启 Telethon 服务前，再等待 2 秒确保 session 文件完全同步
-    console.log(`⏳ [配置同步] 等待 2 秒确保 session 文件完全同步到 volume...`);
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // 在重启 Telethon 服务前，等待 500ms 确保配置文件写入完成（减少等待时间）
+    console.log(`⏳ [配置同步] 等待配置文件写入完成...`);
+    await new Promise(resolve => setTimeout(resolve, 500));
     
     // 重启 Telethon 服务以应用新配置
     const restartSuccess = await restartTelethonService(userId);

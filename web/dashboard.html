@@ -714,19 +714,6 @@
                             <p style="color: #666; margin-bottom: 10px;">检查登录状态中...</p>
                         </div>
                         
-                        <!-- 初始状态提示（页面加载时显示，点击刷新后隐藏） -->
-                        <div id="telegramLoginStatusInitial" style="margin-bottom: 15px;">
-                            <div style="padding: 12px; background: #e7f3ff; border-radius: 8px; margin-bottom: 15px;">
-                                <p style="margin: 0; color: #004085; font-size: 14px;">
-                                    ℹ️ 请点击"刷新状态"按钮检查 Telegram 登录状态
-                                </p>
-                            </div>
-                            <div style="display: flex; gap: 10px;">
-                                <button class="btn btn-secondary" onclick="checkTelegramLoginStatus(true)">🔄 刷新状态</button>
-                                <button class="btn btn-danger" onclick="deleteTelegramCredentials()" style="background: #dc3545; border-color: #dc3545;">🗑️ 删除凭证</button>
-                            </div>
-                        </div>
-                        
                         <!-- 已登录状态 -->
                         <div id="telegramLoggedIn" style="display: none; margin-bottom: 15px;">
                             <div style="padding: 12px; background: #d4edda; border-radius: 8px;">
@@ -736,7 +723,6 @@
                                 <p id="telegramUserInfo" style="margin: 5px 0 0 0; color: #666; font-size: 13px;"></p>
                             </div>
                             <div style="margin-top: 10px; display: flex; gap: 10px;">
-                                <button class="btn btn-secondary" onclick="checkTelegramLoginStatus(true)">🔄 刷新状态</button>
                                 <button class="btn btn-danger" onclick="deleteTelegramCredentials()" style="background: #dc3545; border-color: #dc3545;">🗑️ 删除凭证</button>
                             </div>
                         </div>
@@ -750,7 +736,6 @@
                             </div>
                             <div style="display: flex; gap: 10px;">
                                 <button id="telegramLoginBtn" class="btn btn-primary" onclick="startTelegramLogin()">📱 Telegram 首次登录</button>
-                                <button class="btn btn-secondary" onclick="checkTelegramLoginStatus(true)">🔄 刷新状态</button>
                                 <button class="btn btn-danger" onclick="deleteTelegramCredentials()" style="background: #dc3545; border-color: #dc3545;">🗑️ 删除凭证</button>
                             </div>
                         </div>
@@ -2265,7 +2250,8 @@
                     toggleAITriggerConfig();
                 }
                 
-                // 不再自动检查 Telegram 登录状态，只在用户点击刷新按钮时检查
+                // 自动检查 Telegram 登录状态（页面加载时自动刷新）
+                await checkTelegramLoginStatus(true);
             } catch (error) {
                 console.error('加载配置失败:', error);
                 showToast('❌ 加载配置失败：' + (error.message || '未知错误'), false);
@@ -3821,7 +3807,6 @@
         
         async function checkTelegramLoginStatus(force = false, retryCount = 0) {
             const statusDiv = document.getElementById('telegramLoginStatus');
-            const initialDiv = document.getElementById('telegramLoginStatusInitial');
             const loggedInDiv = document.getElementById('telegramLoggedIn');
             const notLoggedInDiv = document.getElementById('telegramNotLoggedIn');
             
@@ -3858,12 +3843,9 @@
             lastCheckTime = now;
             
             try {
-                // 显示检查状态，隐藏初始提示
+                // 显示检查状态
                 statusDiv.style.display = 'block';
                 statusDiv.innerHTML = '<p style="color: #666; margin-bottom: 10px;">检查登录状态中...</p>';
-                if (initialDiv) {
-                    initialDiv.style.display = 'none';
-                }
                 loggedInDiv.style.display = 'none';
                 notLoggedInDiv.style.display = 'none';
                 
@@ -3878,9 +3860,6 @@
                         loggedInDiv.style.display = 'block';
                         notLoggedInDiv.style.display = 'none';
                         statusDiv.style.display = 'none';
-                        if (initialDiv) {
-                            initialDiv.style.display = 'none';
-                        }
                         
                         // 如果是不确定状态，显示警告
                         if (response.uncertain) {
@@ -3910,9 +3889,6 @@
                         loggedInDiv.style.display = 'none';
                         notLoggedInDiv.style.display = 'block';
                         statusDiv.style.display = 'none';
-                        if (initialDiv) {
-                            initialDiv.style.display = 'none';
-                        }
                         
                         // 如果检查失败但可能是临时错误，自动重试一次
                         if (retryCount === 0 && response.message && (
@@ -3935,9 +3911,6 @@
                     loggedInDiv.style.display = 'none';
                     notLoggedInDiv.style.display = 'block';
                     statusDiv.style.display = 'none';
-                    if (initialDiv) {
-                        initialDiv.style.display = 'none';
-                    }
                 }
             } catch (error) {
                 console.error('❌ [登录状态] 检查失败:', error);
@@ -3959,9 +3932,6 @@
                     loggedInDiv.style.display = 'none';
                     notLoggedInDiv.style.display = 'block';
                     statusDiv.style.display = 'none';
-                    if (initialDiv) {
-                        initialDiv.style.display = 'none';
-                    }
                 }
             } finally {
                 telegramStatusCheckInProgress = false;
