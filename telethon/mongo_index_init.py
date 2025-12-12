@@ -1,11 +1,12 @@
 from pymongo import MongoClient
 
 def ensure_indexes():
-    client = MongoClient("mongodb://mongo:27017/tglogs")  # ← 你的 Mongo 地址
+    # 静默连接，不输出日志
+    client = MongoClient("mongodb://mongo:27017/tglogs", serverSelectionTimeoutMS=5000)
     db = client.tglogs
     logs = db.logs
 
-    print("🔧 正在检查 / 创建 MongoDB 索引...")
+    # 静默创建索引，不输出日志
 
     # 基础索引
     logs.create_index([("time", -1)])
@@ -23,7 +24,7 @@ def ensure_indexes():
     logs.create_index([("time", -1), ("ai_analyzed", 1)])  # 用于查找未分析的消息按时间排序
     logs.create_index([("channelId", 1), ("time", -1)])   # 用于按频道查询
 
-    print("✅ MongoDB 索引已全部准备完成")
+    # 静默完成，不输出日志
 
 if __name__ == "__main__":
     ensure_indexes()

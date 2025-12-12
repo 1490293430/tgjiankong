@@ -62,7 +62,13 @@ logger = logging.getLogger("tg_monitor")
 # -----------------------
 # 全局资源（异步安全）
 # -----------------------
-mongo_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL)
+# 静默连接 MongoDB，不输出日志
+mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
+    MONGO_URL,
+    serverSelectionTimeoutMS=5000,
+    connectTimeoutMS=5000,
+    socketTimeoutMS=5000
+)
 db = mongo_client[MONGO_DBNAME]
 logs_collection = db["logs"]
 

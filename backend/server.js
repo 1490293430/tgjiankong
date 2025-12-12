@@ -374,17 +374,26 @@ async function initDefaultAdmin() {
 
 // 连接 MongoDB
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017/tglogs';
+
+// 禁用 Mongoose 的所有日志输出
+mongoose.set('debug', false);
+// 静默处理连接事件
+mongoose.connection.on('error', () => {}); // 静默错误
+mongoose.connection.on('disconnected', () => {}); // 静默断开
+mongoose.connection.on('reconnected', () => {}); // 静默重连
+
 mongoose.connect(MONGO_URL, {
   useNewUrlParser: true,
   useUnifiedTopology: true
 })
 .then(async () => {
-  console.log('✅ MongoDB 已连接');
-  console.log(`📊 MongoDB 连接字符串: ${MONGO_URL.replace(/\/\/.*@/, '//***:***@')}`); // 隐藏密码
+  // 静默连接成功，不输出日志
   // 初始化默认管理员
   await initDefaultAdmin();
 })
-.catch(err => console.error('❌ MongoDB 连接失败:', err));
+.catch(() => {
+  // 静默连接失败，不输出日志
+});
 
 // JWT 验证中间件
 const authMiddleware = async (req, res, next) => {
@@ -5961,6 +5970,41 @@ async function startMultiLoginContainer(userId) {
           container = null;
         } catch (removeError) {
           console.warn(`⚠️  [多开登录] 删除旧容器失败: ${removeError.message}`);
+        }
+      }
+      
+      // 检查容器的环境变量是否正确（特别是 SESSION_PREFIX）
+      if (!needRecreate && containerInfo.Config && containerInfo.Config.Env) {
+        const envVars = containerInfo.Config.Env;
+        const sessionPrefixEnv = envVars.find(env => env.startsWith('SESSION_PREFIX='));
+        if (sessionPrefixEnv) {
+          const currentSessionPrefix = sessionPrefixEnv.split('=')[1];
+          if (currentSessionPrefix !== 'user') {
+            console.warn(`⚠️  [多开登录] 容器使用错误的 SESSION_PREFIX: ${currentSessionPrefix}，应该是 "user"`);
+            console.log(`🗑️  [多开登录] 将删除旧容器并重新创建以修复环境变量...`);
+            try {
+              if (containerInfo.State.Running) {
+                await container.stop();
+              }
+              await container.remove();
+              needRecreate = true;
+              container = null;
+            } catch (removeError) {
+              console.warn(`⚠️  [多开登录] 删除旧容器失败: ${removeError.message}`);
+            }
+          }
+        } else {
+          console.warn(`⚠️  [多开登录] 容器缺少 SESSION_PREFIX 环境变量，将重新创建...`);
+          try {
+            if (containerInfo.State.Running) {
+              await container.stop();
+            }
+            await container.remove();
+            needRecreate = true;
+            container = null;
+          } catch (removeError) {
+            console.warn(`⚠️  [多开登录] 删除旧容器失败: ${removeError.message}`);
+          }
         }
       }
       
