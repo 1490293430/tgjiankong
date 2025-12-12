@@ -24,9 +24,19 @@ CONFIG_PATH = os.getenv("CONFIG_PATH", "/app/config.json")
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017")
 MONGO_DBNAME = os.getenv("MONGO_DBNAME", "tglogs")
 API_URL = os.getenv("API_URL", "http://api:3000")
-# 安全地解析 API_ID，如果为空字符串则使用 0
+# 安全地解析 API_ID，如果为空字符串或无效值则使用 0
 api_id_str = os.getenv("API_ID", "0")
-ENV_API_ID = int(api_id_str) if api_id_str and api_id_str.strip() else 0
+try:
+    # 尝试转换为整数，如果失败则使用 0
+    if api_id_str and api_id_str.strip() and api_id_str.strip().isdigit():
+        ENV_API_ID = int(api_id_str.strip())
+    else:
+        ENV_API_ID = 0
+        if api_id_str and api_id_str.strip() and api_id_str.strip() not in ["0", ""]:
+            logger.warning("⚠️  环境变量 API_ID 无效: '%s'，将使用 0（请通过配置文件或用户配置设置）", api_id_str)
+except (ValueError, AttributeError):
+    ENV_API_ID = 0
+    logger.warning("⚠️  环境变量 API_ID 解析失败: '%s'，将使用 0（请通过配置文件或用户配置设置）", api_id_str)
 ENV_API_HASH = os.getenv("API_HASH", "")
 # 统一使用 volume 路径
 SESSION_VOLUME_PATH = os.getenv("SESSION_VOLUME_PATH", "/tmp/session_volume")

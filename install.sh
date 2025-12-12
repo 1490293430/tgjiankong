@@ -134,6 +134,9 @@ if [ ! -f .env ]; then
   if [ -f .env.example ]; then
     cp .env.example .env
     echo "✅ Created .env from .env.example"
+    # 清理 .env.example 中可能存在的占位符
+    sed -i "s|^API_ID=.*你的.*|API_ID=0|" .env
+    sed -i "s|^API_HASH=.*你的.*|API_HASH=|" .env
   else
     # Create default .env if no example exists
     cat > .env << 'ENVEOF'
@@ -151,6 +154,20 @@ ENVEOF
   fi
 fi
 
+# 清理现有 .env 文件中的占位符（如果存在）
+if [ -f .env ]; then
+  # 检查并清理 API_ID 占位符
+  if grep -q "^API_ID=.*你的" .env || grep -q "^API_ID=.*placeholder" .env || grep -q "^API_ID=.*example" .env; then
+    sed -i "s|^API_ID=.*|API_ID=0|" .env
+    echo "⚠️  检测到 .env 文件中的 API_ID 占位符，已清理为 0"
+  fi
+  # 检查并清理 API_HASH 占位符
+  if grep -q "^API_HASH=.*你的" .env || grep -q "^API_HASH=.*placeholder" .env || grep -q "^API_HASH=.*example" .env; then
+    sed -i "s|^API_HASH=.*|API_HASH=|" .env
+    echo "⚠️  检测到 .env 文件中的 API_HASH 占位符，已清理为空"
+  fi
+fi
+
 # Update PROJECT_ROOT in .env if it's different
 if grep -q "^PROJECT_ROOT=" .env; then
   sed -i "s|^PROJECT_ROOT=.*|PROJECT_ROOT=${APP_DIR}|" .env
@@ -164,11 +181,26 @@ if grep -q '^JWT_SECRET=change-this' .env; then
   sed -i "s|^JWT_SECRET=.*|JWT_SECRET=${RAND}|" .env
 fi
 
+# 更新 API_ID（验证是否为有效数字）
 if [ -n "${API_ID:-}" ]; then
-  sed -i "s|^API_ID=.*|API_ID=${API_ID}|" .env
+  # 检查是否为有效数字（不是占位符）
+  if [[ "${API_ID}" =~ ^[0-9]+$ ]] && [ "${API_ID}" != "0" ]; then
+    sed -i "s|^API_ID=.*|API_ID=${API_ID}|" .env
+    echo "✅ 已设置 API_ID: ${API_ID}"
+  else
+    echo "⚠️  API_ID 无效或为占位符，跳过设置（请稍后手动配置）"
+  fi
 fi
+
+# 更新 API_HASH（验证是否为空或占位符）
 if [ -n "${API_HASH:-}" ]; then
-  sed -i "s|^API_HASH=.*|API_HASH=${API_HASH}|" .env
+  # 检查是否为占位符（包含"你的"等中文字符）
+  if [[ "${API_HASH}" =~ (你的|请填写|placeholder|example) ]]; then
+    echo "⚠️  API_HASH 包含占位符文本，跳过设置（请稍后手动配置）"
+  else
+    sed -i "s|^API_HASH=.*|API_HASH=${API_HASH}|" .env
+    echo "✅ 已设置 API_HASH"
+  fi
 fi
 
 mkdir -p data/mongo data/session logs/api logs/telethon backups
