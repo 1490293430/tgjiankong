@@ -164,8 +164,37 @@ async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, 
         me = await client.get_me()
         log_debug(f"用户信息: {me.first_name} (ID: {me.id})")
         
-        log_debug(f"断开连接...")
+        # 在断开连接前，检查 journal 文件是否存在（写入过程中会存在）
+        log_debug(f"=== 断开连接前检查 ===")
+        log_debug(f"断开前 Session 文件存在: {os.path.exists(session_file)}")
+        log_debug(f"断开前 Journal 文件存在: {os.path.exists(session_journal)}")
+        
+        # 在断开连接前，确保 session 已保存
+        log_debug(f"确保 session 已保存...")
         await client.disconnect()
+        
+        # 立即检查 journal 文件（断开连接后，SQLite 可能会立即删除 journal 文件）
+        log_debug(f"=== 断开连接后立即检查 ===")
+        log_debug(f"断开后立即检查 - Session 文件存在: {os.path.exists(session_file)}")
+        log_debug(f"断开后立即检查 - Journal 文件存在: {os.path.exists(session_journal)}")
+        
+        # 如果 journal 文件存在，说明写入正在进行中，需要等待
+        if os.path.exists(session_journal):
+            log_debug(f"⚠️  Journal 文件存在，说明写入正在进行中，等待完成...")
+            # 轮询检查 journal 文件，直到它被删除（说明写入完成）
+            max_wait = 10  # 最多等待 10 秒
+            wait_count = 0
+            while os.path.exists(session_journal) and wait_count < max_wait:
+                await asyncio.sleep(0.5)
+                wait_count += 0.5
+                log_debug(f"等待 Journal 文件删除... ({wait_count} 秒)")
+            
+            if os.path.exists(session_journal):
+                log_debug(f"⚠️  警告：Journal 文件在等待 {max_wait} 秒后仍然存在，可能写入失败")
+            else:
+                log_debug(f"✅ Journal 文件已被删除，说明写入已完成")
+        else:
+            log_debug(f"✅ Journal 文件不存在，说明写入已完成或未使用 journal 模式")
         
         # 显式同步文件系统，确保文件写入磁盘
         import sys
@@ -182,9 +211,28 @@ async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, 
         except Exception as e:
             log_debug(f"同步文件系统时出错（不影响功能）: {e}")
         
-        # 等待一小段时间确保文件写入完成
-        import asyncio
-        await asyncio.sleep(1.0)  # 增加到 1 秒，确保文件完全写入
+        # 再等待一小段时间确保文件完全同步
+        await asyncio.sleep(1.0)
+        
+        # 验证 session 文件是否可以被正确读取
+        log_debug(f"=== 验证 Session 文件可读性 ===")
+        try:
+            verify_client = TelegramClient(session_path, api_id, api_hash)
+            await verify_client.connect()
+            is_authorized = await verify_client.is_user_authorized()
+            log_debug(f"验证结果 - 授权状态: {is_authorized}")
+            if is_authorized:
+                verify_me = await verify_client.get_me()
+                log_debug(f"验证结果 - 用户: {verify_me.first_name} (ID: {verify_me.id})")
+                if str(verify_me.id) != str(me.id):
+                    log_debug(f"⚠️  警告：验证用户 ID 不匹配！")
+            else:
+                log_debug(f"⚠️  警告：Session 文件无法被正确读取！")
+            await verify_client.disconnect()
+        except Exception as verify_error:
+            log_debug(f"⚠️  验证 Session 文件时出错: {verify_error}")
+            import traceback
+            log_debug(f"验证错误堆栈: {traceback.format_exc()}")
         
         # 检查登录后的文件状态
         log_debug(f"=== 登录后文件检查 ===")

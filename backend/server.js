@@ -7727,39 +7727,122 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
           
           // 如果 journal 文件存在，说明文件正在写入中，需要等待
           if (journalCheckOutput.trim().includes('journal_exists')) {
-            console.log(`⏳ [登录验证] 检测到 journal 文件存在，文件正在写入中，等待 2 秒...`);
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            console.log(`⏳ [登录验证] 检测到 journal 文件存在，文件正在写入中，等待完成...`);
             
-            // 再次检查 journal 文件
-            const journalCheckExec2 = await checkContainer.exec({
-              Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeJournalFileName} && echo "journal_still_exists" || echo "journal_removed"`],
-              AttachStdout: true,
-              AttachStderr: true
-            });
+            // 轮询检查 journal 文件，直到它被删除（说明写入完成）
+            let journalStillExists = true;
+            let waitCount = 0;
+            const maxWait = 10; // 最多等待 10 秒
             
-            const journalCheckStream2 = await journalCheckExec2.start({ hijack: true, stdin: false });
-            let journalCheckOutput2 = '';
-            journalCheckStream2.on('data', (chunk) => {
-              journalCheckOutput2 += chunk.toString();
-            });
-            await new Promise((resolve) => {
-              journalCheckStream2.on('end', resolve);
-            });
+            while (journalStillExists && waitCount < maxWait) {
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              waitCount++;
+              
+              const journalCheckExec2 = await checkContainer.exec({
+                Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeJournalFileName} && echo "journal_still_exists" || echo "journal_removed"`],
+                AttachStdout: true,
+                AttachStderr: true
+              });
+              
+              const journalCheckStream2 = await journalCheckExec2.start({ hijack: true, stdin: false });
+              let journalCheckOutput2 = '';
+              journalCheckStream2.on('data', (chunk) => {
+                journalCheckOutput2 += chunk.toString();
+              });
+              await new Promise((resolve) => {
+                journalCheckStream2.on('end', resolve);
+              });
+              
+              journalStillExists = journalCheckOutput2.trim().includes('journal_still_exists');
+              console.log(`📄 [登录验证] Journal 文件检查 (${waitCount}秒): ${journalCheckOutput2.trim()}`);
+            }
             
-            console.log(`📄 [登录验证] Journal 文件再次检查结果: ${journalCheckOutput2.trim()}`);
+            if (journalStillExists) {
+              console.warn(`⚠️  [登录验证] Journal 文件在等待 ${maxWait} 秒后仍然存在，可能写入失败`);
+            } else {
+              console.log(`✅ [登录验证] Journal 文件已被删除，说明写入已完成`);
+            }
+          } else {
+            // Journal 文件不存在，可能是：
+            // 1. SQLite 没有使用 journal 模式（使用了 WAL 模式或其他）
+            // 2. 写入已完成，journal 文件已被删除
+            // 3. 写入失败，journal 文件从未创建
+            console.log(`ℹ️  [登录验证] Journal 文件不存在（可能已删除或未使用 journal 模式）`);
           }
           
           // 验证 session 文件大小（应该大于 0）
-          const fileSizeMatch = checkOutput.match(/^(\d+)\s+/);
+          // 处理可能的输出格式：@28672 /path/to/file 或 28672 /path/to/file
+          const fileSizeMatch = checkOutput.match(/(?:@)?(\d+)\s+/);
+          let sessionFileValid = false;
           if (fileSizeMatch) {
             const fileSize = parseInt(fileSizeMatch[1]);
             if (fileSize > 0) {
               console.log(`✅ [登录验证] Session 文件已保存，大小: ${fileSize} 字节`);
+              sessionFileValid = true;
             } else {
               console.warn(`⚠️  [登录验证] Session 文件大小为 0，可能未完全写入`);
             }
           } else {
-            console.warn(`⚠️  [登录验证] 无法获取 Session 文件大小`);
+            console.warn(`⚠️  [登录验证] 无法获取 Session 文件大小，输出: ${checkOutput.trim()}`);
+          }
+          
+          // 如果 journal 文件不存在且 session 文件存在，验证 session 文件是否可以被 Telethon 正确读取
+          if (!journalCheckOutput.trim().includes('journal_exists') && sessionFileValid) {
+            console.log(`🔍 [登录验证] 验证 Session 文件是否可以被 Telethon 正确读取...`);
+            try {
+              // 使用临时容器验证 session 文件
+              const sessionPathWithoutExt = volumeSessionFileName.replace('.session', '');
+              const verifyExec = await checkContainer.exec({
+                Cmd: ['sh', '-c', `python3 -c "
+import asyncio
+from telethon import TelegramClient
+import sys
+
+async def verify():
+    session_path = '/tmp/session_volume/${sessionPathWithoutExt}'
+    api_id = ${validatedApiId}
+    api_hash = '${validatedApiHash}'
+    
+    try:
+        client = TelegramClient(session_path, api_id, api_hash)
+        await client.connect()
+        is_authorized = await client.is_user_authorized()
+        await client.disconnect()
+        
+        if is_authorized:
+            print('SUCCESS: Session file is valid and authorized')
+        else:
+            print('ERROR: Session file exists but not authorized')
+            sys.exit(1)
+    except Exception as e:
+        print(f'ERROR: {str(e)}')
+        sys.exit(1)
+
+asyncio.run(verify())
+"`],
+                AttachStdout: true,
+                AttachStderr: true
+              });
+              
+              const verifyStream = await verifyExec.start({ hijack: true, stdin: false });
+              let verifyOutput = '';
+              verifyStream.on('data', (chunk) => {
+                verifyOutput += chunk.toString();
+              });
+              await new Promise((resolve) => {
+                verifyStream.on('end', resolve);
+              });
+              
+              console.log(`📄 [登录验证] Session 文件验证结果: ${verifyOutput.trim()}`);
+              
+              if (verifyOutput.includes('SUCCESS')) {
+                console.log(`✅ [登录验证] Session 文件验证成功，可以被 Telethon 正确读取`);
+              } else if (verifyOutput.includes('ERROR')) {
+                console.warn(`⚠️  [登录验证] Session 文件验证失败: ${verifyOutput.trim()}`);
+              }
+            } catch (verifyError) {
+              console.warn(`⚠️  [登录验证] 验证 Session 文件时出错: ${verifyError.message}`);
+            }
           }
           
           await checkContainer.stop();
