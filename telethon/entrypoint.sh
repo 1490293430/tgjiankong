@@ -4,9 +4,20 @@
 
 # Create session directories if they don't exist
 # /app/session is for main container (bind mount)
-# /app/session_data is for multi-login containers (volume mount)
 mkdir -p /app/session
-mkdir -p /app/session_data
+
+# For multi-login containers: create symlink from /app/session_data to /tmp/session_volume
+# This avoids Docker overlay filesystem read-only issue
+if [ -d "/tmp/session_volume" ]; then
+  # Volume is mounted, create symlink
+  if [ ! -e "/app/session_data" ]; then
+    ln -s /tmp/session_volume /app/session_data
+    echo "✅ Created symlink: /app/session_data -> /tmp/session_volume"
+  fi
+else
+  # No volume mounted (main container), create regular directory
+  mkdir -p /app/session_data
+fi
 
 # Execute the main command
 exec "$@"

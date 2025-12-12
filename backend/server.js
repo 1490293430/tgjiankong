@@ -5628,10 +5628,10 @@ async function startMultiLoginContainer(userId) {
       // 如果使用的是 bind mount 而不是 volume，需要重新创建
       if (containerInfo.Mounts && containerInfo.Mounts.length > 0) {
         for (const mount of containerInfo.Mounts) {
-          if (mount.Destination === '/app/session' || mount.Destination === '/app/session_data') {
-            // 检查挂载目标路径是否正确（应该是 /app/session_data）
-            if (mount.Destination !== '/app/session_data') {
-              console.warn(`⚠️  [多开登录] 检测到容器使用错误的挂载路径: ${mount.Destination} (应该是 /app/session_data)`);
+          if (mount.Destination === '/app/session' || mount.Destination === '/app/session_data' || mount.Destination === '/tmp/session_volume') {
+            // 检查挂载目标路径是否正确（应该是 /tmp/session_volume，然后通过符号链接到 /app/session_data）
+            if (mount.Destination !== '/tmp/session_volume' && mount.Destination !== '/app/session_data') {
+              console.warn(`⚠️  [多开登录] 检测到容器使用错误的挂载路径: ${mount.Destination} (应该是 /tmp/session_volume)`);
               console.log(`🗑️  [多开登录] 将删除旧容器并重新创建...`);
               try {
                 if (containerInfo.State.Running) {
@@ -5766,7 +5766,7 @@ async function startMultiLoginContainer(userId) {
         HostConfig: {
           Binds: [
             `${hostBackendPath}:/app:ro`,
-            `${sessionVolumeName}:/app/session_data`,
+            `${sessionVolumeName}:/tmp/session_volume`,
             `${hostLogsPath}:/app/logs:rw`
           ],
           NetworkMode: 'tg-network',
