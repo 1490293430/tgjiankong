@@ -2167,10 +2167,11 @@
                 }
                 // Telegram API 凭证
                 const apiId = (config.telegram?.api_id ?? 0) || 0;
+                const apiHashConfigured = config.telegram?.api_hash_configured || false;
                 document.getElementById('tgApiId').value = apiId;
-                // 🔒 API Hash 不发送给前端，使用占位符
-                const apiHash = config.telegram?.api_hash || '';
-                if (!apiId || apiId === 0 || !apiHash) {
+                
+                // 根据是否已配置显示不同的占位符
+                if (!apiId || apiId === 0 || !apiHashConfigured) {
                     // 如果未配置，显示提示
                     document.getElementById('tgApiHash').placeholder = '请填写 API_HASH（从 https://my.telegram.org/apps 获取）';
                     document.getElementById('tgApiHash').value = '';
@@ -2193,6 +2194,7 @@
                         }
                     }
                 } else {
+                    // 已配置，显示已隐藏的占位符
                     document.getElementById('tgApiHash').placeholder = '🔒 已隐藏 - 仅保存在服务器，如果需要更改请输入新值';
                     document.getElementById('tgApiHash').value = '';
                     // 移除提示信息（如果存在）

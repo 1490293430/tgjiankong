@@ -1021,9 +1021,11 @@ app.get('/api/config', authMiddleware, async (req, res) => {
     // 转换为前端需要的格式
     const config = userConfig.toObject ? userConfig.toObject() : userConfig;
     
-    // 🔒 不返回敏感信息给前端
+    // 🔒 不返回敏感信息给前端，但返回是否已配置的标志
     if (config.telegram) {
-      delete config.telegram.api_hash; // 不返回 API Hash
+      // 返回一个标志，表示 API_HASH 是否已配置（但不返回实际值）
+      config.telegram.api_hash_configured = !!(config.telegram.api_hash && config.telegram.api_hash.trim());
+      delete config.telegram.api_hash; // 不返回 API Hash 实际值
     }
     if (config.ai_analysis) {
       delete config.ai_analysis.openai_api_key; // 不返回 OpenAI API Key
