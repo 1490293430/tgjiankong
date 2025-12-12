@@ -244,6 +244,10 @@ loadConfig();
 
 // ===== 用户配置辅助函数 =====
 
+// 用户配置缓存（避免频繁查询 MongoDB）
+const userConfigCache = new Map();
+const CONFIG_CACHE_TTL = 60000; // 配置缓存60秒
+
 // 获取主账号ID（用于切换账号功能，如果用户是子账号，返回父账号ID；如果是主账号，返回自己的ID）
 async function getAccountId(userId) {
   try {
@@ -268,24 +272,43 @@ async function getAccountId(userId) {
 }
 
 // 加载用户配置（每个用户独立配置，不共享）
-async function loadUserConfig(userId) {
+async function loadUserConfig(userId, skipCache = false) {
   try {
     // 确保userId是ObjectId类型
     const userIdObj = mongoose.Types.ObjectId.isValid(userId) 
       ? (userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId))
       : userId;
     
+    const userIdStr = userIdObj.toString();
+    const cacheKey = `user_config_${userIdStr}`;
+    
+    // 检查缓存（除非跳过缓存）
+    if (!skipCache) {
+      const cached = userConfigCache.get(cacheKey);
+      if (cached && (Date.now() - cached.timestamp) < CONFIG_CACHE_TTL) {
+        return cached.config;
+      }
+    }
+    
+    // 从数据库加载
     let userConfig = await UserConfig.findOne({ userId: userIdObj });
     if (!userConfig) {
       // 如果用户配置不存在，创建默认配置
       userConfig = new UserConfig({ userId: userIdObj });
       await userConfig.save();
     }
+    
+    // 更新缓存
+    userConfigCache.set(cacheKey, {
+      config: userConfig,
+      timestamp: Date.now()
+    });
+    
     return userConfig;
   } catch (error) {
     console.error('加载用户配置失败:', error);
     // 返回默认配置对象
-    return {
+    const defaultConfig = {
       keywords: [],
       channels: [],
       alert_keywords: [],
@@ -314,9 +337,10 @@ async function loadUserConfig(userId) {
         ai_trigger_enabled: false,
         ai_trigger_users: [],
         ai_trigger_prompt: ''
-    },
-    multi_login_enabled: false
+      },
+      multi_login_enabled: false
     };
+    return defaultConfig;
   }
 }
 
@@ -333,6 +357,8 @@ async function saveUserConfig(userId, configData) {
       ? (userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId))
       : userId;
     
+    const userIdStr = userIdObj.toString();
+    
     const userConfig = await UserConfig.findOneAndUpdate(
       { userId: userIdObj },
       { $set: { ...configData, userId: userIdObj } },
@@ -344,6 +370,9 @@ async function saveUserConfig(userId, configData) {
     if (!savedConfig) {
       throw new Error('用户配置保存失败：保存后无法找到配置');
     }
+    
+    // 清除缓存，确保下次读取时获取最新配置
+    userConfigCache.delete(`user_config_${userIdStr}`);
     
     console.log(`✅ 用户配置已保存到数据库 (userId: ${userId})`);
     return userConfig;
@@ -941,6 +970,56 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
       try {
         if (multiLoginEnabled) {
           // 多开登录模式：为每个用户创建独立容器
+          // 需要确保主容器（tg_listener）被停止，因为多开模式下只使用独立容器
+          try {
+            const Docker = require('dockerode');
+            const dockerSocketPaths = [
+              '/var/run/docker.sock',
+              process.env.DOCKER_HOST?.replace('unix://', '') || null
+            ].filter(Boolean);
+            
+            let docker = null;
+            for (const socketPath of dockerSocketPaths) {
+              if (fs.existsSync(socketPath)) {
+                try {
+                  docker = new Docker({ socketPath });
+                  await docker.ping();
+                  break;
+                } catch (e) {
+                  // 继续尝试下一个路径
+                }
+              }
+            }
+            
+            if (docker) {
+              try {
+                // 停止主容器（tg_listener），因为多开模式下不使用主容器
+                const containers = await docker.listContainers({ all: true });
+                const mainContainer = containers.find(c => 
+                  c.Names && c.Names.some(name => {
+                    const cleanName = name.replace(/^\//, '');
+                    return cleanName === 'tg_listener';
+                  })
+                );
+                
+                if (mainContainer) {
+                  const container = docker.getContainer(mainContainer.Id);
+                  const inspect = await container.inspect();
+                  if (inspect.State.Running || inspect.State.Restarting) {
+                    console.log(`🛑 [切换用户] 多开模式下停止主容器 tg_listener...`);
+                    await container.stop({ t: 10 });
+                    console.log(`✅ [切换用户] 主容器已停止`);
+                  }
+                }
+              } catch (mainContainerError) {
+                console.warn(`⚠️  [切换用户] 停止主容器失败（不影响功能）: ${mainContainerError.message}`);
+              }
+            }
+          } catch (dockerError) {
+            console.warn(`⚠️  [切换用户] 连接 Docker 失败（不影响切换用户）: ${dockerError.message}`);
+          }
+          
+          // 启动目标用户的多开容器
           await syncUserConfigAndStartMultiLoginContainer(targetUser._id.toString());
         } else {
           // 单开模式：更新全局配置并重启主容器
@@ -1511,6 +1590,55 @@ app.post('/api/config', authMiddleware, async (req, res) => {
             // 开启多开登录：为该账号下的所有用户创建多开容器
             console.log(`🔄 [配置保存] 多开登录已开启，为该账号下的所有用户创建多开容器...`);
             try {
+              // 先停止主容器，因为多开模式下不使用主容器
+              try {
+                const Docker = require('dockerode');
+                const dockerSocketPaths = [
+                  '/var/run/docker.sock',
+                  process.env.DOCKER_HOST?.replace('unix://', '') || null
+                ].filter(Boolean);
+                
+                let docker = null;
+                for (const socketPath of dockerSocketPaths) {
+                  if (fs.existsSync(socketPath)) {
+                    try {
+                      docker = new Docker({ socketPath });
+                      await docker.ping();
+                      break;
+                    } catch (e) {
+                      // 继续尝试下一个路径
+                    }
+                  }
+                }
+                
+                if (docker) {
+                  try {
+                    // 停止主容器（tg_listener），因为多开模式下不使用主容器
+                    const containers = await docker.listContainers({ all: true });
+                    const mainContainer = containers.find(c => 
+                      c.Names && c.Names.some(name => {
+                        const cleanName = name.replace(/^\//, '');
+                        return cleanName === 'tg_listener';
+                      })
+                    );
+                    
+                    if (mainContainer) {
+                      const container = docker.getContainer(mainContainer.Id);
+                      const inspect = await container.inspect();
+                      if (inspect.State.Running || inspect.State.Restarting) {
+                        console.log(`🛑 [配置保存] 多开登录模式下停止主容器 tg_listener...`);
+                        await container.stop({ t: 10 });
+                        console.log(`✅ [配置保存] 主容器已停止`);
+                      }
+                    }
+                  } catch (mainContainerError) {
+                    console.warn(`⚠️  [配置保存] 停止主容器失败（不影响功能）: ${mainContainerError.message}`);
+                  }
+                }
+              } catch (dockerError) {
+                console.warn(`⚠️  [配置保存] 连接 Docker 失败（不影响创建多开容器）: ${dockerError.message}`);
+              }
+              
               const User = require('./userModel');
               const accountUsers = await User.find({
                 $or: [
@@ -7033,10 +7161,6 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0, allow
 // 登录状态检查缓存（避免频繁检查）
 const loginStatusCache = new Map();
 const CACHE_TTL = 30000; // 缓存30秒（从10秒增加到30秒，减少检查频率）
-
-// 用户配置缓存（避免频繁查询 MongoDB）
-const userConfigCache = new Map();
-const CONFIG_CACHE_TTL = 60000; // 配置缓存60秒
 
 // 获取用户的 session 路径（使用目录挂载方式）
 async function getSessionPath(userId) {
