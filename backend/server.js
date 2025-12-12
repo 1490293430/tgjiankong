@@ -5723,26 +5723,99 @@ async function startMultiLoginContainer(userId) {
       // 多开模式：data/session/user_${userId}.session
       // 路径不同，不会冲突
       
-      // 检查是否有旧的session文件需要迁移（从单开模式的telegram目录）
+      // 检查是否有旧的session文件需要迁移到 volume
       // 如果用户之前使用单开模式，session文件可能是 data/session/telegram.session 或 data/session/telegram_{userId}.session
-      // 开启多开后，需要迁移到 data/session/user_${userId}.session
+      // 开启多开后，需要迁移到 volume 中的 user_${userId}.session
       const sessionDir = path.join(__dirname, '..', 'data', 'session');
       const oldSessionFile1 = path.join(sessionDir, 'telegram.session');
       const oldSessionFile2 = path.join(sessionDir, `telegram_${userId}.session`);
-      const newSessionFile = path.join(sessionDir, `user_${userId}.session`);
+      const volumeSessionFileName = `user_${userId}.session`;
       
-      // 如果旧session文件存在且新文件不存在，则迁移
-      if (!fs.existsSync(newSessionFile)) {
-        try {
-          if (fs.existsSync(oldSessionFile2)) {
-            fs.copyFileSync(oldSessionFile2, newSessionFile);
-            console.log(`📦 [多开登录] 已迁移session文件: ${oldSessionFile2} -> ${newSessionFile}`);
-          } else if (fs.existsSync(oldSessionFile1)) {
-            fs.copyFileSync(oldSessionFile1, newSessionFile);
-            console.log(`📦 [多开登录] 已迁移session文件: ${oldSessionFile1} -> ${newSessionFile}`);
+      // 检查 volume 中是否已有 session 文件
+      const tempContainerName = `tg_session_check_${Date.now()}`;
+      const alpineImage = 'alpine:latest';
+      let sessionExistsInVolume = false;
+      
+      try {
+        // 创建临时容器检查 volume 中是否有 session 文件
+        const tempContainer = await docker.createContainer({
+          Image: alpineImage,
+          name: tempContainerName,
+          Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "exists" || echo "not_exists"`],
+          HostConfig: {
+            Binds: [
+              `${sessionVolumeName}:/tmp/session_volume`
+            ]
           }
-        } catch (migrateError) {
-          console.warn(`⚠️  [多开登录] 迁移session文件失败（不影响功能）: ${migrateError.message}`);
+        });
+        
+        const exec = await tempContainer.exec({
+          Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "exists" || echo "not_exists"`],
+          AttachStdout: true,
+          AttachStderr: true
+        });
+        
+        const stream = await exec.start({ hijack: true, stdin: false });
+        let output = '';
+        await new Promise((resolve) => {
+          stream.on('data', (chunk) => {
+            output += chunk.toString();
+          });
+          stream.on('end', resolve);
+        });
+        
+        sessionExistsInVolume = output.trim().includes('exists');
+        await tempContainer.remove();
+      } catch (checkError) {
+        console.warn(`⚠️  [多开登录] 检查 volume 中的 session 文件失败: ${checkError.message}`);
+      }
+      
+      // 如果 volume 中没有 session 文件，且宿主机上有旧文件，则迁移
+      if (!sessionExistsInVolume) {
+        let sourceFile = null;
+        if (fs.existsSync(oldSessionFile2)) {
+          sourceFile = oldSessionFile2;
+        } else if (fs.existsSync(oldSessionFile1)) {
+          sourceFile = oldSessionFile1;
+        }
+        
+        if (sourceFile) {
+          try {
+            // 使用临时容器将 session 文件复制到 volume
+            const copyContainerName = `tg_session_copy_${Date.now()}`;
+            const copyContainer = await docker.createContainer({
+              Image: alpineImage,
+              name: copyContainerName,
+              Cmd: ['sh', '-c', 'sleep 3600'],
+              HostConfig: {
+                Binds: [
+                  `${path.dirname(sourceFile)}:/old_session:ro`,
+                  `${sessionVolumeName}:/tmp/session_volume`
+                ]
+              }
+            });
+            
+            await copyContainer.start();
+            
+            // 复制文件到 volume
+            const copyExec = await copyContainer.exec({
+              Cmd: ['sh', '-c', `cp /old_session/${path.basename(sourceFile)} /tmp/session_volume/${volumeSessionFileName}`],
+              AttachStdout: true,
+              AttachStderr: true
+            });
+            
+            const copyStream = await copyExec.start({ hijack: true, stdin: false });
+            await new Promise((resolve) => {
+              copyStream.on('end', resolve);
+            });
+            
+            await copyContainer.stop();
+            await copyContainer.remove();
+            
+            console.log(`📦 [多开登录] 已迁移session文件到 volume: ${path.basename(sourceFile)} -> ${volumeSessionFileName}`);
+          } catch (migrateError) {
+            console.warn(`⚠️  [多开登录] 迁移session文件到 volume 失败: ${migrateError.message}`);
+          }
         }
       }
       
