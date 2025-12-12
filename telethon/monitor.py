@@ -585,8 +585,15 @@ async def message_handler(event, client):
 
         # check channel filter
         monitored_channels = config.get("channels", []) or []
-        if monitored_channels and channel_id not in monitored_channels:
-            return
+        if monitored_channels:
+            # 同时检查字符串和整数格式的 channel_id（因为配置中可能是整数或字符串）
+            channel_id_int = chat.id
+            channel_id_str = str(channel_id_int)
+            if channel_id_str not in monitored_channels and channel_id_int not in monitored_channels:
+                # 也检查字符串格式的 channel_id（处理负数频道ID，如 -1001234567890）
+                if str(channel_id_int) not in [str(c) for c in monitored_channels]:
+                    logger.debug("🔍 [频道过滤] 频道 %s (ID: %s) 不在监控列表中，跳过", channel_name, channel_id_str)
+                    return
 
         # sender info
         sender_entity = None

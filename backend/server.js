@@ -3819,7 +3819,7 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
           }
           
           // 恢复 session 目录
-          // 使用目录挂载方式，直接恢复到本地目录
+          // 注意：API 容器中 session 目录是只读的，需要通过 Docker API 或直接写入主机目录
           const sessionSource = path.join(extractedDir, 'data', 'session');
           
           let sessionRestored = false;
@@ -3827,27 +3827,100 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
           
           if (fs.existsSync(sessionSource)) {
             try {
-              const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
-              const sessionDir = path.join(PROJECT_ROOT, 'data', 'session');
+              // 尝试直接写入主机目录（如果 API 容器有写权限）
+              // 否则需要通过 Docker API 写入到容器
+              const scriptDir = path.dirname(__filename);
+              const possibleSessionDirs = [
+                path.join(scriptDir, '..', 'data', 'session'),  // 相对路径
+                '/opt/telegram-monitor/data/session',  // 绝对路径（主机）
+                path.join(process.env.PROJECT_ROOT || '/opt/telegram-monitor', 'data', 'session')
+              ];
               
-              // 确保目标目录存在
-              fs.mkdirSync(sessionDir, { recursive: true });
-              
-              console.log(`📦 [恢复] 开始恢复 session 文件到: ${sessionDir}`);
-              
-              // 复制所有 session 文件
-              const sessionFiles = fs.readdirSync(sessionSource);
-              for (const file of sessionFiles) {
-                const sourceFile = path.join(sessionSource, file);
-                const destFile = path.join(sessionDir, file);
-                if (fs.statSync(sourceFile).isFile()) {
-                  fs.copyFileSync(sourceFile, destFile);
-                  console.log(`✅ [恢复] 已恢复文件: ${file}`);
+              let sessionDir = null;
+              for (const possibleDir of possibleSessionDirs) {
+                try {
+                  // 尝试创建目录（测试写权限）
+                  fs.mkdirSync(possibleDir, { recursive: true });
+                  // 尝试写入测试文件
+                  const testFile = path.join(possibleDir, '.write_test');
+                  fs.writeFileSync(testFile, 'test');
+                  fs.unlinkSync(testFile);
+                  sessionDir = possibleDir;
+                  break;
+                } catch (e) {
+                  // 这个目录不可写，尝试下一个
+                  continue;
                 }
               }
               
-              console.log(`✅ [恢复] 已恢复 session 文件到目录 ${sessionDir}`);
-              sessionRestored = true;
+              if (!sessionDir) {
+                // 所有目录都不可写，尝试使用 Docker API
+                console.log(`📦 [恢复] 无法直接写入 session 目录，尝试使用 Docker API...`);
+                try {
+                  const Docker = require('dockerode');
+                  const { exec } = require('child_process');
+                  const { promisify } = require('util');
+                  const execAsync = promisify(exec);
+                  
+                  const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+                  
+                  // 查找 telethon 容器（主容器或多开容器）
+                  const containers = await docker.listContainers({ all: true });
+                  const telethonContainers = containers.filter(c => 
+                    c.Names && c.Names.some(name => 
+                      name.includes('tg_listener') || name.includes('telethon')
+                    )
+                  );
+                  
+                  if (telethonContainers.length > 0) {
+                    // 使用第一个 telethon 容器来恢复 session 文件
+                    const container = docker.getContainer(telethonContainers[0].Id);
+                    
+                    // 使用 tar 命令创建 tar 文件
+                    const tarPath = path.join(extractedDir, 'session_temp.tar');
+                    const sessionFiles = fs.readdirSync(sessionSource).filter(f => 
+                      fs.statSync(path.join(sessionSource, f)).isFile()
+                    );
+                    
+                    if (sessionFiles.length > 0) {
+                      // 创建 tar 文件
+                      await execAsync(`cd "${sessionSource}" && tar -cf "${tarPath}" ${sessionFiles.map(f => `"${f}"`).join(' ')}`);
+                      
+                      // 复制到容器
+                      const sessionContainerPath = '/opt/telegram-monitor/data/session';
+                      const tarStream = fs.createReadStream(tarPath);
+                      await container.putArchive(tarStream, { path: sessionContainerPath });
+                      
+                      fs.unlinkSync(tarPath);
+                      console.log(`✅ [恢复] 已通过 Docker API 恢复 session 文件到容器`);
+                      sessionRestored = true;
+                    } else {
+                      console.warn(`⚠️  [恢复] 备份中没有 session 文件`);
+                    }
+                  } else {
+                    console.warn(`⚠️  [恢复] 未找到 telethon 容器，无法恢复 session 文件`);
+                  }
+                } catch (dockerError) {
+                  console.warn(`⚠️  [恢复] 使用 Docker API 恢复 session 文件失败: ${dockerError.message}`);
+                }
+              } else {
+                // 直接写入主机目录
+                console.log(`📦 [恢复] 开始恢复 session 文件到: ${sessionDir}`);
+                
+                // 复制所有 session 文件
+                const sessionFiles = fs.readdirSync(sessionSource);
+                for (const file of sessionFiles) {
+                  const sourceFile = path.join(sessionSource, file);
+                  const destFile = path.join(sessionDir, file);
+                  if (fs.statSync(sourceFile).isFile()) {
+                    fs.copyFileSync(sourceFile, destFile);
+                    console.log(`✅ [恢复] 已恢复文件: ${file}`);
+                  }
+                }
+                
+                console.log(`✅ [恢复] 已恢复 session 文件到目录 ${sessionDir}`);
+                sessionRestored = true;
+              }
             } catch (restoreError) {
               console.warn(`⚠️  [恢复] 恢复 session 文件失败: ${restoreError.message}`);
             }
