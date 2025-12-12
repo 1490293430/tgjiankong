@@ -38,20 +38,10 @@ except (ValueError, AttributeError):
     ENV_API_ID = 0
     logger.warning("⚠️  环境变量 API_ID 解析失败: '%s'，将使用 0（请通过配置文件或用户配置设置）", api_id_str)
 ENV_API_HASH = os.getenv("API_HASH", "")
-# 统一使用 volume 路径
-SESSION_VOLUME_PATH = os.getenv("SESSION_VOLUME_PATH", "/tmp/session_volume")
-# 统一使用 volume 路径，格式：/tmp/session_volume/user
-# 如果 SESSION_VOLUME_PATH 存在，使用 volume 路径；否则使用环境变量 SESSION_PATH（向后兼容）
-OLD_SESSION_PATH = os.getenv("SESSION_PATH", "/app/session/telegram")
-if SESSION_VOLUME_PATH and os.path.exists(SESSION_VOLUME_PATH):
-    # 统一使用 volume 路径，格式：/tmp/session_volume/user
-    SESSION_PATH = os.path.join(SESSION_VOLUME_PATH, "user")
-elif OLD_SESSION_PATH.startswith("/tmp/session_volume"):
-    # 如果 SESSION_PATH 已经是 volume 路径，直接使用
-    SESSION_PATH = OLD_SESSION_PATH
-else:
-    # 向后兼容：如果没有 volume，使用旧路径（但会迁移到 volume）
-    SESSION_PATH = OLD_SESSION_PATH
+# 使用目录挂载方式，统一路径：/opt/telegram-monitor/data/session
+SESSION_BASE_DIR = "/opt/telegram-monitor/data/session"
+# 从环境变量获取 SESSION_PREFIX，默认为 "user"
+SESSION_PREFIX = os.getenv("SESSION_PREFIX", "user")
 SESSION_STRING = os.getenv("SESSION_STRING", "").strip()
 # 用户ID - 用于数据隔离，从环境变量读取
 USER_ID = os.getenv("USER_ID", "").strip()
@@ -841,14 +831,11 @@ async def main():
     if SESSION_STRING:
         client = TelegramClient(StringSession(SESSION_STRING), cfg_api_id, cfg_api_hash)
     else:
-        # 如果设置了用户ID，使用用户特定的 session 文件
-        if active_user_id:
-            session_file = f"{SESSION_PATH}_{active_user_id}"
-            logger.info("使用用户专属 Session 文件: %s", session_file)
-            client = TelegramClient(session_file, cfg_api_id, cfg_api_hash)
-        else:
-            session_file = SESSION_PATH
-            client = TelegramClient(SESSION_PATH, cfg_api_id, cfg_api_hash)
+        # 使用 SESSION_PREFIX 构建 session 文件名
+        # 格式：/opt/telegram-monitor/data/session/{SESSION_PREFIX}.session
+        session_file = os.path.join(SESSION_BASE_DIR, SESSION_PREFIX)
+        logger.info("使用 Session 文件: %s (SESSION_PREFIX: %s)", session_file, SESSION_PREFIX)
+        client = TelegramClient(session_file, cfg_api_id, cfg_api_hash)
     
     # 检查 session 文件是否存在（如果使用文件 session）
     if session_file and not SESSION_STRING:

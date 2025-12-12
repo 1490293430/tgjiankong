@@ -37,7 +37,7 @@ services:
       - ./backend:/app
       - /app/node_modules
       - ./logs/api:/app/logs
-      - ./data/session:/app/data/session:ro
+      - ./data/session:/opt/telegram-monitor/data/session:ro
       - ./backups:/app/backups
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
@@ -60,14 +60,13 @@ services:
       - MONGO_URL=mongodb://mongo:27017/tglogs
       - API_URL=http://api:3000
       - CONFIG_PATH=/app/config.json
-      - SESSION_PATH=/tmp/session_volume/user
-      - SESSION_VOLUME_PATH=/tmp/session_volume
+      - SESSION_PREFIX=${SESSION_PREFIX:-user}
       - API_ID=${API_ID}
       - API_HASH=${API_HASH}
       - USER_ID=${USER_ID:-}
     volumes:
       - ./backend/config.json:/app/config.json:ro
-      - tg_session:/tmp/session_volume
+      - ./data/session:/opt/telegram-monitor/data/session:rw
       - ./logs/telethon:/app/logs
     networks:
       - tg-network
@@ -99,4 +98,3 @@ networks:
 volumes:
   mongo-data:
   session-data:
-  tg_session:  # 统一使用 volume 存储 session 文件

@@ -870,7 +870,7 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
           const apiHash = config.telegram?.api_hash || '';
           
           if (apiId && apiHash) {
-            const sessionPath = `/tmp/session_volume/user_${newUserId}`;
+            const sessionPath = `/opt/telegram-monitor/data/session/user_${newUserId}`;
             try {
               // 验证 session 文件是否有效（使用较短的超时）
               const checkResult = await Promise.race([
@@ -2919,112 +2919,57 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
     }
     
     // 备份 session 目录（Telegram 登录凭证）
-    // 优先从 Docker Volume 备份，如果不存在则从旧目录备份
+    // 使用目录挂载方式，直接备份本地目录
     let sessionBacked = false;
     
     try {
-      // 方法1：从 Docker Volume 备份
-      const Docker = require('dockerode');
-      const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-      const volumeName = 'tg_session';
+      const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
+      const sessionDir = path.join(PROJECT_ROOT, 'data', 'session');
       
-      try {
-        const volume = docker.getVolume(volumeName);
-        await volume.inspect();
+      if (fs.existsSync(sessionDir)) {
+        console.log(`📦 [备份] 开始备份 session 目录: ${sessionDir}`);
         
-        console.log(`📦 [备份] 检测到 session volume，开始备份...`);
+        const backupDataPath = path.join(backupPath, 'data');
+        fs.mkdirSync(backupDataPath, { recursive: true });
+        const backupSessionPath = path.join(backupDataPath, 'session');
+        fs.mkdirSync(backupSessionPath, { recursive: true });
         
-        // 创建临时容器来访问 volume 并复制文件
-        const tempContainerName = `tg_session_backup_${Date.now()}`;
-        // 优先使用 alpine:latest，如果不存在则使用 python:3.11-slim
-        let containerImage = 'python:3.11-slim';
-        try {
-          const alpineImg = docker.getImage('alpine:latest');
-          await alpineImg.inspect();
-          containerImage = 'alpine:latest';
-        } catch (e) {
-          // alpine:latest 不存在，使用 python:3.11-slim
+        // 复制所有 session 文件
+        const sessionFiles = fs.readdirSync(sessionDir);
+        for (const file of sessionFiles) {
+          const sourceFile = path.join(sessionDir, file);
+          const destFile = path.join(backupSessionPath, file);
+          if (fs.statSync(sourceFile).isFile()) {
+            fs.copyFileSync(sourceFile, destFile);
+          }
         }
         
-        try {
-          const tempContainer = await docker.createContainer({
-            Image: containerImage,
-            name: tempContainerName,
-            Cmd: ['sh', '-c', 'sleep 3600'],
-            HostConfig: {
-              Binds: [
-                `${volumeName}:/session:ro`
-              ]
-            }
-          });
-          
-          await tempContainer.start();
-          
-          // 从容器复制文件
-          const containerBackupPath = '/session';
-          const tarStream = await tempContainer.getArchive({ path: containerBackupPath });
-          
-          const backupDataPath = path.join(backupPath, 'data');
-          fs.mkdirSync(backupDataPath, { recursive: true });
-          const backupSessionPath = path.join(backupDataPath, 'session');
-          fs.mkdirSync(backupSessionPath, { recursive: true });
-          
-          const tempTarPath = path.join(backupSessionPath, 'session_backup.tar');
-          const writeStream = fs.createWriteStream(tempTarPath);
-          
-          await new Promise((resolve, reject) => {
-            tarStream.pipe(writeStream);
-            writeStream.on('finish', resolve);
-            writeStream.on('error', reject);
-            tarStream.on('error', reject);
-          });
-          
-          // 解压 tar 文件
-          try {
-            await execAsync(`tar -xf "${tempTarPath}" -C "${backupSessionPath}" --strip-components=1`, {
-              timeout: 300000
-            });
-            fs.unlinkSync(tempTarPath);
-          } catch (tarError) {
-            console.warn(`⚠️  [备份] tar 解压失败: ${tarError.message}`);
-          }
-          
-          // 清理临时容器
-          await tempContainer.stop();
-          await tempContainer.remove();
-          
-          // 统计备份的 session 文件
-          if (fs.existsSync(backupSessionPath)) {
-            const sessionFiles = fs.readdirSync(backupSessionPath);
-            // 统计 .session 文件（不包括 .session-journal）
-            const telegramSessions = sessionFiles.filter(f => f.startsWith('telegram') && f.endsWith('.session') && !f.endsWith('.session-journal')).length;
-            const userSessions = sessionFiles.filter(f => f.startsWith('user_') && f.endsWith('.session') && !f.endsWith('.session-journal')).length;
-            // 统计 .session-journal 文件
-            const telegramJournals = sessionFiles.filter(f => f.startsWith('telegram') && f.endsWith('.session-journal')).length;
-            const userJournals = sessionFiles.filter(f => f.startsWith('user_') && f.endsWith('.session-journal')).length;
-            
-            console.log(`✅ [备份] 已从 volume 备份 session 文件`);
-            if (telegramSessions > 0 || telegramJournals > 0) {
-              console.log(`   - 单开模式: ${telegramSessions} 个 .session 文件${telegramJournals > 0 ? `, ${telegramJournals} 个 .session-journal 文件` : ''}`);
-            }
-            if (userSessions > 0 || userJournals > 0) {
-              console.log(`   - 多开模式: ${userSessions} 个 .session 文件${userJournals > 0 ? `, ${userJournals} 个 .session-journal 文件` : ''}`);
-            }
-            sessionBacked = true;
-          }
-        } catch (volumeBackupError) {
-          console.warn(`⚠️  [备份] 从 volume 备份失败: ${volumeBackupError.message}`);
+        // 统计备份的 session 文件
+        const backupFiles = fs.readdirSync(backupSessionPath);
+        // 统计 .session 文件（不包括 .session-journal）
+        const telegramSessions = backupFiles.filter(f => f.startsWith('telegram') && f.endsWith('.session') && !f.endsWith('.session-journal')).length;
+        const userSessions = backupFiles.filter(f => f.startsWith('user_') && f.endsWith('.session') && !f.endsWith('.session-journal')).length;
+        // 统计 .session-journal 文件
+        const telegramJournals = backupFiles.filter(f => f.startsWith('telegram') && f.endsWith('.session-journal')).length;
+        const userJournals = backupFiles.filter(f => f.startsWith('user_') && f.endsWith('.session-journal')).length;
+        
+        console.log(`✅ [备份] 已备份 session 文件`);
+        if (telegramSessions > 0 || telegramJournals > 0) {
+          console.log(`   - 单开模式: ${telegramSessions} 个 .session 文件${telegramJournals > 0 ? `, ${telegramJournals} 个 .session-journal 文件` : ''}`);
         }
-      } catch (volumeError) {
-        console.log(`ℹ️  [备份] Volume ${volumeName} 不存在，尝试从旧目录备份`);
+        if (userSessions > 0 || userJournals > 0) {
+          console.log(`   - 多开模式: ${userSessions} 个 .session 文件${userJournals > 0 ? `, ${userJournals} 个 .session-journal 文件` : ''}`);
+        }
+        sessionBacked = true;
+      } else {
+        console.log(`ℹ️  [备份] Session 目录不存在: ${sessionDir}`);
       }
-    } catch (dockerError) {
-      console.warn(`⚠️  [备份] Docker API 访问失败: ${dockerError.message}`);
+    } catch (backupError) {
+      console.warn(`⚠️  [备份] 备份 session 文件失败: ${backupError.message}`);
     }
     
-    // 统一使用 volume，不再从旧目录备份
     if (!sessionBacked) {
-      console.warn(`⚠️  [备份] volume 备份失败，session 文件未备份`);
+      console.warn(`⚠️  [备份] session 文件未备份`);
     }
     
     // 额外导出用户配置快照（JSON格式，方便查看）
@@ -3738,104 +3683,41 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
           }
           
           // 恢复 session 目录
-          // 优先恢复到 Docker Volume，如果不存在则恢复到旧目录
+          // 使用目录挂载方式，直接恢复到本地目录
           const sessionSource = path.join(extractedDir, 'data', 'session');
           
           let sessionRestored = false;
           let telethonContainerStopped = false;
           
           if (fs.existsSync(sessionSource)) {
-            // 方法1：恢复到 Docker Volume
             try {
-              const Docker = require('dockerode');
-              const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-              const volumeName = 'tg_session';
+              const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
+              const sessionDir = path.join(PROJECT_ROOT, 'data', 'session');
               
-              // 获取或创建 volume
-              let volume = null;
-              try {
-                volume = docker.getVolume(volumeName);
-                await volume.inspect();
-                console.log(`✅ [恢复] Volume ${volumeName} 已存在`);
-              } catch (e) {
-                // Volume 不存在，创建它
-                console.log(`📦 [恢复] 创建 Volume ${volumeName}...`);
-                volume = await docker.createVolume({
-                  Name: volumeName,
-                  Driver: 'local'
-                });
-                console.log(`✅ [恢复] 已创建 Volume ${volumeName}`);
-              }
+              // 确保目标目录存在
+              fs.mkdirSync(sessionDir, { recursive: true });
               
-              // 创建临时容器来恢复文件到 volume（统一使用 /tmp/session_volume 路径）
-              const tempContainerName = `tg_session_restore_${Date.now()}`;
-              // 使用 getTempContainerImage 获取合适的镜像
-              const tempImage = await getTempContainerImage(docker);
+              console.log(`📦 [恢复] 开始恢复 session 文件到: ${sessionDir}`);
               
-              try {
-                const tempContainer = await docker.createContainer({
-                  Image: tempImage,
-                  name: tempContainerName,
-                  Cmd: ['sh', '-c', 'sleep 3600'],
-                  HostConfig: {
-                    Binds: [
-                      `${sessionSource}:/backup:ro`,
-                      `${volumeName}:/tmp/session_volume`  // 统一使用 /tmp/session_volume
-                    ]
-                  }
-                });
-                
-                await tempContainer.start();
-                console.log(`✅ [恢复] 已启动临时容器用于恢复`);
-                
-                // 在容器内复制文件（统一路径格式）
-                const exec = await tempContainer.exec({
-                  Cmd: ['sh', '-c', 'rm -rf /tmp/session_volume/* && cp -r /backup/* /tmp/session_volume/ 2>/dev/null || true'],
-                  AttachStdout: true,
-                  AttachStderr: true
-                });
-                
-                const stream = await exec.start({ hijack: true, stdin: false });
-                await new Promise((resolve, reject) => {
-                  let output = '';
-                  stream.on('data', (chunk) => {
-                    output += chunk.toString();
-                  });
-                  stream.on('end', () => {
-                    resolve(output);
-                  });
-                  stream.on('error', reject);
-                  
-                  setTimeout(() => {
-                    stream.destroy();
-                    resolve(output);
-                  }, 60000);
-                });
-                
-                // 停止并删除临时容器
-                await tempContainer.stop();
-                await tempContainer.remove();
-                
-                console.log(`✅ [恢复] 已恢复 session 文件到 volume ${volumeName}`);
-                sessionRestored = true;
-              } catch (volumeRestoreError) {
-                console.warn(`⚠️  [恢复] 恢复到 volume 失败: ${volumeRestoreError.message}`);
-                // 清理临时容器（如果存在）
-                try {
-                  const tempContainer = docker.getContainer(tempContainerName);
-                  await tempContainer.stop();
-                  await tempContainer.remove();
-                } catch (e) {
-                  // 忽略清理错误
+              // 复制所有 session 文件
+              const sessionFiles = fs.readdirSync(sessionSource);
+              for (const file of sessionFiles) {
+                const sourceFile = path.join(sessionSource, file);
+                const destFile = path.join(sessionDir, file);
+                if (fs.statSync(sourceFile).isFile()) {
+                  fs.copyFileSync(sourceFile, destFile);
+                  console.log(`✅ [恢复] 已恢复文件: ${file}`);
                 }
               }
-            } catch (dockerError) {
-              console.warn(`⚠️  [恢复] Docker API 访问失败: ${dockerError.message}`);
+              
+              console.log(`✅ [恢复] 已恢复 session 文件到目录 ${sessionDir}`);
+              sessionRestored = true;
+            } catch (restoreError) {
+              console.warn(`⚠️  [恢复] 恢复 session 文件失败: ${restoreError.message}`);
             }
             
-            // 统一使用 volume，不再恢复到旧目录
             if (!sessionRestored) {
-              console.warn(`⚠️  [恢复] volume 恢复失败，session 文件未恢复`);
+              console.warn(`⚠️  [恢复] session 文件未恢复`);
             }
             
             // 如果之前停止了容器，现在重新启动
@@ -4340,29 +4222,26 @@ async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHost
     throw new Error('无法连接到 Docker daemon');
   }
   
-  // 确保 volume 存在
-  const volumeName = 'tg_session';
-  console.log(`🔍 [临时容器] 检查 volume: ${volumeName}`);
-  try {
-    const volumeInfo = await getOrCreateSessionVolume(docker);
-    console.log(`✅ [临时容器] Volume ${volumeName} 已就绪`);
-    if (volumeInfo && volumeInfo.Mountpoint) {
-      console.log(`📂 [临时容器] Volume 挂载点: ${volumeInfo.Mountpoint}`);
-    }
-  } catch (e) {
-    console.error(`❌ [临时容器] 创建 volume 失败: ${e.message}`);
-    throw e;
+  // 使用目录挂载方式，统一路径
+  const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
+  const sessionHostPath = path.join(PROJECT_ROOT, 'data', 'session');
+  const sessionContainerPath = '/opt/telegram-monitor/data/session';
+  
+  // 确保 session 目录存在
+  if (!fs.existsSync(sessionHostPath)) {
+    fs.mkdirSync(sessionHostPath, { recursive: true });
+    console.log(`✅ [临时容器] 已创建 session 目录: ${sessionHostPath}`);
   }
   
   const containerName = `tg_login_${userId}_${Date.now()}`;
   
   console.log(`🔨 [临时容器] 创建临时登录容器: ${containerName}`);
   console.log(`🔨 [临时容器] 使用镜像: ${containerImage}`);
-  console.log(`🔨 [临时容器] Volume 挂载: ${volumeName}:/tmp/session_volume`);
+  console.log(`🔨 [临时容器] Session 目录挂载: ${sessionHostPath}:${sessionContainerPath}:rw`);
   console.log(`🔨 [临时容器] Config 挂载: ${configHostPath}:/app/config.json:ro`);
   
   // 创建容器配置（长期运行，用于多次执行命令）
-  // 统一使用 volume 挂载 session
+  // 使用目录挂载 session
   const containerConfig = {
     Image: containerImage,
     name: containerName,
@@ -4373,7 +4252,7 @@ async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHost
     HostConfig: {
       Binds: [
         `${configHostPath}:/app/config.json:ro`,
-        `${volumeName}:/tmp/session_volume`  // 使用 volume 而不是本地路径
+        `${sessionHostPath}:${sessionContainerPath}:rw`  // 使用目录挂载
       ],
       AutoRemove: false // 不自动删除，我们手动管理
     },
@@ -4390,10 +4269,10 @@ async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHost
   await container.start();
   console.log(`✅ [临时容器] 容器已启动`);
   
-  // 验证 volume 挂载
+  // 验证目录挂载
   try {
     const verifyExec = await container.exec({
-      Cmd: ['sh', '-c', 'test -d /tmp/session_volume && ls -la /tmp/session_volume/ || echo "volume未挂载"'],
+      Cmd: ['sh', '-c', `test -d ${sessionContainerPath} && ls -la ${sessionContainerPath}/ || echo "目录未挂载"`],
       AttachStdout: true,
       AttachStderr: true
     });
@@ -4407,12 +4286,12 @@ async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHost
       verifyStream.on('end', resolve);
     });
     
-    console.log(`🔍 [临时容器] Volume 挂载验证:\n${verifyOutput}`);
+    console.log(`🔍 [临时容器] Session 目录挂载验证:\n${verifyOutput}`);
   } catch (verifyError) {
-    console.warn(`⚠️  [临时容器] Volume 挂载验证失败: ${verifyError.message}`);
+    console.warn(`⚠️  [临时容器] Session 目录挂载验证失败: ${verifyError.message}`);
   }
   
-  console.log(`✅ [临时容器] 创建临时登录容器: ${containerName} (使用 volume: ${volumeName})`);
+  console.log(`✅ [临时容器] 创建临时登录容器: ${containerName} (使用目录挂载: ${sessionHostPath})`);
   
   // 保存容器信息
   tempLoginContainers.set(userId, {
@@ -4429,10 +4308,10 @@ async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHost
 const sessionFileCache = new Map();
 const SESSION_CACHE_TTL = 5000; // 5秒缓存
 
-// 检查 Docker volume 中的 session 文件是否存在（多开模式）
+// 检查目录中的 session 文件是否存在（多开模式）
 async function checkSessionFileInVolume(userId) {
   try {
-    const cacheKey = `volume_session_${userId}`;
+    const cacheKey = `session_${userId}`;
     const cached = sessionFileCache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp) < SESSION_CACHE_TTL) {
       console.log(`📋 [检查Session] 使用缓存结果: ${cached.exists ? '存在' : '不存在'}`);
@@ -4441,143 +4320,50 @@ async function checkSessionFileInVolume(userId) {
     
     console.log(`🔍 [检查Session] 开始检查用户 ${userId} 的 session 文件...`);
     
-    const Docker = require('dockerode');
-    const dockerSocketPaths = [
-      '/var/run/docker.sock',
-      process.env.DOCKER_HOST?.replace('unix://', '') || null
-    ].filter(Boolean);
+    // 使用目录挂载方式，直接检查本地文件系统
+    const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
+    const sessionDir = path.join(PROJECT_ROOT, 'data', 'session');
+    const sessionFileName = `user_${userId}.session`;
+    const journalFileName = `user_${userId}.session-journal`;
+    const sessionFile = path.join(sessionDir, sessionFileName);
+    const journalFile = path.join(sessionDir, journalFileName);
     
-    let docker = null;
-    for (const socketPath of dockerSocketPaths) {
-      if (fs.existsSync(socketPath)) {
-        try {
-          docker = new Docker({ socketPath });
-          await docker.ping();
-          console.log(`✅ [检查Session] Docker 连接成功: ${socketPath}`);
-          break;
-        } catch (e) {
-          // 继续尝试下一个路径
+    console.log(`🔍 [检查Session] Session 目录: ${sessionDir}`);
+    console.log(`🔍 [检查Session] 检查文件: ${sessionFileName}`);
+    
+    // 检查目录是否存在
+    if (!fs.existsSync(sessionDir)) {
+      console.log(`📂 [检查Session] Session 目录不存在: ${sessionDir}`);
+      sessionFileCache.set(cacheKey, { exists: false, timestamp: Date.now() });
+      return false;
+    }
+    
+    // 检查 .session 文件
+    if (fs.existsSync(sessionFile)) {
+      try {
+        const stats = fs.statSync(sessionFile);
+        if (stats.isFile() && stats.size > 0) {
+          console.log(`✅ [检查Session] Session 文件存在: ${sessionFile} (大小: ${stats.size} 字节)`);
+          sessionFileCache.set(cacheKey, { exists: true, timestamp: Date.now() });
+          return true;
         }
+      } catch (err) {
+        console.warn(`⚠️  [检查Session] 无法读取 session 文件: ${err.message}`);
       }
     }
     
-    if (!docker) {
-      console.warn('⚠️  [检查Session] 无法连接到 Docker，无法检查 volume 中的 session 文件');
-      return false;
+    // 检查 .session-journal 文件（journal 文件存在也说明已登录）
+    if (fs.existsSync(journalFile)) {
+      console.log(`✅ [检查Session] Journal 文件存在: ${journalFile}`);
+      sessionFileCache.set(cacheKey, { exists: true, timestamp: Date.now() });
+      return true;
     }
     
-    // 检查 volume 是否存在
-    const volumeName = 'tg_session';
-    let volume = null;
-    try {
-      volume = docker.getVolume(volumeName);
-      const volumeInfo = await volume.inspect();
-      console.log(`✅ [检查Session] Volume ${volumeName} 存在`);
-      console.log(`📂 [检查Session] Volume 挂载点: ${volumeInfo.Mountpoint || 'N/A'}`);
-    } catch (e) {
-      console.error(`❌ [检查Session] Volume ${volumeName} 不存在: ${e.message}`);
-      sessionFileCache.set(cacheKey, { exists: false, timestamp: Date.now() });
-      return false;
-    }
-    
-    // 使用临时容器检查 volume 中的 session 文件
-    const volumeSessionFileName = `user_${userId}.session`;
-    const volumeJournalFileName = `user_${userId}.session-journal`;
-    const tempContainerName = `tg_session_check_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
-    console.log(`🔍 [检查Session] 检查文件: ${volumeSessionFileName}`);
-    console.log(`🔍 [检查Session] 临时容器: ${tempContainerName}`);
-    
-    try {
-      const tempImage = await getTempContainerImage(docker);
-      console.log(`✅ [检查Session] 使用镜像: ${tempImage}`);
-      
-      const tempContainer = await docker.createContainer({
-        Image: tempImage,
-        name: tempContainerName,
-        Cmd: ['sh', '-c', 'sleep 1'],
-        HostConfig: {
-          Binds: [
-            `${volumeName}:/tmp/session_volume`
-          ]
-        }
-      });
-      
-      await tempContainer.start();
-      console.log(`✅ [检查Session] 临时容器已启动`);
-      
-      // 先列出目录内容
-      const listExec = await tempContainer.exec({
-        Cmd: ['sh', '-c', 'ls -la /tmp/session_volume/ 2>&1 || echo "目录不存在或无法访问"'],
-        AttachStdout: true,
-        AttachStderr: true
-      });
-      
-      const listStream = await listExec.start({ hijack: true, stdin: false });
-      let listOutput = '';
-      listStream.on('data', (chunk) => {
-        listOutput += chunk.toString();
-      });
-      await new Promise((resolve) => {
-        listStream.on('end', resolve);
-      });
-      
-      console.log(`📂 [检查Session] Volume 目录内容:\n${listOutput}`);
-      
-      // 检查 session 文件
-      const exec = await tempContainer.exec({
-        Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && stat /tmp/session_volume/${volumeSessionFileName} || echo "文件不存在"`],
-        AttachStdout: true,
-        AttachStderr: true
-      });
-      
-      const stream = await exec.start({ hijack: true, stdin: false });
-      let output = '';
-      stream.on('data', (chunk) => {
-        output += chunk.toString();
-      });
-      await new Promise((resolve) => {
-        stream.on('end', resolve);
-      });
-      
-      console.log(`📄 [检查Session] Session 文件检查结果:\n${output}`);
-      
-      // 检查 journal 文件
-      const journalExec = await tempContainer.exec({
-        Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeJournalFileName} && echo "journal_exists" || echo "journal_not_exists"`],
-        AttachStdout: true,
-        AttachStderr: true
-      });
-      
-      const journalStream = await journalExec.start({ hijack: true, stdin: false });
-      let journalOutput = '';
-      journalStream.on('data', (chunk) => {
-        journalOutput += chunk.toString();
-      });
-      await new Promise((resolve) => {
-        journalStream.on('end', resolve);
-      });
-      
-      console.log(`📄 [检查Session] Journal 文件检查结果: ${journalOutput.trim()}`);
-      
-      const exists = output.trim().includes('File:') || output.trim().includes('文件:');
-      
-      console.log(`📊 [检查Session] 最终结果: ${exists ? '文件存在' : '文件不存在'}`);
-      
-      await tempContainer.stop();
-      await tempContainer.remove();
-      
-      // 缓存结果
-      sessionFileCache.set(cacheKey, { exists, timestamp: Date.now() });
-      return exists;
-    } catch (checkError) {
-      console.error(`❌ [检查Session] 检查 volume 中的 session 文件失败: ${checkError.message}`);
-      console.error(`❌ [检查Session] 错误堆栈: ${checkError.stack}`);
-      sessionFileCache.set(cacheKey, { exists: false, timestamp: Date.now() });
-      return false;
-    }
+    console.log(`📊 [检查Session] 最终结果: 文件不存在`);
+    sessionFileCache.set(cacheKey, { exists: false, timestamp: Date.now() });
+    return false;
   } catch (error) {
-    console.error('❌ [检查Session] 检查 volume session 文件失败:', error);
+    console.error('❌ [检查Session] 检查 session 文件失败:', error);
     console.error('❌ [检查Session] 错误堆栈:', error.stack);
     return false;
   }
@@ -4970,14 +4756,7 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
     }
   }
   
-  // 确保 volume 存在
-  const volumeName = 'tg_session';
-  try {
-    await getOrCreateSessionVolume(docker);
-  } catch (e) {
-    console.warn(`⚠️  创建 volume 失败: ${e.message}`);
-  }
-  
+  // 使用目录挂载方式，不需要创建 volume
   // 使用 -u 参数禁用 Python 输出缓冲，确保输出立即刷新
   const execArgs = ['python3', '-u', '/app/login_helper.py', command, ...args];
   
@@ -5114,10 +4893,14 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
       }
     }
     
-    // 创建新的一次性容器（统一使用 volume）
+    // 使用目录挂载方式
+    const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
+    const sessionHostPath = path.join(PROJECT_ROOT, 'data', 'session');
+    const sessionContainerPath = '/opt/telegram-monitor/data/session';
+    
     console.log(`🐳 [登录脚本] 创建临时容器: ${tempContainerName}`);
     console.log(`🐳 [登录脚本] 使用镜像: ${containerImage}`);
-    console.log(`🐳 [登录脚本] Volume 挂载: ${volumeName}:/tmp/session_volume`);
+    console.log(`🐳 [登录脚本] Session 目录挂载: ${sessionHostPath}:${sessionContainerPath}:rw`);
     console.log(`🐳 [登录脚本] Config 挂载: ${configHostPath}:/app/config.json:ro`);
     
     container = await docker.createContainer({
@@ -5134,7 +4917,7 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
       HostConfig: {
         Binds: [
           `${configHostPath}:/app/config.json:ro`,
-          `${volumeName}:/tmp/session_volume`  // 统一使用 volume
+          `${sessionHostPath}:${sessionContainerPath}:rw`  // 使用目录挂载
         ],
         AutoRemove: !(userId && reuseContainer) // 如果是复用容器，不自动删除
       },
@@ -5933,8 +5716,16 @@ async function startMultiLoginContainer(userId) {
     }
     
     // 获取或创建 session volume
-    const sessionVolumeInfo = await getOrCreateSessionVolume(docker);
-    const sessionVolumeName = 'tg_session'; // volume 名称固定为 tg_session
+    // 使用目录挂载方式，不再使用 volume
+    const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
+    const sessionHostPath = path.join(PROJECT_ROOT, 'data', 'session');
+    const sessionContainerPath = '/opt/telegram-monitor/data/session';
+    
+    // 确保 session 目录存在
+    if (!fs.existsSync(sessionHostPath)) {
+      fs.mkdirSync(sessionHostPath, { recursive: true });
+      console.log(`✅ [多开登录] 已创建 session 目录: ${sessionHostPath}`);
+    }
     
     // 加载用户配置以获取 API_ID 和 API_HASH
     const userConfig = await loadUserConfig(userId.toString());
@@ -6003,11 +5794,10 @@ async function startMultiLoginContainer(userId) {
       MONGO_URL: process.env.MONGO_URL || 'mongodb://mongo:27017/tglogs',
       API_URL: process.env.API_URL || 'http://api:3000',
       CONFIG_PATH: `/app/config_${userId}.json`,
-      // 多开模式：SESSION_PATH设置为 /tmp/session_volume/user
-      // 由于USER_ID环境变量会设置，monitor.py会使用 SESSION_PATH_{USER_ID} = /tmp/session_volume/user_${userId}
-      // 直接使用 volume 挂载点，避免 Docker overlay 文件系统只读问题
-      // 这样session文件是 /tmp/session_volume/user_${userId}.session，与单开模式的 /app/session/telegram.session 不冲突
-      SESSION_PATH: `/tmp/session_volume/user`,
+      // 多开模式：使用 SESSION_PREFIX 环境变量
+      // monitor.py 会使用 SESSION_PREFIX 构建 session 文件名
+      // session 文件是 /opt/telegram-monitor/data/session/{SESSION_PREFIX}.session
+      SESSION_PREFIX: `user_${userId}`,
       // 从用户配置中读取 API_ID 和 API_HASH（配置文件已包含这些信息）
       // 如果配置文件中没有，则从环境变量读取（向后兼容）
       API_ID: (configObj.telegram && configObj.telegram.api_id) ? String(configObj.telegram.api_id) : (process.env.API_ID || '0'),
@@ -6028,57 +5818,28 @@ async function startMultiLoginContainer(userId) {
     const oldSessionFile2 = path.join(sessionDir1, `telegram_${userId}.session`);
     const oldSessionFile3 = path.join(sessionDir2, 'telegram.session');
     const oldSessionFile4 = path.join(sessionDir2, `telegram_${userId}.session`);
-    const volumeSessionFileName = `user_${userId}.session`;
+    const sessionFileName = `user_${userId}.session`;
+    const sessionFile = path.join(sessionHostPath, sessionFileName);
     
-    // 检查 volume 中是否已有 session 文件
-    const tempContainerName = `tg_session_check_${Date.now()}`;
-    let sessionExistsInVolume = false;
+    // 直接检查本地目录中是否已有 session 文件
+    let sessionExists = false;
     
-    console.log(`🔍 [多开登录] 检查 volume 中是否存在 session 文件: ${volumeSessionFileName}`);
+    console.log(`🔍 [多开登录] 检查目录中是否存在 session 文件: ${sessionFile}`);
     
-    try {
-      const tempImage = await getTempContainerImage(docker);
-      
-      // 创建临时容器检查 volume 中是否有 session 文件
-      const tempContainer = await docker.createContainer({
-        Image: tempImage,
-        name: tempContainerName,
-        Cmd: ['sh', '-c', 'sleep 1'],
-        HostConfig: {
-          Binds: [
-            `${sessionVolumeName}:/tmp/session_volume`
-          ]
+    if (fs.existsSync(sessionFile)) {
+      try {
+        const stats = fs.statSync(sessionFile);
+        if (stats.isFile() && stats.size > 0) {
+          sessionExists = true;
+          console.log(`✅ [多开登录] Session 文件已存在: ${sessionFile} (大小: ${stats.size} 字节)`);
         }
-      });
-      
-      await tempContainer.start();
-      
-      const exec = await tempContainer.exec({
-        Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "exists" || echo "not_exists"`],
-        AttachStdout: true,
-        AttachStderr: true
-      });
-      
-      const stream = await exec.start({ hijack: true, stdin: false });
-      let output = '';
-      await new Promise((resolve) => {
-        stream.on('data', (chunk) => {
-          output += chunk.toString();
-        });
-        stream.on('end', resolve);
-      });
-      
-      sessionExistsInVolume = output.trim().includes('exists');
-      console.log(`🔍 [多开登录] Volume 检查结果: ${sessionExistsInVolume ? '已存在' : '不存在'} (输出: ${output.trim()})`);
-      
-      await tempContainer.stop();
-      await tempContainer.remove();
-    } catch (checkError) {
-      console.warn(`⚠️  [多开登录] 检查 volume 中的 session 文件失败: ${checkError.message}`);
+      } catch (err) {
+        console.warn(`⚠️  [多开登录] 无法读取 session 文件: ${err.message}`);
+      }
     }
     
-    // 如果 volume 中没有 session 文件，且宿主机上有旧文件，则迁移
-    if (!sessionExistsInVolume) {
+    // 如果目录中没有 session 文件，且宿主机上有旧文件，则迁移
+    if (!sessionExists) {
       console.log(`🔍 [多开登录] Volume 中没有 session 文件，开始查找源文件...`);
       let sourceFile = null;
       // 按优先级查找 session 文件
@@ -6130,88 +5891,28 @@ async function startMultiLoginContainer(userId) {
       if (!sourceFile) {
         console.warn(`⚠️  [多开登录] 未找到任何 session 文件，多开容器可能需要重新登录`);
       } else {
-        // 迁移 session 文件到 volume
+        // 直接复制文件到目标目录
         try {
-          // 使用临时容器将 session 文件复制到 volume
-          const copyContainerName = `tg_session_copy_${Date.now()}`;
-          const copyContainer = await docker.createContainer({
-            Image: alpineImage,
-            name: copyContainerName,
-            Cmd: ['sh', '-c', 'sleep 3600'],
-            HostConfig: {
-              Binds: [
-                `${path.dirname(sourceFile)}:/old_session:ro`,
-                `${sessionVolumeName}:/tmp/session_volume`
-              ]
-            }
-          });
-          
-          await copyContainer.start();
-          
-          // 复制文件到 volume
-          const copyExec = await copyContainer.exec({
-            Cmd: ['sh', '-c', `cp /old_session/${path.basename(sourceFile)} /tmp/session_volume/${volumeSessionFileName}`],
-            AttachStdout: true,
-            AttachStderr: true
-          });
-          
-          const copyStream = await copyExec.start({ hijack: true, stdin: false });
-          await new Promise((resolve) => {
-            copyStream.on('end', resolve);
-          });
-          
-          await copyContainer.stop();
-          await copyContainer.remove();
-          
-          console.log(`✅ [多开登录] 已迁移session文件到 volume: ${path.basename(sourceFile)} -> ${volumeSessionFileName}`);
+          fs.copyFileSync(sourceFile, sessionFile);
+          console.log(`✅ [多开登录] 已迁移 session 文件: ${path.basename(sourceFile)} -> ${sessionFileName}`);
           
           // 验证文件是否成功复制
-          try {
-            const verifyContainer = await docker.createContainer({
-              Image: alpineImage,
-              name: `tg_session_verify_${Date.now()}`,
-              Cmd: ['sh', '-c', 'sleep 1'],
-              HostConfig: {
-                Binds: [
-                  `${sessionVolumeName}:/tmp/session_volume`
-                ]
-              }
-            });
-            
-            await verifyContainer.start();
-            
-            const verifyExec = await verifyContainer.exec({
-              Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "OK" || echo "FAIL"`],
-              AttachStdout: true,
-              AttachStderr: true
-            });
-            
-            const verifyStream = await verifyExec.start({ hijack: true, stdin: false });
-            let verifyOutput = '';
-            await new Promise((resolve) => {
-              verifyStream.on('data', (chunk) => {
-                verifyOutput += chunk.toString();
-              });
-              verifyStream.on('end', resolve);
-            });
-            
-            await verifyContainer.stop();
-            await verifyContainer.remove();
-            
-            if (verifyOutput.trim().includes('OK')) {
-              console.log(`✅ [多开登录] 验证成功：session 文件已在 volume 中`);
+          if (fs.existsSync(sessionFile)) {
+            const stats = fs.statSync(sessionFile);
+            if (stats.isFile() && stats.size > 0) {
+              console.log(`✅ [多开登录] 验证成功：session 文件已存在 (大小: ${stats.size} 字节)`);
             } else {
-              console.warn(`⚠️  [多开登录] 验证失败：session 文件可能未正确复制到 volume`);
+              console.warn(`⚠️  [多开登录] 验证失败：session 文件大小异常`);
             }
-          } catch (verifyError) {
-            console.warn(`⚠️  [多开登录] 验证 session 文件失败: ${verifyError.message}`);
+          } else {
+            console.warn(`⚠️  [多开登录] 验证失败：session 文件不存在`);
           }
         } catch (migrateError) {
-          console.warn(`⚠️  [多开登录] 迁移session文件到 volume 失败: ${migrateError.message}`);
+          console.warn(`⚠️  [多开登录] 迁移 session 文件失败: ${migrateError.message}`);
         }
       }
     } else {
-      console.log(`✅ [多开登录] Volume 中已存在 session 文件，跳过迁移`);
+      console.log(`✅ [多开登录] 目录中已存在 session 文件，跳过迁移`);
     }
     
     // 检查容器是否已存在
@@ -6281,10 +5982,10 @@ async function startMultiLoginContainer(userId) {
             break;
           }
           
-          if (mount.Destination === '/app/session' || mount.Destination === '/app/session_data' || mount.Destination === '/tmp/session_volume') {
-            // 检查挂载目标路径是否正确（应该是 /tmp/session_volume，然后通过符号链接到 /app/session_data）
-            if (mount.Destination !== '/tmp/session_volume' && mount.Destination !== '/app/session_data') {
-              console.warn(`⚠️  [多开登录] 检测到容器使用错误的挂载路径: ${mount.Destination} (应该是 /tmp/session_volume)`);
+          if (mount.Destination === '/app/session' || mount.Destination === '/app/session_data' || mount.Destination === '/tmp/session_volume' || mount.Destination === sessionContainerPath) {
+            // 检查挂载目标路径是否正确（应该是 /opt/telegram-monitor/data/session）
+            if (mount.Destination !== sessionContainerPath) {
+              console.warn(`⚠️  [多开登录] 检测到容器使用错误的挂载路径: ${mount.Destination} (应该是 ${sessionContainerPath})`);
               console.log(`🗑️  [多开登录] 将删除旧容器并重新创建...`);
               try {
                 if (containerInfo.State.Running) {
@@ -6299,17 +6000,14 @@ async function startMultiLoginContainer(userId) {
               }
               break;
             }
-            // 检查是否使用 volume（volume 的 Source 路径通常包含 /var/lib/docker/volumes/）
-            const isVolume = mount.Source && mount.Source.includes('/var/lib/docker/volumes/');
-            // 检查是否是错误的 bind mount（如 /data/session 或 /opt/telegram-monitor/data/session）
-            const isWrongBindMount = mount.Source && (
-              mount.Source.startsWith('/data/') || 
-              mount.Source === '/data/session' ||
-              mount.Source.includes('/opt/telegram-monitor/data/session')
+            // 检查是否使用正确的目录挂载（Source 应该是宿主机路径）
+            const isCorrectBindMount = mount.Source && (
+              mount.Source === sessionHostPath ||
+              mount.Source.includes('data/session')
             );
             
-            if (!isVolume || isWrongBindMount) {
-              console.warn(`⚠️  [多开登录] 检测到容器使用错误的挂载方式: ${mount.Source} (类型: ${isVolume ? 'volume' : 'bind mount'})`);
+            if (!isCorrectBindMount) {
+              console.warn(`⚠️  [多开登录] 检测到容器使用错误的挂载方式: ${mount.Source} (应该是 ${sessionHostPath})`);
               console.log(`🗑️  [多开登录] 将删除旧容器并重新创建...`);
               try {
                 if (containerInfo.State.Running) {
@@ -6386,58 +6084,28 @@ async function startMultiLoginContainer(userId) {
       const oldSessionFile2 = path.join(sessionDir1, `telegram_${userId}.session`);
       const oldSessionFile3 = path.join(sessionDir2, 'telegram.session');
       const oldSessionFile4 = path.join(sessionDir2, `telegram_${userId}.session`);
-      const volumeSessionFileName = `user_${userId}.session`;
+      const targetSessionFile = path.join(sessionHostPath, `user_${userId}.session`);
       
-      // 检查 volume 中是否已有 session 文件
-      const tempContainerName = `tg_session_check_${Date.now()}`;
-      let sessionExistsInVolume = false;
+      // 直接检查本地目录中是否已有 session 文件
+      let sessionExists = false;
       
-      console.log(`🔍 [多开登录] 检查 volume 中是否存在 session 文件: ${volumeSessionFileName}`);
+      console.log(`🔍 [多开登录] 检查目录中是否存在 session 文件: ${targetSessionFile}`);
       
-      try {
-        const tempImage = await getTempContainerImage(docker);
-        
-        // 创建临时容器检查 volume 中是否有 session 文件
-        const tempContainer = await docker.createContainer({
-          Image: tempImage,
-          name: tempContainerName,
-          Cmd: ['sh', '-c', 'sleep 1'],
-          HostConfig: {
-            Binds: [
-              `${sessionVolumeName}:/tmp/session_volume`
-            ]
+      if (fs.existsSync(targetSessionFile)) {
+        try {
+          const stats = fs.statSync(targetSessionFile);
+          if (stats.isFile() && stats.size > 0) {
+            sessionExists = true;
+            console.log(`✅ [多开登录] Session 文件已存在: ${targetSessionFile} (大小: ${stats.size} 字节)`);
           }
-        });
-        
-        await tempContainer.start();
-        
-        const exec = await tempContainer.exec({
-          Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "exists" || echo "not_exists"`],
-          AttachStdout: true,
-          AttachStderr: true
-        });
-        
-        const stream = await exec.start({ hijack: true, stdin: false });
-        let output = '';
-        await new Promise((resolve) => {
-          stream.on('data', (chunk) => {
-            output += chunk.toString();
-          });
-          stream.on('end', resolve);
-        });
-        
-        sessionExistsInVolume = output.trim().includes('exists');
-        console.log(`🔍 [多开登录] Volume 检查结果: ${sessionExistsInVolume ? '已存在' : '不存在'} (输出: ${output.trim()})`);
-        
-        await tempContainer.stop();
-        await tempContainer.remove();
-      } catch (checkError) {
-        console.warn(`⚠️  [多开登录] 检查 volume 中的 session 文件失败: ${checkError.message}`);
+        } catch (err) {
+          console.warn(`⚠️  [多开登录] 无法读取 session 文件: ${err.message}`);
+        }
       }
       
-      // 如果 volume 中没有 session 文件，且宿主机上有旧文件，则迁移
-      if (!sessionExistsInVolume) {
-        console.log(`🔍 [多开登录] Volume 中没有 session 文件，开始查找源文件...`);
+      // 如果目录中没有 session 文件，且宿主机上有旧文件，则迁移
+      if (!sessionExists) {
+        console.log(`🔍 [多开登录] 目录中没有 session 文件，开始查找源文件...`);
         let sourceFile = null;
         // 按优先级查找 session 文件
         console.log(`🔍 [多开登录] 检查路径1: ${oldSessionFile2} (存在: ${fs.existsSync(oldSessionFile2)})`);
@@ -6491,40 +6159,23 @@ async function startMultiLoginContainer(userId) {
         
         if (sourceFile) {
           try {
-            // 使用临时容器将 session 文件复制到 volume
-            const copyContainerName = `tg_session_copy_${Date.now()}`;
-            const copyContainer = await docker.createContainer({
-              Image: alpineImage,
-              name: copyContainerName,
-              Cmd: ['sh', '-c', 'sleep 3600'],
-              HostConfig: {
-                Binds: [
-                  `${path.dirname(sourceFile)}:/old_session:ro`,
-                  `${sessionVolumeName}:/tmp/session_volume`
-                ]
+            // 直接复制文件到目标目录
+            fs.copyFileSync(sourceFile, targetSessionFile);
+            console.log(`✅ [多开登录] 已迁移 session 文件: ${path.basename(sourceFile)} -> user_${userId}.session`);
+            
+            // 验证文件是否成功复制
+            if (fs.existsSync(targetSessionFile)) {
+              const stats = fs.statSync(targetSessionFile);
+              if (stats.isFile() && stats.size > 0) {
+                console.log(`✅ [多开登录] 验证成功：session 文件已存在 (大小: ${stats.size} 字节)`);
+              } else {
+                console.warn(`⚠️  [多开登录] 验证失败：session 文件大小异常`);
               }
-            });
-            
-            await copyContainer.start();
-            
-            // 复制文件到 volume
-            const copyExec = await copyContainer.exec({
-              Cmd: ['sh', '-c', `cp /old_session/${path.basename(sourceFile)} /tmp/session_volume/${volumeSessionFileName}`],
-              AttachStdout: true,
-              AttachStderr: true
-            });
-            
-            const copyStream = await copyExec.start({ hijack: true, stdin: false });
-            await new Promise((resolve) => {
-              copyStream.on('end', resolve);
-            });
-            
-            await copyContainer.stop();
-            await copyContainer.remove();
-            
-            console.log(`📦 [多开登录] 已迁移session文件到 volume: ${path.basename(sourceFile)} -> ${volumeSessionFileName}`);
+            } else {
+              console.warn(`⚠️  [多开登录] 验证失败：session 文件不存在`);
+            }
           } catch (migrateError) {
-            console.warn(`⚠️  [多开登录] 迁移session文件到 volume 失败: ${migrateError.message}`);
+            console.warn(`⚠️  [多开登录] 迁移 session 文件失败: ${migrateError.message}`);
           }
         }
       }
@@ -6538,11 +6189,11 @@ async function startMultiLoginContainer(userId) {
       const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
       
       console.log(`📂 [多开登录] 使用项目根目录: ${projectRoot}`);
-      console.log(`📂 [多开登录] 挂载路径: config=${hostConfigPath}, session=volume:${sessionVolumeName}, logs=${hostLogsPath}`);
+      console.log(`📂 [多开登录] 挂载路径: config=${hostConfigPath}, session=${sessionHostPath}:${sessionContainerPath}:rw, logs=${hostLogsPath}`);
       
       // 创建容器
       // 注意：代码在镜像中（通过 Dockerfile COPY），不需要挂载代码目录
-      // 只挂载配置文件、session volume 和 logs 目录
+      // 只挂载配置文件、session 目录和 logs 目录
       // 配置文件挂载到 /app/config_${userId}.json，通过 CONFIG_PATH 环境变量指定
       container = await docker.createContainer({
         Image: containerImage,
@@ -6551,7 +6202,7 @@ async function startMultiLoginContainer(userId) {
         HostConfig: {
           Binds: [
             `${hostConfigPath}:/app/config_${userId}.json:ro`,
-            `${sessionVolumeName}:/tmp/session_volume`,
+            `${sessionHostPath}:${sessionContainerPath}:rw`,
             `${hostLogsPath}:/app/logs:rw`
           ],
           NetworkMode: networkName,
@@ -6605,7 +6256,7 @@ async function startMultiLoginContainer(userId) {
               HostConfig: {
                 Binds: [
                   `${hostConfigPath}:/app/config_${userId}.json:ro`,
-                  `${sessionVolumeName}:/tmp/session_volume`,
+                  `${sessionHostPath}:${sessionContainerPath}:rw`,
                   `${hostLogsPath}:/app/logs:rw`
                 ],
                 NetworkMode: networkName,
@@ -6965,10 +6616,10 @@ const CACHE_TTL = 30000; // 缓存30秒（从10秒增加到30秒，减少检查�
 const userConfigCache = new Map();
 const CONFIG_CACHE_TTL = 60000; // 配置缓存60秒
 
-// 获取用户的 session 路径（统一使用 volume 路径）
+// 获取用户的 session 路径（使用目录挂载方式）
 async function getSessionPath(userId) {
-  // 统一使用 volume 路径
-  return `/tmp/session_volume/user_${userId}`;
+  // 使用目录挂载方式
+  return `/opt/telegram-monitor/data/session/user_${userId}`;
 }
 
 // 检查 Telegram 登录状态（统一使用 volume 路径）
@@ -6987,8 +6638,8 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       }
     }
     
-    // 统一使用 volume 路径检查 session 文件
-    const sessionPath = `/tmp/session_volume/user_${userId}`;
+    // 使用目录挂载方式检查 session 文件
+    const sessionPath = `/opt/telegram-monitor/data/session/user_${userId}`;
     
     // 先检查缓存中是否已经设置为未登录（删除凭证后立即设置的状态）
     const cacheKey = `login_status_${userId}`;
@@ -7503,8 +7154,9 @@ app.post('/api/telegram/login/send-code', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'API 凭证格式无效' });
     }
     
-    // 统一使用 volume 路径
-    const sessionPath = `/tmp/session_volume/user_${userId}`;
+    // 使用目录挂载方式，统一路径：/opt/telegram-monitor/data/session/{SESSION_PREFIX}
+    // 注意：SESSION_PREFIX 应该通过环境变量传递给容器，这里使用 user_${userId} 作为默认值
+    const sessionPath = `/opt/telegram-monitor/data/session/user_${userId}`;
     
     try {
       // 使用安全的脚本调用方式，首次登录时创建可复用的临时容器
@@ -7623,8 +7275,9 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'API 凭证格式无效' });
     }
     
-    // 统一使用 volume 路径
-    const sessionPath = `/tmp/session_volume/user_${userId}`;
+    // 使用目录挂载方式，统一路径：/opt/telegram-monitor/data/session/{SESSION_PREFIX}
+    // 注意：SESSION_PREFIX 应该通过环境变量传递给容器，这里使用 user_${userId} 作为默认值
+    const sessionPath = `/opt/telegram-monitor/data/session/user_${userId}`;
     
     try {
       // 使用安全的脚本调用方式，复用已创建的临时容器（不创建新容器）
