@@ -5696,21 +5696,40 @@ async function startMultiLoginContainer(userId) {
     
     const containerName = `tg_listener_${userId}`;
     
-    // 查找正确的网络名称（docker-compose 可能使用项目前缀）
-    let networkName = 'tg-network';
+    // 查找正确的网络名称（从主容器 tg_listener 获取）
+    let networkName = 'telegram-monitor_tg-network'; // 默认使用 docker-compose 创建的网络
     try {
-      const networks = await docker.listNetworks();
-      // 查找包含 'tg-network' 的网络
-      const tgNetwork = networks.find(n => 
-        n.Name === 'tg-network' || 
-        n.Name === 'telegram-monitor_tg-network' ||
-        n.Name.endsWith('_tg-network')
-      );
-      if (tgNetwork) {
-        networkName = tgNetwork.Name;
-        console.log(`🔗 [多开登录] 使用网络: ${networkName}`);
-      } else {
-        console.warn(`⚠️  [多开登录] 未找到 tg-network，使用默认网络名称: ${networkName}`);
+      // 首先尝试从主容器获取网络信息
+      try {
+        const mainContainer = docker.getContainer('tg_listener');
+        const mainContainerInfo = await mainContainer.inspect();
+        if (mainContainerInfo.NetworkSettings && mainContainerInfo.NetworkSettings.Networks) {
+          const networks = Object.keys(mainContainerInfo.NetworkSettings.Networks);
+          if (networks.length > 0) {
+            // 优先使用包含 'telegram-monitor' 或 '_tg-network' 的网络
+            const preferredNetwork = networks.find(n => 
+              n.includes('telegram-monitor') || n.includes('_tg-network')
+            ) || networks[0];
+            networkName = preferredNetwork;
+            console.log(`🔗 [多开登录] 从主容器获取网络: ${networkName}`);
+          }
+        }
+      } catch (mainContainerError) {
+        // 主容器不存在，尝试查找网络（优先查找 docker-compose 创建的网络）
+        const networks = await docker.listNetworks();
+        const tgNetwork = networks.find(n => 
+          n.Name === 'telegram-monitor_tg-network' ||
+          n.Name.includes('telegram-monitor') && n.Name.includes('tg-network')
+        ) || networks.find(n => 
+          n.Name === 'tg-network' || 
+          n.Name.endsWith('_tg-network')
+        );
+        if (tgNetwork) {
+          networkName = tgNetwork.Name;
+          console.log(`🔗 [多开登录] 从网络列表获取网络: ${networkName}`);
+        } else {
+          console.warn(`⚠️  [多开登录] 未找到 tg-network，使用默认网络名称: ${networkName}`);
+        }
       }
     } catch (netError) {
       console.warn(`⚠️  [多开登录] 查找网络失败: ${netError.message}，使用默认网络名称: ${networkName}`);
@@ -6289,11 +6308,6 @@ async function startMultiLoginContainer(userId) {
           ],
           NetworkMode: networkName,
           RestartPolicy: { Name: 'unless-stopped' }
-        },
-        NetworkingConfig: {
-          EndpointsConfig: {
-            [networkName]: {}
-          }
         }
       });
       
@@ -6348,11 +6362,6 @@ async function startMultiLoginContainer(userId) {
                 ],
                 NetworkMode: networkName,
                 RestartPolicy: { Name: 'unless-stopped' }
-              },
-              NetworkingConfig: {
-                EndpointsConfig: {
-                  [networkName]: {}
-                }
               }
             });
             console.log(`✅ [多开登录] 已重新创建容器 ${containerName}`);
@@ -6375,6 +6384,18 @@ async function startMultiLoginContainer(userId) {
         const finalInfo = await container.inspect();
         if (finalInfo.State.Running) {
           console.log(`✅ [多开登录] 容器 ${containerName} 运行正常`);
+          
+          // 验证网络连接
+          if (finalInfo.NetworkSettings && finalInfo.NetworkSettings.Networks) {
+            const connectedNetworks = Object.keys(finalInfo.NetworkSettings.Networks);
+            console.log(`🔗 [多开登录] 容器已连接到网络: ${connectedNetworks.join(', ')}`);
+            if (!connectedNetworks.includes(networkName) && connectedNetworks.length > 0) {
+              console.warn(`⚠️  [多开登录] 容器未连接到预期网络 ${networkName}，实际网络: ${connectedNetworks[0]}`);
+            }
+          } else {
+            console.warn(`⚠️  [多开登录] 容器网络配置异常，无法验证网络连接`);
+          }
+          
           // 检查容器日志，确认是否成功加载 session
           const logs = await container.logs({
             stdout: true,
