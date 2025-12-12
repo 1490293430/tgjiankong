@@ -4398,13 +4398,24 @@ async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHost
   
   // 确保 volume 存在
   const volumeName = 'tg_session';
+  console.log(`🔍 [临时容器] 检查 volume: ${volumeName}`);
   try {
-    await getOrCreateSessionVolume(docker);
+    const volumeInfo = await getOrCreateSessionVolume(docker);
+    console.log(`✅ [临时容器] Volume ${volumeName} 已就绪`);
+    if (volumeInfo && volumeInfo.Mountpoint) {
+      console.log(`📂 [临时容器] Volume 挂载点: ${volumeInfo.Mountpoint}`);
+    }
   } catch (e) {
-    console.warn(`⚠️  创建 volume 失败: ${e.message}`);
+    console.error(`❌ [临时容器] 创建 volume 失败: ${e.message}`);
+    throw e;
   }
   
   const containerName = `tg_login_${userId}_${Date.now()}`;
+  
+  console.log(`🔨 [临时容器] 创建临时登录容器: ${containerName}`);
+  console.log(`🔨 [临时容器] 使用镜像: ${containerImage}`);
+  console.log(`🔨 [临时容器] Volume 挂载: ${volumeName}:/tmp/session_volume`);
+  console.log(`🔨 [临时容器] Config 挂载: ${configHostPath}:/app/config.json:ro`);
   
   // 创建容器配置（长期运行，用于多次执行命令）
   // 统一使用 volume 挂载 session
@@ -4429,11 +4440,35 @@ async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHost
   
   // 创建容器
   const container = await docker.createContainer(containerConfig);
+  console.log(`✅ [临时容器] 容器已创建`);
   
   // 启动容器
   await container.start();
+  console.log(`✅ [临时容器] 容器已启动`);
   
-  console.log(`✅ 创建临时登录容器: ${containerName} (使用 volume: ${volumeName})`);
+  // 验证 volume 挂载
+  try {
+    const verifyExec = await container.exec({
+      Cmd: ['sh', '-c', 'test -d /tmp/session_volume && ls -la /tmp/session_volume/ || echo "volume未挂载"'],
+      AttachStdout: true,
+      AttachStderr: true
+    });
+    
+    const verifyStream = await verifyExec.start({ hijack: true, stdin: false });
+    let verifyOutput = '';
+    verifyStream.on('data', (chunk) => {
+      verifyOutput += chunk.toString();
+    });
+    await new Promise((resolve) => {
+      verifyStream.on('end', resolve);
+    });
+    
+    console.log(`🔍 [临时容器] Volume 挂载验证:\n${verifyOutput}`);
+  } catch (verifyError) {
+    console.warn(`⚠️  [临时容器] Volume 挂载验证失败: ${verifyError.message}`);
+  }
+  
+  console.log(`✅ [临时容器] 创建临时登录容器: ${containerName} (使用 volume: ${volumeName})`);
   
   // 保存容器信息
   tempLoginContainers.set(userId, {
@@ -4456,8 +4491,11 @@ async function checkSessionFileInVolume(userId) {
     const cacheKey = `volume_session_${userId}`;
     const cached = sessionFileCache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp) < SESSION_CACHE_TTL) {
+      console.log(`📋 [检查Session] 使用缓存结果: ${cached.exists ? '存在' : '不存在'}`);
       return cached.exists;
     }
+    
+    console.log(`🔍 [检查Session] 开始检查用户 ${userId} 的 session 文件...`);
     
     const Docker = require('dockerode');
     const dockerSocketPaths = [
@@ -4471,6 +4509,7 @@ async function checkSessionFileInVolume(userId) {
         try {
           docker = new Docker({ socketPath });
           await docker.ping();
+          console.log(`✅ [检查Session] Docker 连接成功: ${socketPath}`);
           break;
         } catch (e) {
           // 继续尝试下一个路径
@@ -4479,7 +4518,7 @@ async function checkSessionFileInVolume(userId) {
     }
     
     if (!docker) {
-      console.warn('⚠️  无法连接到 Docker，无法检查 volume 中的 session 文件');
+      console.warn('⚠️  [检查Session] 无法连接到 Docker，无法检查 volume 中的 session 文件');
       return false;
     }
     
@@ -4488,19 +4527,26 @@ async function checkSessionFileInVolume(userId) {
     let volume = null;
     try {
       volume = docker.getVolume(volumeName);
-      await volume.inspect();
+      const volumeInfo = await volume.inspect();
+      console.log(`✅ [检查Session] Volume ${volumeName} 存在`);
+      console.log(`📂 [检查Session] Volume 挂载点: ${volumeInfo.Mountpoint || 'N/A'}`);
     } catch (e) {
-      // volume 不存在
+      console.error(`❌ [检查Session] Volume ${volumeName} 不存在: ${e.message}`);
       sessionFileCache.set(cacheKey, { exists: false, timestamp: Date.now() });
       return false;
     }
     
     // 使用临时容器检查 volume 中的 session 文件
     const volumeSessionFileName = `user_${userId}.session`;
+    const volumeJournalFileName = `user_${userId}.session-journal`;
     const tempContainerName = `tg_session_check_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    console.log(`🔍 [检查Session] 检查文件: ${volumeSessionFileName}`);
+    console.log(`🔍 [检查Session] 临时容器: ${tempContainerName}`);
     
     try {
       const tempImage = await getTempContainerImage(docker);
+      console.log(`✅ [检查Session] 使用镜像: ${tempImage}`);
       
       const tempContainer = await docker.createContainer({
         Image: tempImage,
@@ -4514,23 +4560,65 @@ async function checkSessionFileInVolume(userId) {
       });
       
       await tempContainer.start();
+      console.log(`✅ [检查Session] 临时容器已启动`);
       
+      // 先列出目录内容
+      const listExec = await tempContainer.exec({
+        Cmd: ['sh', '-c', 'ls -la /tmp/session_volume/ 2>&1 || echo "目录不存在或无法访问"'],
+        AttachStdout: true,
+        AttachStderr: true
+      });
+      
+      const listStream = await listExec.start({ hijack: true, stdin: false });
+      let listOutput = '';
+      listStream.on('data', (chunk) => {
+        listOutput += chunk.toString();
+      });
+      await new Promise((resolve) => {
+        listStream.on('end', resolve);
+      });
+      
+      console.log(`📂 [检查Session] Volume 目录内容:\n${listOutput}`);
+      
+      // 检查 session 文件
       const exec = await tempContainer.exec({
-        Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "exists" || echo "not_exists"`],
+        Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && stat /tmp/session_volume/${volumeSessionFileName} || echo "文件不存在"`],
         AttachStdout: true,
         AttachStderr: true
       });
       
       const stream = await exec.start({ hijack: true, stdin: false });
       let output = '';
+      stream.on('data', (chunk) => {
+        output += chunk.toString();
+      });
       await new Promise((resolve) => {
-        stream.on('data', (chunk) => {
-          output += chunk.toString();
-        });
         stream.on('end', resolve);
       });
       
-      const exists = output.trim().includes('exists');
+      console.log(`📄 [检查Session] Session 文件检查结果:\n${output}`);
+      
+      // 检查 journal 文件
+      const journalExec = await tempContainer.exec({
+        Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeJournalFileName} && echo "journal_exists" || echo "journal_not_exists"`],
+        AttachStdout: true,
+        AttachStderr: true
+      });
+      
+      const journalStream = await journalExec.start({ hijack: true, stdin: false });
+      let journalOutput = '';
+      journalStream.on('data', (chunk) => {
+        journalOutput += chunk.toString();
+      });
+      await new Promise((resolve) => {
+        journalStream.on('end', resolve);
+      });
+      
+      console.log(`📄 [检查Session] Journal 文件检查结果: ${journalOutput.trim()}`);
+      
+      const exists = output.trim().includes('File:') || output.trim().includes('文件:');
+      
+      console.log(`📊 [检查Session] 最终结果: ${exists ? '文件存在' : '文件不存在'}`);
       
       await tempContainer.stop();
       await tempContainer.remove();
@@ -4539,12 +4627,14 @@ async function checkSessionFileInVolume(userId) {
       sessionFileCache.set(cacheKey, { exists, timestamp: Date.now() });
       return exists;
     } catch (checkError) {
-      console.warn(`⚠️  检查 volume 中的 session 文件失败: ${checkError.message}`);
+      console.error(`❌ [检查Session] 检查 volume 中的 session 文件失败: ${checkError.message}`);
+      console.error(`❌ [检查Session] 错误堆栈: ${checkError.stack}`);
       sessionFileCache.set(cacheKey, { exists: false, timestamp: Date.now() });
       return false;
     }
   } catch (error) {
-    console.error('检查 volume session 文件失败:', error);
+    console.error('❌ [检查Session] 检查 volume session 文件失败:', error);
+    console.error('❌ [检查Session] 错误堆栈:', error.stack);
     return false;
   }
 }
@@ -5034,6 +5124,11 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
     }
     
     // 创建新的一次性容器（统一使用 volume）
+    console.log(`🐳 [登录脚本] 创建临时容器: ${tempContainerName}`);
+    console.log(`🐳 [登录脚本] 使用镜像: ${containerImage}`);
+    console.log(`🐳 [登录脚本] Volume 挂载: ${volumeName}:/tmp/session_volume`);
+    console.log(`🐳 [登录脚本] Config 挂载: ${configHostPath}:/app/config.json:ro`);
+    
     container = await docker.createContainer({
       Image: containerImage,
       name: tempContainerName,
@@ -5054,6 +5149,8 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
       },
       NetworkMode: networkName || 'bridge' // 登录脚本不需要访问内部网络
     });
+    
+    console.log(`✅ [登录脚本] 容器已创建`);
     
     // 启动容器
     await container.start();
@@ -5601,23 +5698,30 @@ async function getOrCreateSessionVolume(docker) {
   
   try {
     const volume = docker.getVolume(volumeName);
-    await volume.inspect();
-    console.log(`✅ [多开登录] Volume ${volumeName} 已存在`);
-    return volumeName;
+    const volumeInfo = await volume.inspect();
+    console.log(`✅ [Volume] Volume ${volumeName} 已存在`);
+    if (volumeInfo && volumeInfo.Mountpoint) {
+      console.log(`📂 [Volume] Volume 挂载点: ${volumeInfo.Mountpoint}`);
+    }
+    return volumeInfo; // 返回 volume 信息，而不仅仅是名称
   } catch (e) {
     // Volume 不存在，创建它
-    console.log(`📦 [多开登录] 创建 Volume ${volumeName}...`);
+    console.log(`📦 [Volume] 创建 Volume ${volumeName}...`);
     try {
       const volume = await docker.createVolume({
         Name: volumeName,
         Driver: 'local'
       });
-      console.log(`✅ [多开登录] 已创建 Volume ${volumeName}`);
+      const volumeInfo = await volume.inspect();
+      console.log(`✅ [Volume] 已创建 Volume ${volumeName}`);
+      if (volumeInfo && volumeInfo.Mountpoint) {
+        console.log(`📂 [Volume] Volume 挂载点: ${volumeInfo.Mountpoint}`);
+      }
       
       // 迁移旧 session 文件到 volume
       await migrateSessionFilesToVolume(docker, volumeName);
       
-      return volumeName;
+      return volumeInfo; // 返回 volume 信息，而不仅仅是名称
     } catch (createError) {
       console.error(`❌ [多开登录] 创建 Volume 失败: ${createError.message}`);
       throw createError;
@@ -5766,7 +5870,8 @@ async function startMultiLoginContainer(userId) {
     }
     
     // 获取或创建 session volume
-    const sessionVolumeName = await getOrCreateSessionVolume(docker);
+    const sessionVolumeInfo = await getOrCreateSessionVolume(docker);
+    const sessionVolumeName = 'tg_session'; // volume 名称固定为 tg_session
     
     // 加载用户配置以获取 API_ID 和 API_HASH
     const userConfig = await loadUserConfig(userId.toString());
@@ -7438,6 +7543,9 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
       ], 0, true, userId, true); // allowCreateTemp=true, reuseContainer=true
       
       if (result.success) {
+        console.log(`✅ [登录验证] 登录脚本返回成功`);
+        console.log(`📁 [登录验证] Session 路径: ${sessionPath}`);
+        
         // 登录成功，清理临时容器
         await cleanupTempLoginContainer(userId);
         
@@ -7449,16 +7557,84 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
         loginStatusCache.delete(cacheKey);
         sessionFileCache.delete(volumeCacheKey);
         
+        // 立即检查 volume 中的文件（登录脚本应该已经保存）
+        console.log(`🔍 [登录验证] 立即检查 volume 中的 session 文件...`);
+        try {
+          const Docker = require('dockerode');
+          const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+          const volumeName = 'tg_session';
+          const volumeSessionFileName = `user_${userId}.session`;
+          const volumeJournalFileName = `user_${userId}.session-journal`;
+          
+          // 创建临时容器检查文件
+          const tempImage = await getTempContainerImage(docker);
+          const checkContainerName = `tg_session_check_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          
+          const checkContainer = await docker.createContainer({
+            Image: tempImage,
+            name: checkContainerName,
+            Cmd: ['sh', '-c', 'sleep 1'],
+            HostConfig: {
+              Binds: [`${volumeName}:/tmp/session_volume`]
+            }
+          });
+          
+          await checkContainer.start();
+          
+          // 列出 volume 中的所有文件
+          const listExec = await checkContainer.exec({
+            Cmd: ['sh', '-c', 'ls -la /tmp/session_volume/'],
+            AttachStdout: true,
+            AttachStderr: true
+          });
+          
+          const listStream = await listExec.start({ hijack: true, stdin: false });
+          let listOutput = '';
+          listStream.on('data', (chunk) => {
+            listOutput += chunk.toString();
+          });
+          await new Promise((resolve) => {
+            listStream.on('end', resolve);
+          });
+          
+          console.log(`📂 [登录验证] Volume 目录内容:\n${listOutput}`);
+          
+          // 检查 session 文件是否存在
+          const checkExec = await checkContainer.exec({
+            Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && stat /tmp/session_volume/${volumeSessionFileName} || echo "文件不存在"`],
+            AttachStdout: true,
+            AttachStderr: true
+          });
+          
+          const checkStream = await checkExec.start({ hijack: true, stdin: false });
+          let checkOutput = '';
+          checkStream.on('data', (chunk) => {
+            checkOutput += chunk.toString();
+          });
+          await new Promise((resolve) => {
+            checkStream.on('end', resolve);
+          });
+          
+          console.log(`📄 [登录验证] Session 文件检查结果:\n${checkOutput}`);
+          
+          await checkContainer.stop();
+          await checkContainer.remove();
+        } catch (checkError) {
+          console.error(`❌ [登录验证] 检查 volume 文件失败: ${checkError.message}`);
+        }
+        
         // 等待一小段时间确保 session 文件完全写入
+        console.log(`⏳ [登录验证] 等待 800ms 确保文件写入完成...`);
         await new Promise(resolve => setTimeout(resolve, 800));
         
         // 验证 session 文件是否已生成（统一使用 volume 路径）
         // 先清除缓存，强制重新检查
         sessionFileCache.delete(volumeCacheKey);
+        console.log(`🔍 [登录验证] 再次检查 session 文件是否存在...`);
         const sessionExists = await checkSessionFileInVolume(userId);
         
         if (sessionExists) {
-          console.log(`✅ Session 文件已确认存在: ${sessionPath}`);
+          console.log(`✅ [登录验证] Session 文件已确认存在: ${sessionPath}`);
           
           // 立即更新缓存为已登录状态
           loginStatusCache.set(cacheKey, {
@@ -7476,8 +7652,11 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
             timestamp: Date.now()
           });
           
-          console.log(`✅ 已更新登录状态缓存为已登录`);
+          console.log(`✅ [登录验证] 已更新登录状态缓存为已登录`);
         } else {
+          console.error(`❌ [登录验证] Session 文件不存在！路径: ${sessionPath}`);
+          console.error(`❌ [登录验证] 这可能表示文件保存失败，请检查日志`);
+          
           // 即使文件检查失败，也先更新缓存为已登录（因为登录脚本已返回成功）
           // 这样前端能立即显示已登录，后续检查会自动修正
           loginStatusCache.set(cacheKey, {
@@ -7490,7 +7669,7 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
             timestamp: Date.now()
           });
           
-          console.warn(`⚠️  Session 文件可能还未完全写入，但已更新缓存为已登录状态`);
+          console.warn(`⚠️  [登录验证] Session 文件可能还未完全写入，但已更新缓存为已登录状态`);
         }
         
         // Telegram 登录成功后，同步用户配置并重启 Telethon 服务

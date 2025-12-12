@@ -43,7 +43,26 @@ async def check_login_status(session_path, api_id, api_hash):
 
 async def send_code(phone, session_path, api_id, api_hash):
     """发送验证码"""
+    import json as json_module
+    import sys
+    import os
+    
+    # 添加详细日志到 stderr（不影响 JSON 输出）
+    def log_debug(msg):
+        print(f"[DEBUG] {msg}", file=sys.stderr, flush=True)
+    
     try:
+        log_debug(f"=== 发送验证码流程 ===")
+        log_debug(f"Session 路径: {session_path}")
+        log_debug(f"手机号: {phone}")
+        
+        # 检查目录和文件
+        session_dir = os.path.dirname(session_path)
+        log_debug(f"Session 目录: {session_dir}")
+        log_debug(f"目录是否存在: {os.path.exists(session_dir)}")
+        if os.path.exists(session_dir):
+            log_debug(f"目录内容: {os.listdir(session_dir)}")
+        
         client = TelegramClient(session_path, api_id, api_hash)
         await client.connect()
         
@@ -61,20 +80,26 @@ async def send_code(phone, session_path, api_id, api_hash):
             }))
             return
         
+        log_debug(f"发送验证码请求...")
         result = await client.send_code_request(phone)
         await client.disconnect()
+        log_debug(f"验证码已发送，phone_code_hash: {result.phone_code_hash}")
         
         print(json.dumps({
             'success': True,
             'phone_code_hash': result.phone_code_hash
         }))
     except FloodWaitError as e:
+        log_debug(f"请求过于频繁，需等待 {e.seconds} 秒")
         print(json.dumps({
             'success': False,
             'error': f'请求过于频繁，请等待 {e.seconds} 秒后重试',
             'flood_wait': e.seconds
         }))
     except Exception as e:
+        import traceback
+        log_debug(f"❌ 发送验证码失败: {str(e)}")
+        log_debug(f"错误堆栈: {traceback.format_exc()}")
         print(json.dumps({
             'success': False,
             'error': str(e)
@@ -82,14 +107,49 @@ async def send_code(phone, session_path, api_id, api_hash):
 
 async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, api_hash):
     """登录"""
+    import json as json_module
+    import sys
+    
+    # 添加详细日志到 stderr（不影响 JSON 输出）
+    def log_debug(msg):
+        print(f"[DEBUG] {msg}", file=sys.stderr, flush=True)
+    
     try:
+        log_debug(f"=== 开始登录流程 ===")
+        log_debug(f"Session 路径: {session_path}")
+        log_debug(f"API ID: {api_id}")
+        
+        # 检查登录前的文件状态
+        session_file = f"{session_path}.session"
+        session_journal = f"{session_path}.session-journal"
+        log_debug(f"预期 Session 文件: {session_file}")
+        log_debug(f"预期 Journal 文件: {session_journal}")
+        
+        # 检查目录是否存在
+        import os
+        session_dir = os.path.dirname(session_path)
+        log_debug(f"Session 目录: {session_dir}")
+        log_debug(f"目录是否存在: {os.path.exists(session_dir)}")
+        if os.path.exists(session_dir):
+            log_debug(f"目录权限: {oct(os.stat(session_dir).st_mode)}")
+            log_debug(f"目录内容: {os.listdir(session_dir)}")
+        
+        # 检查登录前文件是否存在
+        log_debug(f"登录前 Session 文件存在: {os.path.exists(session_file)}")
+        log_debug(f"登录前 Journal 文件存在: {os.path.exists(session_journal)}")
+        
+        log_debug(f"创建 TelegramClient...")
         client = TelegramClient(session_path, api_id, api_hash)
+        log_debug(f"连接 Telegram...")
         await client.connect()
         
         try:
+            log_debug(f"发送验证码进行登录...")
             await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
         except SessionPasswordNeededError:
+            log_debug(f"需要两步验证密码")
             if password:
+                log_debug(f"使用密码进行两步验证...")
                 await client.sign_in(password=password)
             else:
                 await client.disconnect()
@@ -100,8 +160,43 @@ async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, 
                 }))
                 return
         
+        log_debug(f"登录成功，获取用户信息...")
         me = await client.get_me()
+        log_debug(f"用户信息: {me.first_name} (ID: {me.id})")
+        
+        log_debug(f"断开连接...")
         await client.disconnect()
+        
+        # 等待一小段时间确保文件写入完成
+        import asyncio
+        await asyncio.sleep(0.5)
+        
+        # 检查登录后的文件状态
+        log_debug(f"=== 登录后文件检查 ===")
+        log_debug(f"登录后 Session 文件存在: {os.path.exists(session_file)}")
+        log_debug(f"登录后 Journal 文件存在: {os.path.exists(session_journal)}")
+        
+        if os.path.exists(session_file):
+            file_stat = os.stat(session_file)
+            log_debug(f"Session 文件大小: {file_stat.st_size} 字节")
+            log_debug(f"Session 文件权限: {oct(file_stat.st_mode)}")
+            log_debug(f"Session 文件修改时间: {file_stat.st_mtime}")
+        else:
+            log_debug(f"⚠️  Session 文件不存在！")
+            # 列出目录内容
+            if os.path.exists(session_dir):
+                log_debug(f"目录内容: {os.listdir(session_dir)}")
+        
+        if os.path.exists(session_journal):
+            log_debug(f"Journal 文件大小: {os.stat(session_journal).st_size} 字节")
+        
+        # 检查 volume 挂载点
+        log_debug(f"检查 /tmp/session_volume 目录...")
+        if os.path.exists('/tmp/session_volume'):
+            log_debug(f"/tmp/session_volume 存在")
+            log_debug(f"/tmp/session_volume 内容: {os.listdir('/tmp/session_volume')}")
+        else:
+            log_debug(f"⚠️  /tmp/session_volume 不存在！")
         
         print(json.dumps({
             'success': True,
@@ -114,6 +209,9 @@ async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, 
             }
         }))
     except Exception as e:
+        import traceback
+        log_debug(f"❌ 登录失败: {str(e)}")
+        log_debug(f"错误堆栈: {traceback.format_exc()}")
         print(json.dumps({
             'success': False,
             'error': str(e)

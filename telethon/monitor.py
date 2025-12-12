@@ -818,9 +818,10 @@ async def main():
             logger.error("⚠️  服务将退出，请完成登录后重启服务")
             logger.error("=" * 60)
             logger.error("")
-            # 使用 sys.exit(0) 正常退出
+            # 使用 sys.exit(1) 非正常退出，触发 on-failure 重启策略
+            # 但限制重启次数，避免无限重启
             import sys
-            sys.exit(0)
+            sys.exit(1)
 
     # 启动客户端（使用安全的方式避免交互式输入）
     try:
@@ -845,8 +846,9 @@ async def main():
             logger.error("⚠️  服务将退出，请完成登录后重启服务")
             logger.error("=" * 60)
             logger.error("")
+            # 使用 sys.exit(1) 非正常退出，触发 on-failure 重启策略
             import sys
-            sys.exit(0)
+            sys.exit(1)
         
         # 如果已授权，直接使用客户端（不需要重新启动）
         # 注意：如果已授权，client.start() 不会触发交互式输入
@@ -865,7 +867,7 @@ async def main():
         logger.error("   5. 登录成功后，重启 Telethon 服务：docker compose restart telethon")
         logger.error("=" * 60)
         import sys
-        sys.exit(0)
+        sys.exit(1)
     except Exception as e:
         logger.error("=" * 60)
         logger.error("❌ 启动 Telegram 客户端失败: %s", str(e))
@@ -877,7 +879,7 @@ async def main():
         logger.error("   5. 登录成功后，重启 Telethon 服务：docker compose restart telethon")
         logger.error("=" * 60)
         import sys
-        sys.exit(0)
+        sys.exit(1)
     
     client.add_event_handler(lambda e: message_handler(e, client), events.NewMessage())
     me = await client.get_me()

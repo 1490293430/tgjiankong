@@ -52,7 +52,7 @@ services:
   telethon:
     build: ./telethon
     container_name: tg_listener
-    restart: unless-stopped
+    restart: on-failure:5
     depends_on:
       - mongo
       - api
