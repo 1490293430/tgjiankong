@@ -121,7 +121,7 @@ const defaultConfig = {
   alert_keywords: [],
   alert_regex: [],
   alert_target: '',
-  log_all_messages: false,
+  log_all_messages: true,
   telegram: {
     api_id: 0,
     api_hash: ''
@@ -287,7 +287,7 @@ async function loadUserConfig(userId) {
       alert_keywords: [],
       alert_regex: [],
       alert_target: '',
-      log_all_messages: false,
+      log_all_messages: true,
       telegram: { api_id: 0, api_hash: '' },
       alert_actions: {
         telegram: true,
@@ -1314,7 +1314,7 @@ app.post('/api/config', authMiddleware, async (req, res) => {
               channels: Array.isArray(configObj.channels) ? configObj.channels : (configObj.channels || []),
               alert_keywords: alertKeywordsArray,
               alert_regex: Array.isArray(configObj.alert_regex) ? configObj.alert_regex : (configObj.alert_regex || []),
-              log_all_messages: configObj.log_all_messages || false,
+              log_all_messages: configObj.log_all_messages !== undefined ? configObj.log_all_messages : true,
               alert_target: configObj.alert_target || ''
             };
             
@@ -1358,7 +1358,7 @@ app.post('/api/config', authMiddleware, async (req, res) => {
         }, 1000);
       }
       
-      // 处理多开登录状态变化
+      // 处理多开登录状态变化和配置同步
       if (multiLoginStatusChanged) {
         try {
           const accountId = await getAccountId(userId);
@@ -1443,6 +1443,15 @@ app.post('/api/config', authMiddleware, async (req, res) => {
           }
         } catch (multiLoginError) {
           console.error(`❌ [配置保存] 处理多开登录状态变化失败: ${multiLoginError.message}`);
+        }
+      } else if (newMultiLoginEnabled) {
+        // 如果多开登录已启用，但配置有变化，需要同步更新多开容器的配置文件
+        console.log(`🔄 [配置保存] 多开登录已启用，同步更新多开容器配置...`);
+        try {
+          await syncUserConfigAndStartMultiLoginContainer(userId);
+          console.log(`✅ [配置保存] 多开容器配置已同步更新`);
+        } catch (syncError) {
+          console.warn(`⚠️  [配置保存] 同步多开容器配置失败（不影响配置保存）: ${syncError.message}`);
         }
       }
     });
@@ -2999,7 +3008,7 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
             alert_keywords: uc.alert_keywords || [],
             alert_regex: uc.alert_regex || [],
             alert_target: uc.alert_target || '',
-            log_all_messages: uc.log_all_messages || false,
+            log_all_messages: uc.log_all_messages !== undefined ? uc.log_all_messages : true,
             telegram: {
               api_id: uc.telegram?.api_id || 0,
               api_hash: uc.telegram?.api_hash ? '***已隐藏***' : ''
@@ -5310,7 +5319,7 @@ async function syncUserConfigAndRestartTelethon(userId) {
           channels: Array.isArray(configObj.channels) ? configObj.channels : (configObj.channels || []),
           alert_keywords: alertKeywordsArray,
           alert_regex: Array.isArray(configObj.alert_regex) ? configObj.alert_regex : (configObj.alert_regex || []),
-          log_all_messages: configObj.log_all_messages || false,
+          log_all_messages: configObj.log_all_messages !== undefined ? configObj.log_all_messages : true,
           alert_target: configObj.alert_target || ''
         };
         
@@ -5494,10 +5503,10 @@ async function syncUserConfigAndStartMultiLoginContainer(userId) {
     // 为每个用户创建独立的配置文件
     const userConfigPath = path.join(__dirname, `config_${userId}.json`);
     const userConfigData = {
-      // 注意：在多开模式下，不设置user_id，让monitor.py直接使用SESSION_PATH
-      // 因为monitor.py会检查user_id，如果存在会使用 SESSION_PATH_{user_id}
-      // 我们已经通过环境变量设置了USER_ID，所以不需要在配置文件中设置
-      // user_id: userId.toString(), // 多开模式下不设置，避免session路径重复
+      // 在多开模式下，设置 user_id 让 monitor.py 正确读取
+      // monitor.py 会使用 user_id 构建 session 文件名为 user_{user_id}
+      // 配合 SESSION_PREFIX='user' 和 USER_ID 环境变量，最终文件名为 user_{userId}
+      user_id: userId.toString(),
       keywords: Array.isArray(configObj.keywords) ? configObj.keywords : [],
       channels: Array.isArray(configObj.channels) ? configObj.channels : [],
       alert_keywords: Array.isArray(configObj.alert_keywords) ? configObj.alert_keywords : [],
@@ -5778,27 +5787,21 @@ async function startMultiLoginContainer(userId) {
     // 准备环境变量（提升到函数作用域，以便在错误处理中使用）
     // 注意：monitor.py的逻辑：
     // 1. active_user_id = cfg.get("user_id") or USER_ID
-    // 2. 如果active_user_id存在，session文件是 SESSION_PATH_{active_user_id}
-    // 3. 否则直接使用 SESSION_PATH
-    // 
-    // 单开模式（docker-compose.yml）：
-    //   - SESSION_PATH=/app/session/telegram
-    //   - 如果设置了user_id，文件是 /app/session/telegram_{userId}
-    //   - 实际文件：data/session/telegram.session 或 data/session/telegram_{userId}.session
+    // 2. 如果active_user_id存在，session文件是 SESSION_PREFIX_{active_user_id}
+    // 3. 否则直接使用 SESSION_PREFIX
     // 
     // 多开模式：
-    //   - 由于需要设置USER_ID来获取用户配置，active_user_id会是userId
-    //   - 如果SESSION_PATH=/app/session/user_${userId}，文件会是 /app/session/user_${userId}_${userId}
-    //   - 为了避免路径过长，我们设置SESSION_PATH=/app/session/user，这样文件是 /app/session/user_${userId}
+    //   - SESSION_PREFIX 应该设置为 "user"（固定值）
+    //   - USER_ID 设置为 userId
+    //   - monitor.py 会自动使用 user_{USER_ID} 作为 session 文件名
     //   - 实际文件：data/session/user_${userId}.session
     const envVars = {
       MONGO_URL: process.env.MONGO_URL || 'mongodb://mongo:27017/tglogs',
       API_URL: process.env.API_URL || 'http://api:3000',
       CONFIG_PATH: `/app/config_${userId}.json`,
-      // 多开模式：使用 SESSION_PREFIX 环境变量
-      // monitor.py 会使用 SESSION_PREFIX 构建 session 文件名
-      // session 文件是 /opt/telegram-monitor/data/session/{SESSION_PREFIX}.session
-      SESSION_PREFIX: `user_${userId}`,
+      // 多开模式：SESSION_PREFIX 固定为 "user"
+      // monitor.py 会根据 USER_ID 自动构建 session 文件名为 user_{USER_ID}
+      SESSION_PREFIX: 'user',
       // 从用户配置中读取 API_ID 和 API_HASH（配置文件已包含这些信息）
       // 如果配置文件中没有，则从环境变量读取（向后兼容）
       API_ID: (configObj.telegram && configObj.telegram.api_id) ? String(configObj.telegram.api_id) : (process.env.API_ID || '0'),

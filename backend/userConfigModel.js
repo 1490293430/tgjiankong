@@ -38,7 +38,7 @@ const userConfigSchema = new mongoose.Schema({
   },
   log_all_messages: {
     type: Boolean,
-    default: false
+    default: true
   },
   telegram: {
     api_id: {

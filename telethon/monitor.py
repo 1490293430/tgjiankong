@@ -119,7 +119,7 @@ def default_config():
         "alert_keywords": [],
         "alert_regex": [],
         "alert_target": "me",
-        "log_all_messages": False,
+        "log_all_messages": True,
         "ai_analysis": {
             "ai_trigger_enabled": False,
             "ai_trigger_users": []
@@ -567,7 +567,7 @@ async def message_handler(event, client):
         
         # use cached config only (no IO here)
         config = CONFIG_CACHE or default_config()
-        log_all = bool(config.get("log_all_messages", False))
+        log_all = bool(config.get("log_all_messages", True))
 
         text = event.raw_text or ""
         if not text:
