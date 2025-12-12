@@ -798,7 +798,38 @@ async def main():
         # Telethon 使用 .session 扩展名
         # 如果传入路径是 /app/session/telegram_xxx，实际文件是 /app/session/telegram_xxx.session
         session_path_with_ext = f"{session_file}.session"
+        
+        # 详细日志：检查文件路径和存在性
+        logger.info("🔍 [Session 检查] 开始检查 session 文件...")
+        logger.info("🔍 [Session 检查] 基础路径: %s", session_file)
+        logger.info("🔍 [Session 检查] 完整路径（带扩展名）: %s", session_path_with_ext)
+        logger.info("🔍 [Session 检查] 基础路径存在: %s", os.path.exists(session_file))
+        logger.info("🔍 [Session 检查] 完整路径存在: %s", os.path.exists(session_path_with_ext))
+        
+        # 如果目录存在，列出目录内容
+        session_dir = os.path.dirname(session_file)
+        if os.path.exists(session_dir):
+            logger.info("🔍 [Session 检查] Session 目录存在: %s", session_dir)
+            try:
+                dir_contents = os.listdir(session_dir)
+                logger.info("🔍 [Session 检查] 目录内容: %s", dir_contents)
+            except Exception as e:
+                logger.warning("🔍 [Session 检查] 无法列出目录内容: %s", e)
+        else:
+            logger.warning("🔍 [Session 检查] Session 目录不存在: %s", session_dir)
+        
+        # 如果文件存在，检查文件权限和大小
+        if os.path.exists(session_path_with_ext):
+            try:
+                file_stat = os.stat(session_path_with_ext)
+                logger.info("🔍 [Session 检查] Session 文件大小: %d 字节", file_stat.st_size)
+                logger.info("🔍 [Session 检查] Session 文件权限: %o", file_stat.st_mode & 0o777)
+                logger.info("🔍 [Session 检查] Session 文件修改时间: %s", datetime.fromtimestamp(file_stat.st_mtime))
+            except Exception as e:
+                logger.warning("🔍 [Session 检查] 无法获取文件信息: %s", e)
+        
         session_exists = os.path.exists(session_file) or os.path.exists(session_path_with_ext)
+        logger.info("🔍 [Session 检查] Session 文件存在性检查结果: %s", session_exists)
         
         if not session_exists:
             logger.error("")
@@ -807,7 +838,7 @@ async def main():
             logger.error("   预期路径: %s", session_file)
             logger.error("   或: %s", session_path_with_ext)
             logger.error("")
-            logger.error("📱 请通过 Web 界面完成 Telegram 首次登录：")
+            logger.error("📱 请先登录 Telegram 才能开始监控消息：")
             logger.error("   1. 访问 Web 界面")
             logger.error("   2. 进入 '设置' 标签")
             logger.error("   3. 点击 'Telegram 首次登录' 按钮")
@@ -825,17 +856,28 @@ async def main():
 
     # 启动客户端（使用安全的方式避免交互式输入）
     try:
+        logger.info("🔍 [客户端启动] 开始连接 Telegram 客户端...")
+        logger.info("🔍 [客户端启动] Session 文件路径: %s", session_file if session_file else "StringSession")
+        logger.info("🔍 [客户端启动] API_ID: %s", cfg_api_id)
+        logger.info("🔍 [客户端启动] API_HASH: %s", "已设置" if cfg_api_hash else "未设置")
+        
         # 先连接（不触发交互式输入）
+        logger.info("🔍 [客户端启动] 正在连接到 Telegram 服务器...")
         await client.connect()
+        logger.info("✅ [客户端启动] 已连接到 Telegram 服务器")
         
         # 检查是否已登录（如果未登录，不会触发交互式输入，只是返回 False）
-        if not await client.is_user_authorized():
+        logger.info("🔍 [授权检查] 检查用户是否已授权...")
+        is_authorized = await client.is_user_authorized()
+        logger.info("🔍 [授权检查] 授权状态: %s", is_authorized)
+        
+        if not is_authorized:
             await client.disconnect()
             logger.error("")
             logger.error("=" * 60)
             logger.error("❌ Telegram 客户端未授权，Session 文件无效或不存在")
             logger.error("")
-            logger.error("📱 请通过 Web 界面完成 Telegram 首次登录：")
+            logger.error("📱 请先登录 Telegram 才能开始监控消息：")
             logger.error("   1. 访问 Web 界面")
             logger.error("   2. 进入 '设置' 标签")
             logger.error("   3. 点击 'Telegram 首次登录' 按钮")
@@ -855,11 +897,13 @@ async def main():
         if not client.is_connected():
             await client.connect()
         await client.start()
-    except EOFError:
+    except EOFError as e:
         # 如果遇到 EOFError，说明尝试了交互式输入（session 无效或不存在）
         logger.error("=" * 60)
         logger.error("❌ Session 文件无效，无法启动服务（EOFError）")
-        logger.error("📱 请通过 Web 界面完成 Telegram 首次登录：")
+        logger.error("🔍 [错误详情] EOFError: %s", str(e))
+        logger.error("🔍 [错误详情] Session 文件路径: %s", session_file if session_file else "StringSession")
+        logger.error("📱 请先登录 Telegram 才能开始监控消息：")
         logger.error("   1. 访问 Web 界面")
         logger.error("   2. 进入 '设置' 标签")
         logger.error("   3. 点击 'Telegram 首次登录' 按钮")
@@ -871,7 +915,13 @@ async def main():
     except Exception as e:
         logger.error("=" * 60)
         logger.error("❌ 启动 Telegram 客户端失败: %s", str(e))
-        logger.error("📱 如果这是首次登录，请通过 Web 界面完成登录")
+        logger.error("🔍 [错误详情] 异常类型: %s", type(e).__name__)
+        logger.error("🔍 [错误详情] Session 文件路径: %s", session_file if session_file else "StringSession")
+        logger.error("🔍 [错误详情] API_ID: %s", cfg_api_id)
+        logger.error("🔍 [错误详情] API_HASH: %s", "已设置" if cfg_api_hash else "未设置")
+        import traceback
+        logger.error("🔍 [错误详情] 完整堆栈:\n%s", traceback.format_exc())
+        logger.error("📱 请先登录 Telegram 才能开始监控消息：")
         logger.error("   1. 访问 Web 界面")
         logger.error("   2. 进入 '设置' 标签")
         logger.error("   3. 点击 'Telegram 首次登录' 按钮")

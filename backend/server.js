@@ -856,13 +856,14 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
     loginStatusCache.delete(`login_status_${newUserId}`);
     console.log(`🗑️  已清除用户 ${oldUserId} 和 ${newUserId} 的登录状态缓存`);
     
-    // 切换用户后，检查并自动删除无效的 session 文件（异步执行，不阻塞响应）
+    // 切换用户后，检查 session 文件状态（异步执行，不阻塞响应）
+    // 注意：不再自动删除 session 文件，只做状态检测
     setTimeout(async () => {
       try {
         // 检查新用户的 session 文件是否存在
         const sessionExists = await checkSessionFileInVolume(newUserId);
         if (sessionExists) {
-          // 如果文件存在，验证它是否有效
+          // 如果文件存在，验证它是否有效（仅检测，不删除）
           const userConfig = await loadUserConfig(newUserId);
           const config = userConfig.toObject ? userConfig.toObject() : userConfig;
           const apiId = config.telegram?.api_id || 0;
@@ -883,93 +884,15 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
                 )
               ]);
               
-              // 如果验证失败（文件存在但无效），自动删除
-              // 注意：只有在明确验证失败（不是系统错误）时才删除
-              const isSwitchUserValidationError = checkResult && 
-                checkResult.success !== undefined &&
-                !checkResult.success &&
-                !checkResult.logged_in &&
-                !checkResult.error; // 没有错误信息
-              
-              if (isSwitchUserValidationError) {
-                console.warn(`⚠️  [切换用户] 检测到无效的 session 文件，自动删除: ${sessionPath}`);
-                // 调用删除凭证逻辑（只删除 volume 中的文件）
-                const Docker = require('dockerode');
-                const dockerSocketPaths = [
-                  '/var/run/docker.sock',
-                  process.env.DOCKER_HOST?.replace('unix://', '') || null
-                ].filter(Boolean);
-                
-                let docker = null;
-                for (const socketPath of dockerSocketPaths) {
-                  if (fs.existsSync(socketPath)) {
-                    try {
-                      docker = new Docker({ socketPath });
-                      await docker.ping();
-                      break;
-                    } catch (e) {
-                      // 继续尝试下一个路径
-                    }
-                  }
-                }
-                
-                if (docker) {
-                  const volumeName = 'tg_session';
-                  const volumeSessionFileName = `user_${newUserId}.session`;
-                  const volumeJournalFileName = `user_${newUserId}.session-journal`;
-                  
-                  try {
-                    const volume = docker.getVolume(volumeName);
-                    await volume.inspect();
-                    
-                    const tempImage = await getTempContainerImage(docker);
-                    const deleteContainerName = `tg_session_auto_delete_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-                    
-                    const deleteContainer = await docker.createContainer({
-                      Image: tempImage,
-                      name: deleteContainerName,
-                      Cmd: ['sh', '-c', 'sleep 1'],
-                      HostConfig: {
-                        Binds: [`${volumeName}:/tmp/session_volume`]
-                      }
-                    });
-                    
-                    await deleteContainer.start();
-                    
-                    // 删除 session 文件
-                    const deleteExec = await deleteContainer.exec({
-                      Cmd: ['sh', '-c', `rm -rf /tmp/session_volume/${volumeSessionFileName} /tmp/session_volume/${volumeJournalFileName} && echo "deleted"`],
-                      AttachStdout: true,
-                      AttachStderr: true
-                    });
-                    
-                    const deleteStream = await deleteExec.start({ hijack: true, stdin: false });
-                    await new Promise((resolve) => {
-                      deleteStream.on('end', resolve);
-                    });
-                    
-                    await deleteContainer.stop();
-                    await deleteContainer.remove();
-                    
-                    // 更新缓存
-                    const volumeCacheKey = `volume_session_${newUserId}`;
-                    sessionFileCache.set(volumeCacheKey, { exists: false, timestamp: Date.now() });
-                    loginStatusCache.set(`login_status_${newUserId}`, {
-                      result: {
-                        logged_in: false,
-                        message: '未登录（无效凭证已自动删除）'
-                      },
-                      timestamp: Date.now()
-                    });
-                    
-                    console.log(`✅ [切换用户] 已自动删除无效的 session 文件`);
-                  } catch (deleteError) {
-                    console.warn(`⚠️  [切换用户] 自动删除无效 session 文件失败: ${deleteError.message}`);
-                  }
-                }
+              // 如果验证失败，只记录日志，不删除文件
+              if (checkResult && 
+                  checkResult.success !== undefined &&
+                  !checkResult.success &&
+                  !checkResult.logged_in) {
+                console.warn(`⚠️  [切换用户] 检测到无效的 session 文件，但不删除（仅状态检测）: ${sessionPath}`);
               }
             } catch (verifyError) {
-              // 验证失败（超时或错误），不自动删除，让用户手动处理
+              // 验证失败（超时或错误），不删除，只记录日志
               console.warn(`⚠️  [切换用户] 验证 session 文件时出错: ${verifyError.message}`);
             }
           }
@@ -7213,108 +7136,27 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
         return res.json(verifiedResult);
       }
       
-      // 如果验证失败（文件存在但无效），自动删除无效的 session 文件
-      // 注意：只有在明确验证失败（不是系统错误如 OOM Killer）时才删除
-      // 如果 checkResult 为 null 或包含错误信息，说明是系统错误，不应该删除
-      // 如果 checkError 存在，说明验证过程出错（如超时、OOM Killer），不应该删除
+      // 如果验证失败，只返回未登录状态，不删除 session 文件
+      // 注意：不再自动删除 session 文件，只做状态检测
       if (checkError) {
         // 验证过程出错（如超时、OOM Killer），不删除 session 文件
-        console.warn(`⚠️  [登录状态] session 文件验证过程出错，不删除文件: ${checkError.message}`);
-        return; // 已经返回了错误结果，这里直接返回
+        console.warn(`⚠️  [登录状态] session 文件验证过程出错: ${checkError.message}`);
+        // 已经返回了错误结果，这里直接返回
+        return;
       }
       
-      const isValidationError = checkResult && 
-        checkResult.success !== undefined && // 必须有明确的 success 字段
-        !checkResult.success && // 验证失败
-        !checkResult.logged_in && // 未登录
-        sessionExists &&
-        !checkResult.error; // 没有错误信息（如果有错误，说明是系统错误，不应该删除）
-      
-      if (isValidationError) {
-        console.warn(`⚠️  [登录状态] 检测到无效的 session 文件，自动删除: ${sessionPath}`);
-        try {
-          // 调用删除凭证逻辑（只删除 volume 中的文件）
-          const Docker = require('dockerode');
-          const dockerSocketPaths = [
-            '/var/run/docker.sock',
-            process.env.DOCKER_HOST?.replace('unix://', '') || null
-          ].filter(Boolean);
-          
-          let docker = null;
-          for (const socketPath of dockerSocketPaths) {
-            if (fs.existsSync(socketPath)) {
-              try {
-                docker = new Docker({ socketPath });
-                await docker.ping();
-                break;
-              } catch (e) {
-                // 继续尝试下一个路径
-              }
-            }
-          }
-          
-          if (docker) {
-            const volumeName = 'tg_session';
-            const volumeSessionFileName = `user_${userId}.session`;
-            const volumeJournalFileName = `user_${userId}.session-journal`;
-            
-            try {
-              const volume = docker.getVolume(volumeName);
-              await volume.inspect();
-              
-              const tempImage = await getTempContainerImage(docker);
-              const deleteContainerName = `tg_session_auto_delete_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-              
-              const deleteContainer = await docker.createContainer({
-                Image: tempImage,
-                name: deleteContainerName,
-                Cmd: ['sh', '-c', 'sleep 1'],
-                HostConfig: {
-                  Binds: [`${volumeName}:/tmp/session_volume`]
-                }
-              });
-              
-              await deleteContainer.start();
-              
-              // 删除 session 文件
-              const deleteExec = await deleteContainer.exec({
-                Cmd: ['sh', '-c', `rm -rf /tmp/session_volume/${volumeSessionFileName} /tmp/session_volume/${volumeJournalFileName} && echo "deleted"`],
-                AttachStdout: true,
-                AttachStderr: true
-              });
-              
-              const deleteStream = await deleteExec.start({ hijack: true, stdin: false });
-              await new Promise((resolve) => {
-                deleteStream.on('end', resolve);
-              });
-              
-              await deleteContainer.stop();
-              await deleteContainer.remove();
-              
-              // 更新缓存
-              const volumeCacheKey = `volume_session_${userId}`;
-              sessionFileCache.set(volumeCacheKey, { exists: false, timestamp: Date.now() });
-              loginStatusCache.set(cacheKey, {
-                result: {
-                  logged_in: false,
-                  message: '未登录（无效凭证已自动删除）'
-                },
-                timestamp: Date.now()
-              });
-              
-              console.log(`✅ [登录状态] 已自动删除无效的 session 文件`);
-            } catch (deleteError) {
-              console.warn(`⚠️  [登录状态] 自动删除无效 session 文件失败: ${deleteError.message}`);
-            }
-          }
-        } catch (autoDeleteError) {
-          console.warn(`⚠️  [登录状态] 自动删除无效 session 文件时出错: ${autoDeleteError.message}`);
-        }
+      // 如果验证失败（文件存在但无效），只返回未登录状态，不删除文件
+      if (checkResult && 
+          checkResult.success !== undefined && 
+          !checkResult.success && 
+          !checkResult.logged_in && 
+          sessionExists) {
+        console.warn(`⚠️  [登录状态] 检测到无效的 session 文件，但不删除（仅状态检测）: ${sessionPath}`);
         
         // 返回未登录状态
         const invalidResult = {
           logged_in: false,
-          message: '未登录（无效凭证已自动删除）'
+          message: '未登录（session 文件无效）'
         };
         loginStatusCache.set(cacheKey, {
           result: invalidResult,

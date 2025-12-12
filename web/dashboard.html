@@ -723,6 +723,7 @@
                             </div>
                             <div style="display: flex; gap: 10px;">
                                 <button class="btn btn-secondary" onclick="checkTelegramLoginStatus(true)">🔄 刷新状态</button>
+                                <button class="btn btn-danger" onclick="deleteTelegramCredentials()" style="background: #dc3545; border-color: #dc3545;">🗑️ 删除凭证</button>
                             </div>
                         </div>
                         
@@ -747,7 +748,11 @@
                                     ⚠️ 未登录 Telegram，请先登录才能开始监控消息
                                 </p>
                             </div>
-                            <button id="telegramLoginBtn" class="btn btn-primary" onclick="startTelegramLogin()">📱 Telegram 首次登录</button>
+                            <div style="display: flex; gap: 10px;">
+                                <button id="telegramLoginBtn" class="btn btn-primary" onclick="startTelegramLogin()">📱 Telegram 首次登录</button>
+                                <button class="btn btn-secondary" onclick="checkTelegramLoginStatus(true)">🔄 刷新状态</button>
+                                <button class="btn btn-danger" onclick="deleteTelegramCredentials()" style="background: #dc3545; border-color: #dc3545;">🗑️ 删除凭证</button>
+                            </div>
                         </div>
                     </div>
                 </div>
