@@ -15,8 +15,10 @@ COPY login_helper.py .
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# 注意：不创建 /app/session 目录
-# 使用 entrypoint 脚本在容器启动时创建，避免 overlay 文件系统只读问题
+# 创建 session 目录（用于主容器 bind mount）
+# 创建 session_data 目录（用于多开容器 volume mount）
+# 必须在镜像中创建这些目录，避免 Docker overlay 文件系统只读问题
+RUN mkdir -p /app/session /app/session_data
 
 # 启动应用
 ENTRYPOINT ["/entrypoint.sh"]
