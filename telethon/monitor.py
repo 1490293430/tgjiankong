@@ -12,6 +12,7 @@ import signal
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.errors import RpcError
 import aiohttp
 from aiohttp import web
 import motor.motor_asyncio
@@ -972,6 +973,54 @@ async def main():
                     logger.info("✅ [授权检查] 客户端启动成功，session 有效（is_user_authorized() 可能不准确）")
                     is_authorized = True
                     start_success = True
+                except RpcError as rpc_error:
+                    # 检查是否是 AUTH_KEY_UNREGISTERED 错误
+                    if hasattr(rpc_error, 'code') and rpc_error.code == 401:
+                        # AUTH_KEY_UNREGISTERED 错误，说明 session 文件中的认证密钥无效
+                        retry_count = max_retries  # 直接标记为失败，不重试
+                        logger.error("🔍 [授权检查] AUTH_KEY_UNREGISTERED 错误: %s", str(rpc_error))
+                        logger.error("🔍 [授权检查] Session 文件路径: %s", session_file if session_file else "StringSession")
+                        logger.error("🔍 [授权检查] API_ID: %s", cfg_api_id)
+                        logger.error("🔍 [授权检查] API_HASH: %s", "已设置" if cfg_api_hash else "未设置")
+                        
+                        # 检查 session 文件是否存在且可读
+                        if session_file and not SESSION_STRING:
+                            session_path_with_ext = f"{session_file}.session"
+                            if os.path.exists(session_path_with_ext):
+                                logger.error("🔍 [授权检查] Session 文件存在但认证密钥未注册，可能原因：")
+                                logger.error("   1. Session 文件中的认证密钥已过期或无效")
+                                logger.error("   2. Session 文件是用不同的 API_ID/API_HASH 创建的")
+                                logger.error("   3. Session 文件内容损坏或不完整")
+                                logger.error("   4. Session 文件在写入时没有完全同步")
+                                logger.error("   建议：删除旧的 session 文件后重新登录")
+                            else:
+                                logger.error("🔍 [授权检查] Session 文件不存在: %s", session_path_with_ext)
+                        
+                        await client.disconnect()
+                        logger.error("")
+                        logger.error("=" * 60)
+                        logger.error("❌ Telegram 客户端未授权，Session 文件中的认证密钥无效")
+                        logger.error("")
+                        logger.error("📱 请先登录 Telegram 才能开始监控消息：")
+                        logger.error("   1. 访问 Web 界面")
+                        logger.error("   2. 进入 '设置' 标签")
+                        logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+                        logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
+                        logger.error("   5. 登录成功后，重启 Telethon 服务：")
+                        logger.error("      docker compose restart telethon")
+                        logger.error("")
+                        logger.error("⚠️  服务将退出，请完成登录后重启服务")
+                        logger.error("=" * 60)
+                        logger.error("")
+                        import sys
+                        sys.exit(1)
+                    else:
+                        # 其他 RpcError，可能是网络问题或其他错误
+                        retry_count += 1
+                        if retry_count >= max_retries:
+                            logger.warning("⚠️  [授权检查] RpcError: %s，但继续尝试检查授权状态", str(rpc_error))
+                        else:
+                            logger.warning("⚠️  [授权检查] RpcError（第 %d 次尝试）: %s，将重试...", retry_count, str(rpc_error))
                 except EOFError as eof_error:
                     # EOFError 表示尝试了交互式输入，说明 session 无效
                     retry_count += 1

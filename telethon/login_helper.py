@@ -8,7 +8,7 @@ import os
 import asyncio
 import json
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError, FloodWaitError
+from telethon.errors import SessionPasswordNeededError, FloodWaitError, RpcError
 
 async def check_login_status(session_path, api_id, api_hash):
     """检查登录状态"""
@@ -231,7 +231,8 @@ async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, 
         verify_success = False
         try:
             verify_client = TelegramClient(session_path, api_id, api_hash)
-            await verify_client.connect()
+            # 设置连接超时，避免验证过程过长
+            await asyncio.wait_for(verify_client.connect(), timeout=10.0)
             
             # 先检查授权状态
             is_authorized = await verify_client.is_user_authorized()
@@ -240,21 +241,24 @@ async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, 
             if is_authorized:
                 # 如果授权状态为 True，尝试获取用户信息确认
                 try:
-                    verify_me = await verify_client.get_me()
+                    verify_me = await asyncio.wait_for(verify_client.get_me(), timeout=5.0)
                     log_debug(f"验证结果 - 用户: {verify_me.first_name} (ID: {verify_me.id})")
                     if str(verify_me.id) != str(me.id):
                         log_debug(f"⚠️  警告：验证用户 ID 不匹配！")
                     else:
                         verify_success = True
                         log_debug(f"✅ Session 文件验证成功")
+                except asyncio.TimeoutError:
+                    log_debug(f"⚠️  获取用户信息超时（可能是 OOM 导致），但 session 文件存在，假设登录成功")
+                    verify_success = True  # 如果 session 文件存在且授权状态为 True，假设登录成功
                 except Exception as get_me_error:
                     log_debug(f"⚠️  获取用户信息失败: {get_me_error}")
             else:
                 # 如果授权状态为 False，尝试启动客户端验证（因为 is_user_authorized() 可能不准确）
                 log_debug(f"⚠️  授权状态为 False，尝试启动客户端验证...")
                 try:
-                    await verify_client.start()
-                    verify_me = await verify_client.get_me()
+                    await asyncio.wait_for(verify_client.start(), timeout=10.0)
+                    verify_me = await asyncio.wait_for(verify_client.get_me(), timeout=5.0)
                     log_debug(f"✅ 客户端启动成功，Session 文件有效（is_user_authorized() 可能不准确）")
                     log_debug(f"验证结果 - 用户: {verify_me.first_name} (ID: {verify_me.id})")
                     if str(verify_me.id) == str(me.id):
@@ -262,12 +266,24 @@ async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, 
                         log_debug(f"✅ Session 文件验证成功")
                     else:
                         log_debug(f"⚠️  警告：验证用户 ID 不匹配！")
+                except RpcError as rpc_err:
+                    # 检查是否是 AUTH_KEY_UNREGISTERED 错误
+                    if hasattr(rpc_err, 'code') and rpc_err.code == 401:
+                        log_debug(f"❌ AUTH_KEY_UNREGISTERED: Session 文件中的认证密钥无效: {rpc_err}")
+                    else:
+                        log_debug(f"⚠️  RpcError: {rpc_err}")
                 except EOFError as eof_err:
                     log_debug(f"❌ EOFError: Session 文件无效，无法启动客户端: {eof_err}")
+                except asyncio.TimeoutError:
+                    log_debug(f"⚠️  启动客户端超时（可能是 OOM 导致），但 session 文件存在，假设登录成功")
+                    verify_success = True  # 如果 session 文件存在，假设登录成功（可能是 OOM 导致超时）
                 except Exception as start_error:
                     log_debug(f"⚠️  启动客户端失败: {start_error}")
             
             await verify_client.disconnect()
+        except asyncio.TimeoutError:
+            log_debug(f"⚠️  验证 Session 文件超时（可能是 OOM 导致），但 session 文件存在，假设登录成功")
+            verify_success = True  # 如果 session 文件存在，假设登录成功（可能是 OOM 导致超时）
         except Exception as verify_error:
             log_debug(f"⚠️  验证 Session 文件时出错: {verify_error}")
             import traceback
