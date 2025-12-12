@@ -831,10 +831,16 @@ async def main():
     if SESSION_STRING:
         client = TelegramClient(StringSession(SESSION_STRING), cfg_api_id, cfg_api_hash)
     else:
-        # 使用 SESSION_PREFIX 构建 session 文件名
-        # 格式：/opt/telegram-monitor/data/session/{SESSION_PREFIX}.session
-        session_file = os.path.join(SESSION_BASE_DIR, SESSION_PREFIX)
-        logger.info("使用 Session 文件: %s (SESSION_PREFIX: %s)", session_file, SESSION_PREFIX)
+        # 动态构建 session 文件名：优先使用配置文件中的 user_id，其次使用环境变量 USER_ID
+        # 如果设置了 user_id，格式为：/opt/telegram-monitor/data/session/user_{user_id}.session
+        # 否则格式为：/opt/telegram-monitor/data/session/{SESSION_PREFIX}.session
+        # active_user_id 已在上面从配置文件或环境变量读取（第 730 行）
+        if active_user_id:
+            session_base_name = f"{SESSION_PREFIX}_{active_user_id}"
+        else:
+            session_base_name = SESSION_PREFIX
+        session_file = os.path.join(SESSION_BASE_DIR, session_base_name)
+        logger.info("使用 Session 文件: %s (SESSION_PREFIX: %s, USER_ID: %s)", session_file, SESSION_PREFIX, active_user_id or "未设置")
         client = TelegramClient(session_file, cfg_api_id, cfg_api_hash)
     
     # 检查 session 文件是否存在（如果使用文件 session）
