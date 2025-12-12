@@ -4410,9 +4410,19 @@ async function checkSessionFileInVolume(userId) {
     // 使用临时容器检查 volume 中的 session 文件
     const volumeSessionFileName = `user_${userId}.session`;
     const tempContainerName = `tg_session_check_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const alpineImage = 'alpine:latest';
+    // 使用已存在的镜像（优先使用 alpine:latest，如果不存在则使用 python:3.11-slim）
+    let alpineImage = 'python:3.11-slim';
     
     try {
+      // 先尝试检查 alpine:latest 是否存在
+      try {
+        const alpineImg = docker.getImage('alpine:latest');
+        await alpineImg.inspect();
+        alpineImage = 'alpine:latest';
+      } catch (e) {
+        // alpine:latest 不存在，使用 python:3.11-slim（应该已经存在）
+      }
+      
       const tempContainer = await docker.createContainer({
         Image: alpineImage,
         name: tempContainerName,
@@ -5730,12 +5740,23 @@ async function startMultiLoginContainer(userId) {
     
     // 检查 volume 中是否已有 session 文件
     const tempContainerName = `tg_session_check_${Date.now()}`;
-    const alpineImage = 'alpine:latest';
+    // 使用 python:3.11-slim 镜像（应该已经存在，因为 telethon 容器使用它）
+    let alpineImage = 'python:3.11-slim';
     let sessionExistsInVolume = false;
     
     console.log(`🔍 [多开登录] 检查 volume 中是否存在 session 文件: ${volumeSessionFileName}`);
     
     try {
+      // 先尝试拉取或使用 alpine:latest，如果失败则使用 python:3.11-slim
+      try {
+        const alpineImg = docker.getImage('alpine:latest');
+        await alpineImg.inspect();
+        alpineImage = 'alpine:latest';
+      } catch (e) {
+        // alpine:latest 不存在，使用 python:3.11-slim
+        console.log(`ℹ️  [多开登录] alpine:latest 不存在，使用 python:3.11-slim`);
+      }
+      
       // 创建临时容器检查 volume 中是否有 session 文件
       const tempContainer = await docker.createContainer({
         Image: alpineImage,
@@ -6032,15 +6053,26 @@ async function startMultiLoginContainer(userId) {
       
       // 检查 volume 中是否已有 session 文件
       const tempContainerName = `tg_session_check_${Date.now()}`;
-      const alpineImage = 'alpine:latest';
-      let sessionExistsInVolume = false;
-      
-      console.log(`🔍 [多开登录] 检查 volume 中是否存在 session 文件: ${volumeSessionFileName}`);
-      
+    // 使用已存在的镜像（优先使用 alpine:latest，如果不存在则使用 python:3.11-slim）
+    let alpineImage = 'python:3.11-slim';
+    let sessionExistsInVolume = false;
+    
+    console.log(`🔍 [多开登录] 检查 volume 中是否存在 session 文件: ${volumeSessionFileName}`);
+    
+    try {
+      // 先尝试检查 alpine:latest 是否存在
       try {
-        // 创建临时容器检查 volume 中是否有 session 文件
-        const tempContainer = await docker.createContainer({
-          Image: alpineImage,
+        const alpineImg = docker.getImage('alpine:latest');
+        await alpineImg.inspect();
+        alpineImage = 'alpine:latest';
+      } catch (e) {
+        // alpine:latest 不存在，使用 python:3.11-slim（应该已经存在）
+        console.log(`ℹ️  [多开登录] alpine:latest 不存在，使用 python:3.11-slim`);
+      }
+      
+      // 创建临时容器检查 volume 中是否有 session 文件
+      const tempContainer = await docker.createContainer({
+        Image: alpineImage,
           name: tempContainerName,
           Cmd: ['sh', '-c', 'sleep 1'],
           HostConfig: {
@@ -6182,8 +6214,10 @@ async function startMultiLoginContainer(userId) {
       console.log(`📂 [多开登录] 挂载路径: config=${hostConfigPath}, session=volume:${sessionVolumeName}, logs=${hostLogsPath}`);
       
       // 创建容器
-      // 注意：不挂载整个 /app 目录，代码在镜像中
-      // 只挂载配置文件、session volume 和 logs 目录
+      // 注意：需要挂载 telethon 代码目录，因为代码不在镜像中（或者镜像构建时没有包含）
+      // 挂载配置文件、代码目录、session volume 和 logs 目录
+      const hostTelethonPath = path.join(projectRoot, 'telethon');
+      
       container = await docker.createContainer({
         Image: containerImage,
         name: containerName,
@@ -6191,6 +6225,7 @@ async function startMultiLoginContainer(userId) {
         HostConfig: {
           Binds: [
             `${hostConfigPath}:/app/config_${userId}.json:ro`,
+            `${hostTelethonPath}:/app:ro`, // 挂载代码目录（只读）
             `${sessionVolumeName}:/tmp/session_volume`,
             `${hostLogsPath}:/app/logs:rw`
           ],
@@ -6236,6 +6271,7 @@ async function startMultiLoginContainer(userId) {
             // 重新创建容器（使用 volume）
             const projectRoot = '/opt/telegram-monitor';
             const hostConfigPath = path.join(projectRoot, 'backend', `config_${userId}.json`);
+            const hostTelethonPath = path.join(projectRoot, 'telethon');
             const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
             
             container = await docker.createContainer({
@@ -6245,6 +6281,7 @@ async function startMultiLoginContainer(userId) {
               HostConfig: {
                 Binds: [
                   `${hostConfigPath}:/app/config_${userId}.json:ro`,
+                  `${hostTelethonPath}:/app:ro`, // 挂载代码目录（只读）
                   `${sessionVolumeName}:/tmp/session_volume`,
                   `${hostLogsPath}:/app/logs:rw`
                 ],
