@@ -6755,7 +6755,7 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       return res.json(result);
     }
     
-    // session 文件存在，需要验证文件是否有效
+    // session 文件存在，必须验证文件是否有效才能返回已登录
     // 尝试从缓存获取配置（避免 MongoDB 查询）
     let config = null;
     const configCacheKey = `user_config_${userId}`;
@@ -6774,17 +6774,16 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
           timestamp: Date.now()
         });
       } catch (configError) {
-        // 如果无法加载配置，直接返回已登录（因为文件存在）
-        const quickResult = {
-          logged_in: true,
-          message: '已登录（session 文件存在）',
-          uncertain: false
+        // 如果无法加载配置，无法验证session有效性，返回未登录
+        const result = {
+          logged_in: false,
+          message: '未登录（无法验证 session 文件有效性）'
         };
         loginStatusCache.set(cacheKey, {
-          result: quickResult,
+          result,
           timestamp: Date.now()
         });
-        return res.json(quickResult);
+        return res.json(result);
       }
     }
     
@@ -6792,25 +6791,24 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
     const apiHash = config.telegram?.api_hash || '';
     
     if (!apiId || !apiHash) {
-      // 如果没有配置，直接返回已登录（因为文件存在）
-      const quickResult = {
-        logged_in: true,
-        message: '已登录（session 文件存在）',
-        uncertain: false
+      // 如果没有配置，无法验证session有效性，返回未登录
+      const result = {
+        logged_in: false,
+        message: '未登录（未配置 API 凭证，无法验证 session 文件）'
       };
       loginStatusCache.set(cacheKey, {
-        result: quickResult,
+        result,
         timestamp: Date.now()
       });
-      return res.json(quickResult);
+      return res.json(result);
     }
     
     // 验证输入
     const validatedApiId = validateInput(apiId, 'number');
     const validatedApiHash = validateInput(apiHash);
     
-    // 如果强制刷新，才进行容器验证（但使用较短的超时）
-    // 如果没有强制刷新，也在后台异步验证并自动删除无效的 session 文件
+    // 必须验证 session 文件有效性才能返回已登录
+    // 如果强制刷新，进行同步验证；否则返回未登录（需要用户点击刷新按钮）
     if (forceRefresh) {
       // 尝试从缓存获取配置（避免 MongoDB 查询）
       let config = null;
@@ -6834,7 +6832,17 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       const apiHash = config.telegram?.api_hash || '';
       
       if (!apiId || !apiHash) {
-        return res.json(quickResult); // 即使没有配置，也返回已登录（因为文件存在）
+        // 即使没有配置，也返回已登录（因为文件存在）
+        const quickResult = {
+          logged_in: true,
+          message: '已登录（session 文件存在）',
+          uncertain: false
+        };
+        loginStatusCache.set(cacheKey, {
+          result: quickResult,
+          timestamp: Date.now()
+        });
+        return res.json(quickResult);
       }
       
       // 验证输入
@@ -6860,7 +6868,17 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
         ]);
       } catch (error) {
         checkError = error;
-        // 容器验证失败不影响结果，因为文件存在就认为已登录
+        // 验证失败，返回未登录（必须验证成功才能返回已登录）
+        console.warn(`⚠️  [登录状态] session 文件验证失败: ${error.message}`);
+        const failedResult = {
+          logged_in: false,
+          message: `未登录（session 文件验证失败：${error.message}）`
+        };
+        loginStatusCache.set(cacheKey, {
+          result: failedResult,
+          timestamp: Date.now()
+        });
+        return res.json(failedResult);
       }
       
       // 如果容器验证成功，使用验证结果
@@ -6870,7 +6888,7 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
           message: '已登录',
           user: checkResult.user || null
         };
-        loginStatusCache.set(`login_status_${userId}`, {
+        loginStatusCache.set(cacheKey, {
           result: verifiedResult,
           timestamp: Date.now()
         });
@@ -6878,7 +6896,7 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       }
       
       // 如果验证失败（文件存在但无效），自动删除无效的 session 文件
-      if (checkResult && !checkResult.logged_in && sessionExists) {
+      if (checkResult && (!checkResult.success || !checkResult.logged_in) && sessionExists) {
         console.warn(`⚠️  [登录状态] 检测到无效的 session 文件，自动删除: ${sessionPath}`);
         try {
           // 调用删除凭证逻辑（只删除 volume 中的文件）
@@ -6971,20 +6989,23 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
         return res.json(invalidResult);
       }
     } else {
-      // 如果没有强制刷新，在后台异步验证并自动删除无效的 session 文件
-      // 先快速返回已登录状态，然后在后台验证
-      const quickResult = {
-        logged_in: true,
-        message: '已登录（session 文件存在）',
-        uncertain: false
+      // 如果没有强制刷新，不进行验证，直接返回未登录（需要用户点击刷新按钮）
+      // 这样可以避免频繁检测，只在用户主动刷新时才验证
+      const result = {
+        logged_in: false,
+        message: '请点击"刷新状态"按钮检查登录状态'
       };
       
-      // 缓存成功结果
+      // 缓存结果
       loginStatusCache.set(cacheKey, {
-        result: quickResult,
+        result,
         timestamp: Date.now()
       });
       
+      return res.json(result);
+      
+      // 以下代码已禁用，不再在后台自动验证
+      /*
       // 在后台异步验证并自动删除无效的 session 文件
       setTimeout(async () => {
         try {
@@ -7097,13 +7118,150 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
           // 静默失败，不影响主流程
         }
       }, 100); // 延迟100ms，确保响应已返回
+      */
     }
     
-    // 默认返回快速结果（基于文件存在）
-    return res.json(quickResult);
+    // 如果 forceRefresh 为 true 但验证失败且没有进入删除逻辑，返回未登录
+    // 因为必须验证session有效性才能返回已登录
+    const defaultResult = {
+      logged_in: false,
+      message: '未登录（session 文件验证失败）'
+    };
+    loginStatusCache.set(cacheKey, {
+      result: defaultResult,
+      timestamp: Date.now()
+    });
+    return res.json(defaultResult);
   } catch (error) {
     console.error('❌ [登录状态] 检查失败:', error);
     res.status(500).json({ error: '检查登录状态失败：' + error.message });
+  }
+});
+
+// 初始化登录容器（在点击"Telegram 首次登录"时调用，提前创建容器）
+app.post('/api/telegram/login/init', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    
+    // 检查是否已配置 API_ID 和 API_HASH
+    const userConfig = await loadUserConfig(userId);
+    const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+    
+    const apiId = config.telegram?.api_id || 0;
+    const apiHash = config.telegram?.api_hash || '';
+    
+    if (!apiId || !apiHash) {
+      return res.status(400).json({ error: '请先配置 API_ID 和 API_HASH' });
+    }
+    
+    // 检查是否已有临时容器
+    const existing = tempLoginContainers.get(userId);
+    if (existing) {
+      try {
+        const Docker = require('dockerode');
+        const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+        const container = docker.getContainer(existing.containerName);
+        const containerInfo = await container.inspect();
+        if (containerInfo.State.Running) {
+          console.log(`♻️  临时登录容器已存在: ${existing.containerName}`);
+          return res.json({
+            success: true,
+            message: '登录容器已就绪',
+            containerName: existing.containerName
+          });
+        }
+      } catch (e) {
+        // 容器不存在，继续创建新的
+        tempLoginContainers.delete(userId);
+      }
+    }
+    
+    // 提前创建临时登录容器
+    try {
+      const Docker = require('dockerode');
+      const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+      
+      // 获取项目根目录和配置路径
+      const projectRoot = detectProjectRoot();
+      const configHostPath = path.resolve(projectRoot, 'backend', 'config.json');
+      
+      // 获取容器镜像
+      let containerImage = null;
+      try {
+        const existingContainer = docker.getContainer('tg_listener');
+        const existingContainerInfo = await existingContainer.inspect();
+        if (existingContainerInfo && existingContainerInfo.Config && existingContainerInfo.Config.Image) {
+          containerImage = existingContainerInfo.Config.Image;
+        }
+      } catch (e) {
+        // 容器不存在，尝试查找镜像
+        const images = await docker.listImages();
+        const telethonImage = images.find(img => {
+          if (!img.RepoTags || img.RepoTags.length === 0) return false;
+          return img.RepoTags.some(tag => 
+            (tag.includes('tg_listener') || tag.includes('telethon')) && !tag.includes('<none>')
+          );
+        });
+        if (telethonImage && telethonImage.RepoTags && telethonImage.RepoTags.length > 0) {
+          containerImage = telethonImage.RepoTags.find(tag => !tag.includes('<none>')) || telethonImage.RepoTags[0];
+        }
+      }
+      
+      if (!containerImage) {
+        // 尝试使用常见的命名格式
+        const possibleNames = [
+          'telegram-monitor-telethon',
+          'tgjiankong-telethon',
+          'tgjiankong-tg_listener',
+          'telethon-tgjiankong',
+          'tg_listener'
+        ];
+        
+        for (const name of possibleNames) {
+          try {
+            const testImage = docker.getImage(name);
+            await testImage.inspect();
+            containerImage = name;
+            break;
+          } catch (e) {
+            // 继续尝试下一个
+          }
+        }
+      }
+      
+      if (!containerImage) {
+        return res.status(500).json({ error: '无法找到 Telethon 镜像。请确保 Telethon 容器镜像已构建。' });
+      }
+      
+      // 获取网络名称
+      let networkName = null;
+      try {
+        const existingContainer = docker.getContainer('tg_listener');
+        const existingContainerInfo = await existingContainer.inspect();
+        if (existingContainerInfo && existingContainerInfo.NetworkSettings && existingContainerInfo.NetworkSettings.Networks) {
+          networkName = Object.keys(existingContainerInfo.NetworkSettings.Networks)[0];
+        }
+      } catch (e) {
+        // 忽略错误
+      }
+      
+      // 创建临时登录容器
+      const containerName = await getOrCreateTempLoginContainer(userId, configHostPath, null, containerImage, networkName);
+      
+      console.log(`✅ 已提前创建临时登录容器: ${containerName}`);
+      
+      res.json({
+        success: true,
+        message: '登录容器已创建，可以开始登录流程',
+        containerName: containerName
+      });
+    } catch (error) {
+      console.error('初始化登录容器失败:', error);
+      res.status(500).json({ error: '初始化登录容器失败：' + error.message });
+    }
+  } catch (error) {
+    console.error('初始化登录容器请求失败:', error);
+    res.status(500).json({ error: '初始化登录容器失败：' + error.message });
   }
 });
 
@@ -7282,23 +7440,64 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
       if (result.success) {
         // 登录成功，清理临时容器
         await cleanupTempLoginContainer(userId);
+        
+        // 立即清除并更新登录状态缓存，确保前端能正确显示已登录状态
+        const cacheKey = `login_status_${userId}`;
+        const volumeCacheKey = `volume_session_${userId}`;
+        
+        // 清除所有相关缓存（包括登录状态缓存和 session 文件缓存）
+        loginStatusCache.delete(cacheKey);
+        sessionFileCache.delete(volumeCacheKey);
+        
+        // 等待一小段时间确保 session 文件完全写入
+        await new Promise(resolve => setTimeout(resolve, 800));
+        
+        // 验证 session 文件是否已生成（统一使用 volume 路径）
+        // 先清除缓存，强制重新检查
+        sessionFileCache.delete(volumeCacheKey);
+        const sessionExists = await checkSessionFileInVolume(userId);
+        
+        if (sessionExists) {
+          console.log(`✅ Session 文件已确认存在: ${sessionPath}`);
+          
+          // 立即更新缓存为已登录状态
+          loginStatusCache.set(cacheKey, {
+            result: {
+              logged_in: true,
+              message: '已登录',
+              user: result.user || null
+            },
+            timestamp: Date.now()
+          });
+          
+          // 更新 session 文件缓存
+          sessionFileCache.set(volumeCacheKey, {
+            exists: true,
+            timestamp: Date.now()
+          });
+          
+          console.log(`✅ 已更新登录状态缓存为已登录`);
+        } else {
+          // 即使文件检查失败，也先更新缓存为已登录（因为登录脚本已返回成功）
+          // 这样前端能立即显示已登录，后续检查会自动修正
+          loginStatusCache.set(cacheKey, {
+            result: {
+              logged_in: true,
+              message: '已登录（登录成功，session 文件可能正在写入）',
+              user: result.user || null,
+              uncertain: true
+            },
+            timestamp: Date.now()
+          });
+          
+          console.warn(`⚠️  Session 文件可能还未完全写入，但已更新缓存为已登录状态`);
+        }
+        
         // Telegram 登录成功后，同步用户配置并重启 Telethon 服务
         // 异步执行，不阻塞响应
         setTimeout(async () => {
           try {
             console.log(`🔄 Telegram 登录成功，开始同步用户 ${userId} 的配置并重启 Telethon 服务...`);
-            
-            // 等待一小段时间确保 session 文件完全写入（减少等待时间）
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            // 验证 session 文件是否已生成（统一使用 volume 路径）
-            const sessionExists = await checkSessionFileInVolume(userId);
-            
-            if (sessionExists) {
-              console.log(`✅ Session 文件已确认存在: ${sessionPath}`);
-            } else {
-              console.warn(`⚠️  Session 文件可能还未完全写入，但继续尝试重启...`);
-            }
             
             await syncUserConfigAndRestartTelethon(userId);
           } catch (error) {

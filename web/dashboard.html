@@ -710,8 +710,20 @@
                     
                     <!-- Telegram 登录状态和按钮 -->
                     <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e0e0e0;">
-                        <div id="telegramLoginStatus" style="margin-bottom: 15px;">
+                        <div id="telegramLoginStatus" style="display: none; margin-bottom: 15px;">
                             <p style="color: #666; margin-bottom: 10px;">检查登录状态中...</p>
+                        </div>
+                        
+                        <!-- 初始状态提示（页面加载时显示，点击刷新后隐藏） -->
+                        <div id="telegramLoginStatusInitial" style="margin-bottom: 15px;">
+                            <div style="padding: 12px; background: #e7f3ff; border-radius: 8px; margin-bottom: 15px;">
+                                <p style="margin: 0; color: #004085; font-size: 14px;">
+                                    ℹ️ 请点击"刷新状态"按钮检查 Telegram 登录状态
+                                </p>
+                            </div>
+                            <div style="display: flex; gap: 10px;">
+                                <button class="btn btn-secondary" onclick="checkTelegramLoginStatus(true)">🔄 刷新状态</button>
+                            </div>
                         </div>
                         
                         <!-- 已登录状态 -->
@@ -2215,10 +2227,7 @@
                     toggleAITriggerConfig();
                 }
                 
-                // 加载配置后自动检查 Telegram 登录状态（确保配置已完全加载）
-                setTimeout(() => {
-                    checkTelegramLoginStatus(true); // 强制刷新
-                }, 800); // 增加延迟，确保配置已完全加载
+                // 不再自动检查 Telegram 登录状态，只在用户点击刷新按钮时检查
             } catch (error) {
                 console.error('加载配置失败:', error);
                 showToast('❌ 加载配置失败：' + (error.message || '未知错误'), false);
@@ -2907,8 +2916,7 @@
                     await loadRecentLogs(true); // 重置并加载
                 } else if (activeTab === 'config') {
                     await loadConfig();
-                    // loadConfig 内部会调用 checkTelegramLoginStatus，但为了确保刷新，我们再次强制刷新
-                    await checkTelegramLoginStatus(true); // 强制刷新登录状态
+                    // 不再自动检查登录状态，只在用户点击刷新按钮时检查
                 } else if (activeTab === 'ai') {
                     await loadAIStats();
                     await loadAISummaries();
@@ -2918,11 +2926,7 @@
                     await loadUsers();
                 }
                 
-                // 无论当前标签页是什么，都强制刷新登录状态（确保切换账号后立即显示正确的登录状态）
-                // 延迟一下，确保 Telethon 服务已经重启完成
-                setTimeout(async () => {
-                    await checkTelegramLoginStatus(true); // 强制刷新登录状态
-                }, 2000); // 延迟2秒，等待 Telethon 服务重启完成
+                // 不再自动检查登录状态，只在用户点击刷新按钮时检查
                 
                 // 重新检查用户管理权限
                 await checkAndShowUserManagement();
@@ -3771,6 +3775,7 @@
         
         async function checkTelegramLoginStatus(force = false, retryCount = 0) {
             const statusDiv = document.getElementById('telegramLoginStatus');
+            const initialDiv = document.getElementById('telegramLoginStatusInitial');
             const loggedInDiv = document.getElementById('telegramLoggedIn');
             const notLoggedInDiv = document.getElementById('telegramNotLoggedIn');
             
@@ -3807,9 +3812,12 @@
             lastCheckTime = now;
             
             try {
-                // 显示检查状态
+                // 显示检查状态，隐藏初始提示
                 statusDiv.style.display = 'block';
                 statusDiv.innerHTML = '<p style="color: #666; margin-bottom: 10px;">检查登录状态中...</p>';
+                if (initialDiv) {
+                    initialDiv.style.display = 'none';
+                }
                 loggedInDiv.style.display = 'none';
                 notLoggedInDiv.style.display = 'none';
                 
@@ -3824,6 +3832,9 @@
                         loggedInDiv.style.display = 'block';
                         notLoggedInDiv.style.display = 'none';
                         statusDiv.style.display = 'none';
+                        if (initialDiv) {
+                            initialDiv.style.display = 'none';
+                        }
                         
                         // 如果是不确定状态，显示警告
                         if (response.uncertain) {
@@ -3853,6 +3864,9 @@
                         loggedInDiv.style.display = 'none';
                         notLoggedInDiv.style.display = 'block';
                         statusDiv.style.display = 'none';
+                        if (initialDiv) {
+                            initialDiv.style.display = 'none';
+                        }
                         
                         // 如果检查失败但可能是临时错误，自动重试一次
                         if (retryCount === 0 && response.message && (
@@ -3875,6 +3889,9 @@
                     loggedInDiv.style.display = 'none';
                     notLoggedInDiv.style.display = 'block';
                     statusDiv.style.display = 'none';
+                    if (initialDiv) {
+                        initialDiv.style.display = 'none';
+                    }
                 }
             } catch (error) {
                 console.error('❌ [登录状态] 检查失败:', error);
@@ -3896,6 +3913,9 @@
                     loggedInDiv.style.display = 'none';
                     notLoggedInDiv.style.display = 'block';
                     statusDiv.style.display = 'none';
+                    if (initialDiv) {
+                        initialDiv.style.display = 'none';
+                    }
                 }
             } finally {
                 telegramStatusCheckInProgress = false;
@@ -3903,7 +3923,7 @@
         }
         
         // 打开 Telegram 登录模态弹窗
-        function startTelegramLogin() {
+        async function startTelegramLogin() {
             // 防止重复点击
             if (telegramLoginInProgress) {
                 showToast('⚠️ 登录流程正在进行中，请稍候...', false);
@@ -3919,10 +3939,47 @@
                 return;
             }
             
+            // 先初始化登录容器（提前创建，避免后续步骤等待）
+            telegramLoginInProgress = true;
+            const loginBtn = document.getElementById('telegramLoginBtn');
+            const originalText = loginBtn ? loginBtn.textContent : '';
+            if (loginBtn) {
+                loginBtn.disabled = true;
+                loginBtn.textContent = '正在初始化...';
+            }
+            
+            try {
+                const initResponse = await apiRequest('/telegram/login/init', {
+                    method: 'POST'
+                });
+                
+                if (!initResponse.success) {
+                    showToast('⚠️ 初始化登录容器失败：' + (initResponse.error || '未知错误'), false);
+                    telegramLoginInProgress = false;
+                    if (loginBtn) {
+                        loginBtn.disabled = false;
+                        loginBtn.textContent = originalText;
+                    }
+                    return;
+                }
+                
+                console.log('✅ 登录容器已初始化:', initResponse.containerName);
+            } catch (error) {
+                console.error('初始化登录容器失败:', error);
+                showToast('⚠️ 初始化登录容器失败：' + (error.message || '未知错误'), false);
+                telegramLoginInProgress = false;
+                if (loginBtn) {
+                    loginBtn.disabled = false;
+                    loginBtn.textContent = originalText;
+                }
+                return;
+            }
+            
             // 重置登录状态
             telegramLoginStep = 1;
             telegramPhoneCodeHash = null;
             telegramLoginPhone = null;
+            telegramLoginInProgress = false;
             
             // 显示步骤1：输入手机号
             document.getElementById('telegramModalStep1').style.display = 'block';
@@ -3934,6 +3991,12 @@
             document.getElementById('modalTelegramPassword').value = '';
             document.getElementById('telegramModalConfirmBtn').textContent = '确认';
             document.getElementById('telegramModalConfirmBtn').disabled = false;
+            
+            // 恢复按钮状态
+            if (loginBtn) {
+                loginBtn.disabled = false;
+                loginBtn.textContent = originalText;
+            }
             
             // 显示模态弹窗
             const modal = document.getElementById('telegramLoginModal');
@@ -3959,11 +4022,23 @@
         }
         
         // 关闭 Telegram 登录模态弹窗
-        function closeTelegramLoginModal() {
+        async function closeTelegramLoginModal() {
             // 如果有正在进行的请求，取消它
             if (telegramLoginAbortController) {
                 telegramLoginAbortController.abort();
                 telegramLoginAbortController = null;
+            }
+            
+            // 清理临时登录容器（如果登录未完成）
+            if (telegramLoginStep > 0 && telegramLoginStep < 3) {
+                try {
+                    await apiRequest('/telegram/login/cancel', {
+                        method: 'POST'
+                    });
+                    console.log('✅ 已清理临时登录容器');
+                } catch (error) {
+                    console.warn('清理临时登录容器失败:', error);
+                }
             }
             
             const modal = document.getElementById('telegramLoginModal');
@@ -4037,7 +4112,7 @@
                         if (response.already_logged_in) {
                             // 已经登录了
                             closeTelegramLoginModal();
-                            await checkTelegramLoginStatus();
+                            await checkTelegramLoginStatus(true); // 强制刷新，验证session有效性
                             showToast('✅ 您已登录 Telegram', true);
                             return;
                         }
