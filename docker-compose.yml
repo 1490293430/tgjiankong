@@ -60,13 +60,14 @@ services:
       - MONGO_URL=mongodb://mongo:27017/tglogs
       - API_URL=http://api:3000
       - CONFIG_PATH=/app/config.json
-      - SESSION_PATH=/app/session/telegram
+      - SESSION_PATH=/tmp/session_volume/user
+      - SESSION_VOLUME_PATH=/tmp/session_volume
       - API_ID=${API_ID}
       - API_HASH=${API_HASH}
       - USER_ID=${USER_ID:-}
     volumes:
       - ./backend/config.json:/app/config.json:ro
-      - ./data/session:/app/session
+      - tg_session:/tmp/session_volume
       - ./logs/telethon:/app/logs
     networks:
       - tg-network

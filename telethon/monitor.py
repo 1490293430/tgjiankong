@@ -28,7 +28,20 @@ API_URL = os.getenv("API_URL", "http://api:3000")
 api_id_str = os.getenv("API_ID", "0")
 ENV_API_ID = int(api_id_str) if api_id_str and api_id_str.strip() else 0
 ENV_API_HASH = os.getenv("API_HASH", "")
-SESSION_PATH = os.getenv("SESSION_PATH", "/app/session/telegram")
+# 统一使用 volume 路径
+SESSION_VOLUME_PATH = os.getenv("SESSION_VOLUME_PATH", "/tmp/session_volume")
+# 统一使用 volume 路径，格式：/tmp/session_volume/user
+# 如果 SESSION_VOLUME_PATH 存在，使用 volume 路径；否则使用环境变量 SESSION_PATH（向后兼容）
+OLD_SESSION_PATH = os.getenv("SESSION_PATH", "/app/session/telegram")
+if SESSION_VOLUME_PATH and os.path.exists(SESSION_VOLUME_PATH):
+    # 统一使用 volume 路径，格式：/tmp/session_volume/user
+    SESSION_PATH = os.path.join(SESSION_VOLUME_PATH, "user")
+elif OLD_SESSION_PATH.startswith("/tmp/session_volume"):
+    # 如果 SESSION_PATH 已经是 volume 路径，直接使用
+    SESSION_PATH = OLD_SESSION_PATH
+else:
+    # 向后兼容：如果没有 volume，使用旧路径（但会迁移到 volume）
+    SESSION_PATH = OLD_SESSION_PATH
 SESSION_STRING = os.getenv("SESSION_STRING", "").strip()
 # 用户ID - 用于数据隔离，从环境变量读取
 USER_ID = os.getenv("USER_ID", "").strip()
