@@ -3098,77 +3098,88 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
         console.warn(`⚠️  [恢复] 备份中未找到环境变量文件: ${envSource}`);
       }
       
-      // 恢复 MongoDB 数据（优先使用 mongorestore）
-      const mongoDumpSource = path.join(extractedDir, 'mongo_dump');
-      const mongoDataSource = path.join(extractedDir, 'data', 'mongo');
-      const mongoContainerName = 'tg_mongo';
-      const mongoDbName = 'tglogs';
+      // 配置项恢复完成，立即返回成功响应
+      // MongoDB 和 session 恢复将在后台异步执行
+      console.log('✅ [恢复] 配置项恢复完成，立即返回成功响应');
+      res.json({
+        status: 'ok',
+        message: '数据恢复成功'
+      });
       
-      let mongoRestored = false;
-      
-      // 方法1：如果存在 mongodump 备份，使用 mongorestore
-      if (fs.existsSync(mongoDumpSource)) {
-        console.log('📊 [恢复] 检测到 mongodump 备份，使用 mongorestore 恢复...');
-        
+      // 在后台异步执行 MongoDB 和 session 恢复（不阻塞响应）
+      (async () => {
         try {
-          // 查找备份的数据库目录
-          // mongodump 可能有两种格式：
-          // 1. mongo_dump/tglogs/ (包含数据库名称子目录)
-          // 2. mongo_dump/ (直接包含集合文件 .bson)
-          let dbBackupPath = null;
-          console.log(`🔍 [恢复] 查找数据库备份目录...`);
+          // 恢复 MongoDB 数据（优先使用 mongorestore）
+          const mongoDumpSource = path.join(extractedDir, 'mongo_dump');
+          const mongoDataSource = path.join(extractedDir, 'data', 'mongo');
+          const mongoContainerName = 'tg_mongo';
+          const mongoDbName = 'tglogs';
           
-          // 首先检查 mongo_dump 目录是否直接包含 .bson 文件（格式2）
-          const mongoDumpFiles = fs.readdirSync(mongoDumpSource);
-          const hasBsonFiles = mongoDumpFiles.some(f => f.endsWith('.bson') || f.endsWith('.metadata.json'));
+          let mongoRestored = false;
           
-          if (hasBsonFiles) {
-            // 格式2：集合文件直接在 mongo_dump 目录下
-            console.log(`✅ [恢复] 检测到备份格式：集合文件直接在 mongo_dump 目录下`);
-            dbBackupPath = mongoDumpSource;
-            console.log(`✅ [恢复] 使用备份路径: ${dbBackupPath}`);
-          } else {
-            // 格式1：查找数据库名称子目录
-            dbBackupPath = path.join(mongoDumpSource, mongoDbName);
-            console.log(`🔍 [恢复] 查找数据库备份目录: ${dbBackupPath}`);
+          // 方法1：如果存在 mongodump 备份，使用 mongorestore
+          if (fs.existsSync(mongoDumpSource)) {
+            console.log('📊 [恢复] 检测到 mongodump 备份，使用 mongorestore 恢复...');
             
-            if (!fs.existsSync(dbBackupPath)) {
-              // 可能备份在子目录中
-              console.log(`🔍 [恢复] 标准路径不存在，查找子目录...`);
-              console.log(`🔍 [恢复] 找到子目录: ${mongoDumpFiles.join(', ')}`);
+            try {
+              // 查找备份的数据库目录
+              // mongodump 可能有两种格式：
+              // 1. mongo_dump/tglogs/ (包含数据库名称子目录)
+              // 2. mongo_dump/ (直接包含集合文件 .bson)
+              let dbBackupPath = null;
+              console.log(`🔍 [恢复] 查找数据库备份目录...`);
               
-              if (mongoDumpFiles.length > 0) {
-                // 查找包含数据库备份的目录
-                for (const subDir of mongoDumpFiles) {
-                  const subDirPath = path.join(mongoDumpSource, subDir);
-                  const subDirStat = fs.statSync(subDirPath);
+              // 首先检查 mongo_dump 目录是否直接包含 .bson 文件（格式2）
+              const mongoDumpFiles = fs.readdirSync(mongoDumpSource);
+              const hasBsonFiles = mongoDumpFiles.some(f => f.endsWith('.bson') || f.endsWith('.metadata.json'));
+              
+              if (hasBsonFiles) {
+                // 格式2：集合文件直接在 mongo_dump 目录下
+                console.log(`✅ [恢复] 检测到备份格式：集合文件直接在 mongo_dump 目录下`);
+                dbBackupPath = mongoDumpSource;
+                console.log(`✅ [恢复] 使用备份路径: ${dbBackupPath}`);
+              } else {
+                // 格式1：查找数据库名称子目录
+                dbBackupPath = path.join(mongoDumpSource, mongoDbName);
+                console.log(`🔍 [恢复] 查找数据库备份目录: ${dbBackupPath}`);
+                
+                if (!fs.existsSync(dbBackupPath)) {
+                  // 可能备份在子目录中
+                  console.log(`🔍 [恢复] 标准路径不存在，查找子目录...`);
+                  console.log(`🔍 [恢复] 找到子目录: ${mongoDumpFiles.join(', ')}`);
                   
-                  if (subDirStat.isDirectory()) {
-                    // 检查是否是数据库名称目录
-                    if (subDir === mongoDbName) {
-                      console.log(`✅ [恢复] 找到数据库备份目录: ${subDirPath}`);
-                      dbBackupPath = subDirPath;
-                      break;
-                    }
-                    
-                    // 检查是否包含集合文件
-                    const collections = fs.readdirSync(subDirPath);
-                    if (collections.some(c => c.endsWith('.bson') || c.endsWith('.metadata.json'))) {
-                      console.log(`✅ [恢复] 找到数据库备份（子目录包含集合）: ${subDirPath}`);
-                      dbBackupPath = subDirPath;
-                      break;
+                  if (mongoDumpFiles.length > 0) {
+                    // 查找包含数据库备份的目录
+                    for (const subDir of mongoDumpFiles) {
+                      const subDirPath = path.join(mongoDumpSource, subDir);
+                      const subDirStat = fs.statSync(subDirPath);
+                      
+                      if (subDirStat.isDirectory()) {
+                        // 检查是否是数据库名称目录
+                        if (subDir === mongoDbName) {
+                          console.log(`✅ [恢复] 找到数据库备份目录: ${subDirPath}`);
+                          dbBackupPath = subDirPath;
+                          break;
+                        }
+                        
+                        // 检查是否包含集合文件
+                        const collections = fs.readdirSync(subDirPath);
+                        if (collections.some(c => c.endsWith('.bson') || c.endsWith('.metadata.json'))) {
+                          console.log(`✅ [恢复] 找到数据库备份（子目录包含集合）: ${subDirPath}`);
+                          dbBackupPath = subDirPath;
+                          break;
+                        }
+                      }
                     }
                   }
+                } else {
+                  console.log(`✅ [恢复] 找到数据库备份: ${dbBackupPath}`);
                 }
               }
-            } else {
-              console.log(`✅ [恢复] 找到数据库备份: ${dbBackupPath}`);
-            }
-          }
-          
-          if (fs.existsSync(dbBackupPath)) {
-            // 使用 Docker API (dockerode) 在容器内执行 mongorestore
-            try {
+              
+              if (fs.existsSync(dbBackupPath)) {
+                // 使用 Docker API (dockerode) 在容器内执行 mongorestore
+                try {
               const Docker = require('dockerode');
               const docker = new Docker({ socketPath: '/var/run/docker.sock' });
               const container = docker.getContainer(mongoContainerName);
@@ -3336,349 +3347,349 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
         }
       }
       
-      // 方法2：如果 mongodump 恢复失败或不存在，使用文件系统恢复
-      if (!mongoRestored && fs.existsSync(mongoDataSource)) {
-        console.log('📊 [恢复] 使用文件系统恢复 MongoDB 数据...');
-        
-        const possibleDataDests = [
-          path.join(scriptDir, 'data', 'mongo'),
-          '/app/data/mongo',  // 容器内路径
-          path.join(__dirname, '..', 'data', 'mongo')
-        ];
-        
-        for (const dataDest of possibleDataDests) {
-          try {
-            // 备份现有数据
-            if (fs.existsSync(dataDest)) {
-              const backupDataPath = `${dataDest}.backup.${Date.now()}`;
-              fs.renameSync(dataDest, backupDataPath);
-              console.log(`✅ [恢复] 已备份现有数据到: ${backupDataPath}`);
-            }
+          // 方法2：如果 mongodump 恢复失败或不存在，使用文件系统恢复
+          if (!mongoRestored && fs.existsSync(mongoDataSource)) {
+            console.log('📊 [恢复] 使用文件系统恢复 MongoDB 数据...');
             
-            // 使用 Node.js API 复制目录（跨平台）
-            copyDirectorySync(mongoDataSource, dataDest);
-            console.log(`✅ [恢复] 已恢复 MongoDB 数据目录: ${dataDest}`);
-            mongoRestored = true;
-            break;
-          } catch (copyError) {
-            console.warn(`⚠️  [恢复] 无法复制数据目录到 ${dataDest}: ${copyError.message}`);
+            const possibleDataDests = [
+              path.join(scriptDir, 'data', 'mongo'),
+              '/app/data/mongo',  // 容器内路径
+              path.join(__dirname, '..', 'data', 'mongo')
+            ];
+            
+            for (const dataDest of possibleDataDests) {
+              try {
+                // 备份现有数据
+                if (fs.existsSync(dataDest)) {
+                  const backupDataPath = `${dataDest}.backup.${Date.now()}`;
+                  fs.renameSync(dataDest, backupDataPath);
+                  console.log(`✅ [恢复] 已备份现有数据到: ${backupDataPath}`);
+                }
+                
+                // 使用 Node.js API 复制目录（跨平台）
+                copyDirectorySync(mongoDataSource, dataDest);
+                console.log(`✅ [恢复] 已恢复 MongoDB 数据目录: ${dataDest}`);
+                mongoRestored = true;
+                break;
+              } catch (copyError) {
+                console.warn(`⚠️  [恢复] 无法复制数据目录到 ${dataDest}: ${copyError.message}`);
+              }
+            }
           }
-        }
-      }
-      
-      if (!mongoRestored) {
-        console.warn(`⚠️  [恢复] MongoDB 数据恢复失败`);
-      }
-      
-      // 恢复 session 目录
-      const sessionSource = path.join(extractedDir, 'data', 'session');
-      const possibleSessionDests = [
-        path.join(scriptDir, 'data', 'session'),
-        '/app/data/session',
-        path.join(__dirname, '..', 'data', 'session')
-      ];
-      
-      let sessionRestored = false;
-      let telethonContainerStopped = false;
-      
-      if (fs.existsSync(sessionSource)) {
-        // 先尝试停止使用 session 目录的容器（telethon/listener）
-        try {
-          const Docker = require('dockerode');
-          const docker = new Docker({ socketPath: '/var/run/docker.sock' });
           
-          // 尝试停止 telethon/listener 容器
-          const containerNames = ['tg_listener', 'telethon', 'listener'];
-          for (const containerName of containerNames) {
+          if (!mongoRestored) {
+            console.warn(`⚠️  [恢复] MongoDB 数据恢复失败`);
+          }
+          
+          // 恢复 session 目录
+          const sessionSource = path.join(extractedDir, 'data', 'session');
+          const possibleSessionDests = [
+            path.join(scriptDir, 'data', 'session'),
+            '/app/data/session',
+            path.join(__dirname, '..', 'data', 'session')
+          ];
+          
+          let sessionRestored = false;
+          let telethonContainerStopped = false;
+          
+          if (fs.existsSync(sessionSource)) {
+            // 先尝试停止使用 session 目录的容器（telethon/listener）
             try {
-              const container = docker.getContainer(containerName);
-              const containerInfo = await container.inspect();
+              const Docker = require('dockerode');
+              const docker = new Docker({ socketPath: '/var/run/docker.sock' });
               
-              if (containerInfo.State.Running) {
-                console.log(`🛑 [恢复] 停止容器 ${containerName} 以释放 session 目录...`);
-                await container.stop({ t: 10 }); // 10秒超时
+              // 尝试停止 telethon/listener 容器
+              const containerNames = ['tg_listener', 'telethon', 'listener'];
+              for (const containerName of containerNames) {
+                try {
+                  const container = docker.getContainer(containerName);
+                  const containerInfo = await container.inspect();
+                  
+                  if (containerInfo.State.Running) {
+                    console.log(`🛑 [恢复] 停止容器 ${containerName} 以释放 session 目录...`);
+                    await container.stop({ t: 10 }); // 10秒超时
+                    telethonContainerStopped = true;
+                    console.log(`✅ [恢复] 已停止容器 ${containerName}`);
+                  }
+                } catch (containerError) {
+                  // 容器不存在或已停止，忽略
+                }
+              }
+            } catch (dockerError) {
+              console.warn(`⚠️  [恢复] 无法通过 Docker API 停止容器: ${dockerError.message}`);
+              // 尝试使用 shell 命令
+              try {
+                await execAsync('docker stop tg_listener telethon listener 2>/dev/null || true', {
+                  timeout: 15000
+                });
                 telethonContainerStopped = true;
-                console.log(`✅ [恢复] 已停止容器 ${containerName}`);
+                console.log(`✅ [恢复] 已通过 shell 命令停止容器`);
+              } catch (shellError) {
+                console.warn(`⚠️  [恢复] 无法停止容器，将尝试其他方法: ${shellError.message}`);
               }
-            } catch (containerError) {
-              // 容器不存在或已停止，忽略
             }
-          }
-        } catch (dockerError) {
-          console.warn(`⚠️  [恢复] 无法通过 Docker API 停止容器: ${dockerError.message}`);
-          // 尝试使用 shell 命令
-          try {
-            await execAsync('docker stop tg_listener telethon listener 2>/dev/null || true', {
-              timeout: 15000
-            });
-            telethonContainerStopped = true;
-            console.log(`✅ [恢复] 已通过 shell 命令停止容器`);
-          } catch (shellError) {
-            console.warn(`⚠️  [恢复] 无法停止容器，将尝试其他方法: ${shellError.message}`);
-          }
-        }
-        
-        // 等待容器完全停止并释放文件句柄
-        if (telethonContainerStopped) {
-          console.log(`⏳ [恢复] 等待容器完全停止并释放文件句柄...`);
-          await new Promise(resolve => setTimeout(resolve, 2000)); // 优化：减少到2秒
-        }
-        
-        // 使用 Docker API 在 tg_listener 容器内恢复 session 目录
-        // 因为 API 容器将 session 目录挂载为只读，无法直接写入
-        try {
-          const Docker = require('dockerode');
-          const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-          
-          // 查找 tg_listener 容器
-          let listenerContainer = null;
-          const containerNames = ['tg_listener', 'telethon', 'listener'];
-          for (const containerName of containerNames) {
-            try {
-              const container = docker.getContainer(containerName);
-              await container.inspect();
-              listenerContainer = container;
-              console.log(`✅ [恢复] 找到容器: ${containerName}`);
-              break;
-            } catch (e) {
-              // 容器不存在，继续查找
-            }
-          }
-          
-          if (listenerContainer) {
-            // 将备份的 session 文件复制到容器内
-            console.log(`📦 [恢复] 准备将 session 文件复制到容器内...`);
             
-            // 使用 exec 命令创建 tar 文件
-            // 优化：使用不压缩的 tar 格式以加快速度
-            const sessionTarPath = path.join(extractedDir, 'session_restore.tar');
-            try {
-              await execAsync(`cd "${sessionSource}" && tar -cf "${sessionTarPath}" .`, {
-                timeout: 30000
-              });
-              
-              // 读取 tar 文件
-              const sessionTarData = fs.readFileSync(sessionTarPath);
-              
-              // 上传到容器并解压
-              const containerSessionPath = '/app/session'; // tg_listener 容器内的 session 路径
-              console.log(`📦 [恢复] 上传 session 文件到容器 ${containerSessionPath}...`);
-              
-              // 使用 putArchive 上传 tar 文件
-              await listenerContainer.putArchive(sessionTarData, {
-                path: containerSessionPath
-              });
-              
-              console.log(`✅ [恢复] 已恢复 session 目录到容器内: ${containerSessionPath}`);
-              sessionRestored = true;
-              
-              // 清理临时 tar 文件
-              try {
-                fs.unlinkSync(sessionTarPath);
-              } catch (e) {
-                // 忽略清理错误
-              }
-            } catch (tarError) {
-              console.warn(`⚠️  [恢复] 创建 tar 文件失败: ${tarError.message}`);
-              throw tarError;
+            // 等待容器完全停止并释放文件句柄
+            if (telethonContainerStopped) {
+              console.log(`⏳ [恢复] 等待容器完全停止并释放文件句柄...`);
+              await new Promise(resolve => setTimeout(resolve, 2000)); // 优化：减少到2秒
             }
-          } else {
-            console.warn(`⚠️  [恢复] 未找到 tg_listener 容器，尝试在主机文件系统恢复...`);
-            // 回退到主机文件系统恢复
-            const hostSessionPath = path.join(scriptDir, 'data', 'session');
-            if (fs.existsSync(hostSessionPath)) {
-              try {
-                // 备份现有目录
-                if (fs.existsSync(hostSessionPath)) {
-                  const backupPath = `${hostSessionPath}.backup.${Date.now()}`;
+            
+            // 使用 Docker API 在 tg_listener 容器内恢复 session 目录
+            // 因为 API 容器将 session 目录挂载为只读，无法直接写入
+            try {
+              const Docker = require('dockerode');
+              const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+              
+              // 查找 tg_listener 容器
+              let listenerContainer = null;
+              const containerNames = ['tg_listener', 'telethon', 'listener'];
+              for (const containerName of containerNames) {
+                try {
+                  const container = docker.getContainer(containerName);
+                  await container.inspect();
+                  listenerContainer = container;
+                  console.log(`✅ [恢复] 找到容器: ${containerName}`);
+                  break;
+                } catch (e) {
+                  // 容器不存在，继续查找
+                }
+              }
+              
+              if (listenerContainer) {
+                // 将备份的 session 文件复制到容器内
+                console.log(`📦 [恢复] 准备将 session 文件复制到容器内...`);
+                
+                // 使用 exec 命令创建 tar 文件
+                // 优化：使用不压缩的 tar 格式以加快速度
+                const sessionTarPath = path.join(extractedDir, 'session_restore.tar');
+                try {
+                  await execAsync(`cd "${sessionSource}" && tar -cf "${sessionTarPath}" .`, {
+                    timeout: 30000
+                  });
+                  
+                  // 读取 tar 文件
+                  const sessionTarData = fs.readFileSync(sessionTarPath);
+                  
+                  // 上传到容器并解压
+                  const containerSessionPath = '/app/session'; // tg_listener 容器内的 session 路径
+                  console.log(`📦 [恢复] 上传 session 文件到容器 ${containerSessionPath}...`);
+                  
+                  // 使用 putArchive 上传 tar 文件
+                  await listenerContainer.putArchive(sessionTarData, {
+                    path: containerSessionPath
+                  });
+                  
+                  console.log(`✅ [恢复] 已恢复 session 目录到容器内: ${containerSessionPath}`);
+                  sessionRestored = true;
+                  
+                  // 清理临时 tar 文件
                   try {
-                    fs.renameSync(hostSessionPath, backupPath);
-                    console.log(`✅ [恢复] 已备份现有 session 到: ${backupPath}`);
+                    fs.unlinkSync(sessionTarPath);
                   } catch (e) {
-                    // 如果重命名失败，尝试删除
-                    fs.rmSync(hostSessionPath, { recursive: true, force: true });
+                    // 忽略清理错误
+                  }
+                } catch (tarError) {
+                  console.warn(`⚠️  [恢复] 创建 tar 文件失败: ${tarError.message}`);
+                  throw tarError;
+                }
+              } else {
+                console.warn(`⚠️  [恢复] 未找到 tg_listener 容器，尝试在主机文件系统恢复...`);
+                // 回退到主机文件系统恢复
+                const hostSessionPath = path.join(scriptDir, 'data', 'session');
+                if (fs.existsSync(hostSessionPath)) {
+                  try {
+                    // 备份现有目录
+                    if (fs.existsSync(hostSessionPath)) {
+                      const backupPath = `${hostSessionPath}.backup.${Date.now()}`;
+                      try {
+                        fs.renameSync(hostSessionPath, backupPath);
+                        console.log(`✅ [恢复] 已备份现有 session 到: ${backupPath}`);
+                      } catch (e) {
+                        // 如果重命名失败，尝试删除
+                        fs.rmSync(hostSessionPath, { recursive: true, force: true });
+                      }
+                    }
+                    
+                    // 确保父目录存在
+                    const parentDir = path.dirname(hostSessionPath);
+                    if (!fs.existsSync(parentDir)) {
+                      fs.mkdirSync(parentDir, { recursive: true });
+                    }
+                    
+                    // 复制 session 目录
+                    copyDirectorySync(sessionSource, hostSessionPath);
+                    console.log(`✅ [恢复] 已恢复 session 目录: ${hostSessionPath}`);
+                    sessionRestored = true;
+                  } catch (hostError) {
+                    console.error(`❌ [恢复] 主机文件系统恢复失败: ${hostError.message}`);
                   }
                 }
-                
-                // 确保父目录存在
-                const parentDir = path.dirname(hostSessionPath);
-                if (!fs.existsSync(parentDir)) {
-                  fs.mkdirSync(parentDir, { recursive: true });
-                }
-                
-                // 复制 session 目录
-                copyDirectorySync(sessionSource, hostSessionPath);
-                console.log(`✅ [恢复] 已恢复 session 目录: ${hostSessionPath}`);
-                sessionRestored = true;
-              } catch (hostError) {
-                console.error(`❌ [恢复] 主机文件系统恢复失败: ${hostError.message}`);
               }
-            }
-          }
-        } catch (dockerError) {
-          console.warn(`⚠️  [恢复] 使用 Docker API 恢复失败: ${dockerError.message}`);
-          console.warn(`⚠️  [恢复] 尝试在主机文件系统恢复...`);
-          
-          // 回退到主机文件系统恢复
-          const hostSessionPath = path.join(scriptDir, 'data', 'session');
-          if (fs.existsSync(hostSessionPath)) {
-            try {
-              // 备份现有目录
+            } catch (dockerError) {
+              console.warn(`⚠️  [恢复] 使用 Docker API 恢复失败: ${dockerError.message}`);
+              console.warn(`⚠️  [恢复] 尝试在主机文件系统恢复...`);
+              
+              // 回退到主机文件系统恢复
+              const hostSessionPath = path.join(scriptDir, 'data', 'session');
               if (fs.existsSync(hostSessionPath)) {
-                const backupPath = `${hostSessionPath}.backup.${Date.now()}`;
                 try {
-                  fs.renameSync(hostSessionPath, backupPath);
-                  console.log(`✅ [恢复] 已备份现有 session 到: ${backupPath}`);
-                } catch (e) {
-                  // 如果重命名失败，尝试删除
-                  fs.rmSync(hostSessionPath, { recursive: true, force: true });
+                  // 备份现有目录
+                  if (fs.existsSync(hostSessionPath)) {
+                    const backupPath = `${hostSessionPath}.backup.${Date.now()}`;
+                    try {
+                      fs.renameSync(hostSessionPath, backupPath);
+                      console.log(`✅ [恢复] 已备份现有 session 到: ${backupPath}`);
+                    } catch (e) {
+                      // 如果重命名失败，尝试删除
+                      fs.rmSync(hostSessionPath, { recursive: true, force: true });
+                    }
+                  }
+                  
+                  // 确保父目录存在
+                  const parentDir = path.dirname(hostSessionPath);
+                  if (!fs.existsSync(parentDir)) {
+                    fs.mkdirSync(parentDir, { recursive: true });
+                  }
+                  
+                  // 复制 session 目录
+                  copyDirectorySync(sessionSource, hostSessionPath);
+                  console.log(`✅ [恢复] 已恢复 session 目录: ${hostSessionPath}`);
+                  sessionRestored = true;
+                } catch (hostError) {
+                  console.error(`❌ [恢复] 主机文件系统恢复失败: ${hostError.message}`);
                 }
               }
-              
-              // 确保父目录存在
-              const parentDir = path.dirname(hostSessionPath);
-              if (!fs.existsSync(parentDir)) {
-                fs.mkdirSync(parentDir, { recursive: true });
-              }
-              
-              // 复制 session 目录
-              copyDirectorySync(sessionSource, hostSessionPath);
-              console.log(`✅ [恢复] 已恢复 session 目录: ${hostSessionPath}`);
-              sessionRestored = true;
-            } catch (hostError) {
-              console.error(`❌ [恢复] 主机文件系统恢复失败: ${hostError.message}`);
             }
-          }
-        }
-        
-        // 如果之前停止了容器，现在重新启动
-        if (telethonContainerStopped) {
-          try {
-            const Docker = require('dockerode');
-            const docker = new Docker({ socketPath: '/var/run/docker.sock' });
             
-            const containerNames = ['tg_listener', 'telethon', 'listener'];
-            for (const containerName of containerNames) {
+            // 如果之前停止了容器，现在重新启动
+            if (telethonContainerStopped) {
               try {
-                const container = docker.getContainer(containerName);
-                const containerInfo = await container.inspect();
+                const Docker = require('dockerode');
+                const docker = new Docker({ socketPath: '/var/run/docker.sock' });
                 
-                if (!containerInfo.State.Running) {
-                  console.log(`▶️  [恢复] 重新启动容器 ${containerName}...`);
-                  await container.start();
-                  console.log(`✅ [恢复] 已启动容器 ${containerName}`);
-                }
-              } catch (containerError) {
-                // 容器不存在，忽略
-              }
-            }
-            
-            // 如果恢复了 session，等待容器完全启动后触发配置重载，确保 Telethon 客户端重新初始化
-            if (sessionRestored) {
-              console.log(`⏳ [恢复] 等待容器完全启动...`);
-              // 优化：使用容器就绪检查代替固定等待时间
-              try {
                 const containerNames = ['tg_listener', 'telethon', 'listener'];
                 for (const containerName of containerNames) {
                   try {
                     const container = docker.getContainer(containerName);
-                    await waitForContainerReady(container, 10); // 最多等待10秒，但通常更快
-                    console.log(`✅ [恢复] 容器 ${containerName} 已就绪`);
-                    break;
-                  } catch (e) {
-                    // 容器不存在或检查失败，继续
-                  }
-                }
-              } catch (waitError) {
-                // 如果检查失败，使用较短的固定等待时间
-                console.warn(`⚠️  [恢复] 容器就绪检查失败，使用固定等待: ${waitError.message}`);
-                await new Promise(resolve => setTimeout(resolve, 5000));
-              }
-              
-              // 触发配置重载，这会重新初始化 Telethon 客户端
-              try {
-                const axios = require('axios');
-                const telethonUrl = process.env.TELETHON_URL || 'http://telethon:8888';
-                console.log(`🔄 [恢复] 触发 Telethon 配置重载以重新初始化客户端...`);
-                await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
-                  timeout: 10000
-                });
-                console.log(`✅ [恢复] 已触发 Telethon 配置重载`);
-              } catch (reloadError) {
-                console.warn(`⚠️  [恢复] 触发配置重载失败: ${reloadError.message}`);
-                console.warn(`⚠️  [恢复] 请手动重启 tg_listener 容器或使用切换账号功能`);
-              }
-            }
-          } catch (dockerError) {
-            console.warn(`⚠️  [恢复] 无法通过 Docker API 启动容器: ${dockerError.message}`);
-            // 尝试使用 shell 命令
-            try {
-              await execAsync('docker start tg_listener telethon listener 2>/dev/null || true', {
-                timeout: 15000
-              });
-              console.log(`✅ [恢复] 已通过 shell 命令启动容器`);
-              
-              // 如果恢复了 session，等待后触发配置重载
-              if (sessionRestored) {
-                console.log(`⏳ [恢复] 等待容器完全启动...`);
-                // 优化：使用容器就绪检查代替固定等待时间
-                try {
-                  const Docker = require('dockerode');
-                  const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-                  const containerNames = ['tg_listener', 'telethon', 'listener'];
-                  for (const containerName of containerNames) {
-                    try {
-                      const container = docker.getContainer(containerName);
-                      await waitForContainerReady(container, 10); // 最多等待10秒，但通常更快
-                      console.log(`✅ [恢复] 容器 ${containerName} 已就绪`);
-                      break;
-                    } catch (e) {
-                      // 容器不存在或检查失败，继续
+                    const containerInfo = await container.inspect();
+                    
+                    if (!containerInfo.State.Running) {
+                      console.log(`▶️  [恢复] 重新启动容器 ${containerName}...`);
+                      await container.start();
+                      console.log(`✅ [恢复] 已启动容器 ${containerName}`);
                     }
+                  } catch (containerError) {
+                    // 容器不存在，忽略
                   }
-                } catch (waitError) {
-                  // 如果检查失败，使用较短的固定等待时间
-                  console.warn(`⚠️  [恢复] 容器就绪检查失败，使用固定等待: ${waitError.message}`);
-                  await new Promise(resolve => setTimeout(resolve, 5000));
                 }
                 
+                // 如果恢复了 session，等待容器完全启动后触发配置重载，确保 Telethon 客户端重新初始化
+                if (sessionRestored) {
+                  console.log(`⏳ [恢复] 等待容器完全启动...`);
+                  // 优化：使用容器就绪检查代替固定等待时间
+                  try {
+                    const containerNames = ['tg_listener', 'telethon', 'listener'];
+                    for (const containerName of containerNames) {
+                      try {
+                        const container = docker.getContainer(containerName);
+                        await waitForContainerReady(container, 10); // 最多等待10秒，但通常更快
+                        console.log(`✅ [恢复] 容器 ${containerName} 已就绪`);
+                        break;
+                      } catch (e) {
+                        // 容器不存在或检查失败，继续
+                      }
+                    }
+                  } catch (waitError) {
+                    // 如果检查失败，使用较短的固定等待时间
+                    console.warn(`⚠️  [恢复] 容器就绪检查失败，使用固定等待: ${waitError.message}`);
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                  }
+                  
+                  // 触发配置重载，这会重新初始化 Telethon 客户端
+                  try {
+                    const axios = require('axios');
+                    const telethonUrl = process.env.TELETHON_URL || 'http://telethon:8888';
+                    console.log(`🔄 [恢复] 触发 Telethon 配置重载以重新初始化客户端...`);
+                    await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
+                      timeout: 10000
+                    });
+                    console.log(`✅ [恢复] 已触发 Telethon 配置重载`);
+                  } catch (reloadError) {
+                    console.warn(`⚠️  [恢复] 触发配置重载失败: ${reloadError.message}`);
+                    console.warn(`⚠️  [恢复] 请手动重启 tg_listener 容器或使用切换账号功能`);
+                  }
+                }
+              } catch (dockerError) {
+                console.warn(`⚠️  [恢复] 无法通过 Docker API 启动容器: ${dockerError.message}`);
+                // 尝试使用 shell 命令
                 try {
-                  const axios = require('axios');
-                  const telethonUrl = process.env.TELETHON_URL || 'http://telethon:8888';
-                  console.log(`🔄 [恢复] 触发 Telethon 配置重载以重新初始化客户端...`);
-                  await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
-                    timeout: 10000
+                  await execAsync('docker start tg_listener telethon listener 2>/dev/null || true', {
+                    timeout: 15000
                   });
-                  console.log(`✅ [恢复] 已触发 Telethon 配置重载`);
-                } catch (reloadError) {
-                  console.warn(`⚠️  [恢复] 触发配置重载失败: ${reloadError.message}`);
+                  console.log(`✅ [恢复] 已通过 shell 命令启动容器`);
+                  
+                  // 如果恢复了 session，等待后触发配置重载
+                  if (sessionRestored) {
+                    console.log(`⏳ [恢复] 等待容器完全启动...`);
+                    // 优化：使用容器就绪检查代替固定等待时间
+                    try {
+                      const Docker = require('dockerode');
+                      const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+                      const containerNames = ['tg_listener', 'telethon', 'listener'];
+                      for (const containerName of containerNames) {
+                        try {
+                          const container = docker.getContainer(containerName);
+                          await waitForContainerReady(container, 10); // 最多等待10秒，但通常更快
+                          console.log(`✅ [恢复] 容器 ${containerName} 已就绪`);
+                          break;
+                        } catch (e) {
+                          // 容器不存在或检查失败，继续
+                        }
+                      }
+                    } catch (waitError) {
+                      // 如果检查失败，使用较短的固定等待时间
+                      console.warn(`⚠️  [恢复] 容器就绪检查失败，使用固定等待: ${waitError.message}`);
+                      await new Promise(resolve => setTimeout(resolve, 5000));
+                    }
+                    
+                    try {
+                      const axios = require('axios');
+                      const telethonUrl = process.env.TELETHON_URL || 'http://telethon:8888';
+                      console.log(`🔄 [恢复] 触发 Telethon 配置重载以重新初始化客户端...`);
+                      await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
+                        timeout: 10000
+                      });
+                      console.log(`✅ [恢复] 已触发 Telethon 配置重载`);
+                    } catch (reloadError) {
+                      console.warn(`⚠️  [恢复] 触发配置重载失败: ${reloadError.message}`);
+                    }
+                  }
+                } catch (shellError) {
+                  console.warn(`⚠️  [恢复] 无法启动容器，请手动启动: ${shellError.message}`);
                 }
               }
-            } catch (shellError) {
-              console.warn(`⚠️  [恢复] 无法启动容器，请手动启动: ${shellError.message}`);
+            }
+          } else {
+            console.log(`ℹ️  [恢复] 备份中未找到 session 目录，跳过恢复`);
+          }
+          
+          // 清理临时目录
+          if (tempDir && fs.existsSync(tempDir)) {
+            try {
+              fs.rmSync(tempDir, { recursive: true, force: true });
+              console.log(`✅ [恢复] 已清理临时目录: ${tempDir}`);
+            } catch (cleanError) {
+              console.warn(`⚠️  [恢复] 清理临时目录失败: ${cleanError.message}`);
             }
           }
+          
+          console.log('✅ [恢复] 后台数据恢复完成');
+        } catch (backgroundError) {
+          console.error('❌ [恢复] 后台数据恢复失败:', backgroundError);
+          console.error('❌ [恢复] 错误堆栈:', backgroundError.stack);
         }
-      } else {
-        console.log(`ℹ️  [恢复] 备份中未找到 session 目录，跳过恢复`);
-      }
-      
-      // 清理临时目录
-      if (tempDir && fs.existsSync(tempDir)) {
-        try {
-          fs.rmSync(tempDir, { recursive: true, force: true });
-          console.log(`✅ [恢复] 已清理临时目录: ${tempDir}`);
-        } catch (cleanError) {
-          console.warn(`⚠️  [恢复] 清理临时目录失败: ${cleanError.message}`);
-        }
-      }
-      
-      console.log('✅ [恢复] 恢复完成');
-      
-      res.json({
-        status: 'ok',
-        message: '数据恢复成功，请重启服务以应用更改'
-      });
+      })();
     } catch (restoreError) {
       // 清理临时目录
       if (tempDir && fs.existsSync(tempDir)) {
