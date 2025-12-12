@@ -5616,6 +5616,203 @@ async function startMultiLoginContainer(userId) {
       USER_ID: userId
     };
     
+    // 先执行 session 文件迁移（无论容器是否存在都需要检查）
+    // 注意：session文件路径说明
+    // 单开模式：data/session/telegram.session 或 data/session/telegram_{userId}.session
+    // 多开模式：data/session/user_${userId}.session
+    // 路径不同，不会冲突
+    // 注意：session 文件可能在 backend/data 目录下（容器内路径）或 data/session 目录下（宿主机路径）
+    const sessionDir1 = path.join(__dirname, '..', 'data', 'session'); // 宿主机路径
+    const sessionDir2 = path.join(__dirname, 'data'); // backend/data 路径
+    const oldSessionFile1 = path.join(sessionDir1, 'telegram.session');
+    const oldSessionFile2 = path.join(sessionDir1, `telegram_${userId}.session`);
+    const oldSessionFile3 = path.join(sessionDir2, 'telegram.session');
+    const oldSessionFile4 = path.join(sessionDir2, `telegram_${userId}.session`);
+    const volumeSessionFileName = `user_${userId}.session`;
+    
+    // 检查 volume 中是否已有 session 文件
+    const tempContainerName = `tg_session_check_${Date.now()}`;
+    const alpineImage = 'alpine:latest';
+    let sessionExistsInVolume = false;
+    
+    console.log(`🔍 [多开登录] 检查 volume 中是否存在 session 文件: ${volumeSessionFileName}`);
+    
+    try {
+      // 创建临时容器检查 volume 中是否有 session 文件
+      const tempContainer = await docker.createContainer({
+        Image: alpineImage,
+        name: tempContainerName,
+        Cmd: ['sh', '-c', 'sleep 1'],
+        HostConfig: {
+          Binds: [
+            `${sessionVolumeName}:/tmp/session_volume`
+          ]
+        }
+      });
+      
+      await tempContainer.start();
+      
+      const exec = await tempContainer.exec({
+        Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "exists" || echo "not_exists"`],
+        AttachStdout: true,
+        AttachStderr: true
+      });
+      
+      const stream = await exec.start({ hijack: true, stdin: false });
+      let output = '';
+      await new Promise((resolve) => {
+        stream.on('data', (chunk) => {
+          output += chunk.toString();
+        });
+        stream.on('end', resolve);
+      });
+      
+      sessionExistsInVolume = output.trim().includes('exists');
+      console.log(`🔍 [多开登录] Volume 检查结果: ${sessionExistsInVolume ? '已存在' : '不存在'} (输出: ${output.trim()})`);
+      
+      await tempContainer.stop();
+      await tempContainer.remove();
+    } catch (checkError) {
+      console.warn(`⚠️  [多开登录] 检查 volume 中的 session 文件失败: ${checkError.message}`);
+    }
+    
+    // 如果 volume 中没有 session 文件，且宿主机上有旧文件，则迁移
+    if (!sessionExistsInVolume) {
+      console.log(`🔍 [多开登录] Volume 中没有 session 文件，开始查找源文件...`);
+      let sourceFile = null;
+      // 按优先级查找 session 文件
+      console.log(`🔍 [多开登录] 检查路径1: ${oldSessionFile2} (存在: ${fs.existsSync(oldSessionFile2)})`);
+      console.log(`🔍 [多开登录] 检查路径2: ${oldSessionFile4} (存在: ${fs.existsSync(oldSessionFile4)})`);
+      console.log(`🔍 [多开登录] 检查路径3: ${oldSessionFile1} (存在: ${fs.existsSync(oldSessionFile1)})`);
+      console.log(`🔍 [多开登录] 检查路径4: ${oldSessionFile3} (存在: ${fs.existsSync(oldSessionFile3)})`);
+      
+      if (fs.existsSync(oldSessionFile2)) {
+        sourceFile = oldSessionFile2;
+        console.log(`✅ [多开登录] 找到 session 文件: ${oldSessionFile2}`);
+      } else if (fs.existsSync(oldSessionFile4)) {
+        sourceFile = oldSessionFile4;
+        console.log(`✅ [多开登录] 找到 session 文件: ${oldSessionFile4}`);
+      } else if (fs.existsSync(oldSessionFile1)) {
+        sourceFile = oldSessionFile1;
+        console.log(`✅ [多开登录] 找到 session 文件: ${oldSessionFile1}`);
+      } else if (fs.existsSync(oldSessionFile3)) {
+        sourceFile = oldSessionFile3;
+        console.log(`✅ [多开登录] 找到 session 文件: ${oldSessionFile3}`);
+      }
+      
+      // 如果还是没找到，尝试查找所有 .session 文件
+      if (!sourceFile) {
+        console.log(`🔍 [多开登录] 标准路径未找到，搜索所有 .session 文件...`);
+        const searchDirs = [sessionDir1, sessionDir2];
+        for (const dir of searchDirs) {
+          if (fs.existsSync(dir)) {
+            try {
+              const files = fs.readdirSync(dir);
+              console.log(`🔍 [多开登录] 目录 ${dir} 中的文件: ${files.join(', ')}`);
+              const sessionFiles = files.filter(f => f.endsWith('.session') && !f.includes('restore'));
+              if (sessionFiles.length > 0) {
+                // 优先使用包含 userId 的文件，否则使用第一个
+                const userIdFile = sessionFiles.find(f => f.includes(userId));
+                sourceFile = userIdFile ? path.join(dir, userIdFile) : path.join(dir, sessionFiles[0]);
+                console.log(`📦 [多开登录] 找到 session 文件: ${sourceFile}`);
+                break;
+              }
+            } catch (e) {
+              console.warn(`⚠️  [多开登录] 读取目录 ${dir} 失败: ${e.message}`);
+            }
+          } else {
+            console.log(`⚠️  [多开登录] 目录不存在: ${dir}`);
+          }
+        }
+      }
+      
+      if (!sourceFile) {
+        console.warn(`⚠️  [多开登录] 未找到任何 session 文件，多开容器可能需要重新登录`);
+      } else {
+        // 迁移 session 文件到 volume
+        try {
+          // 使用临时容器将 session 文件复制到 volume
+          const copyContainerName = `tg_session_copy_${Date.now()}`;
+          const copyContainer = await docker.createContainer({
+            Image: alpineImage,
+            name: copyContainerName,
+            Cmd: ['sh', '-c', 'sleep 3600'],
+            HostConfig: {
+              Binds: [
+                `${path.dirname(sourceFile)}:/old_session:ro`,
+                `${sessionVolumeName}:/tmp/session_volume`
+              ]
+            }
+          });
+          
+          await copyContainer.start();
+          
+          // 复制文件到 volume
+          const copyExec = await copyContainer.exec({
+            Cmd: ['sh', '-c', `cp /old_session/${path.basename(sourceFile)} /tmp/session_volume/${volumeSessionFileName}`],
+            AttachStdout: true,
+            AttachStderr: true
+          });
+          
+          const copyStream = await copyExec.start({ hijack: true, stdin: false });
+          await new Promise((resolve) => {
+            copyStream.on('end', resolve);
+          });
+          
+          await copyContainer.stop();
+          await copyContainer.remove();
+          
+          console.log(`✅ [多开登录] 已迁移session文件到 volume: ${path.basename(sourceFile)} -> ${volumeSessionFileName}`);
+          
+          // 验证文件是否成功复制
+          try {
+            const verifyContainer = await docker.createContainer({
+              Image: alpineImage,
+              name: `tg_session_verify_${Date.now()}`,
+              Cmd: ['sh', '-c', 'sleep 1'],
+              HostConfig: {
+                Binds: [
+                  `${sessionVolumeName}:/tmp/session_volume`
+                ]
+              }
+            });
+            
+            await verifyContainer.start();
+            
+            const verifyExec = await verifyContainer.exec({
+              Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "OK" || echo "FAIL"`],
+              AttachStdout: true,
+              AttachStderr: true
+            });
+            
+            const verifyStream = await verifyExec.start({ hijack: true, stdin: false });
+            let verifyOutput = '';
+            await new Promise((resolve) => {
+              verifyStream.on('data', (chunk) => {
+                verifyOutput += chunk.toString();
+              });
+              verifyStream.on('end', resolve);
+            });
+            
+            await verifyContainer.stop();
+            await verifyContainer.remove();
+            
+            if (verifyOutput.trim().includes('OK')) {
+              console.log(`✅ [多开登录] 验证成功：session 文件已在 volume 中`);
+            } else {
+              console.warn(`⚠️  [多开登录] 验证失败：session 文件可能未正确复制到 volume`);
+            }
+          } catch (verifyError) {
+            console.warn(`⚠️  [多开登录] 验证 session 文件失败: ${verifyError.message}`);
+          }
+        } catch (migrateError) {
+          console.warn(`⚠️  [多开登录] 迁移session文件到 volume 失败: ${migrateError.message}`);
+        }
+      }
+    } else {
+      console.log(`✅ [多开登录] Volume 中已存在 session 文件，跳过迁移`);
+    }
+    
     // 检查容器是否已存在
     let container = null;
     let needRecreate = false;
