@@ -5696,6 +5696,26 @@ async function startMultiLoginContainer(userId) {
     
     const containerName = `tg_listener_${userId}`;
     
+    // 查找正确的网络名称（docker-compose 可能使用项目前缀）
+    let networkName = 'tg-network';
+    try {
+      const networks = await docker.listNetworks();
+      // 查找包含 'tg-network' 的网络
+      const tgNetwork = networks.find(n => 
+        n.Name === 'tg-network' || 
+        n.Name === 'telegram-monitor_tg-network' ||
+        n.Name.endsWith('_tg-network')
+      );
+      if (tgNetwork) {
+        networkName = tgNetwork.Name;
+        console.log(`🔗 [多开登录] 使用网络: ${networkName}`);
+      } else {
+        console.warn(`⚠️  [多开登录] 未找到 tg-network，使用默认网络名称: ${networkName}`);
+      }
+    } catch (netError) {
+      console.warn(`⚠️  [多开登录] 查找网络失败: ${netError.message}，使用默认网络名称: ${networkName}`);
+    }
+    
     // 查找Telethon镜像（提升到函数作用域，以便在错误处理中使用）
     let containerImage = null;
     const images = await docker.listImages();
@@ -6267,8 +6287,13 @@ async function startMultiLoginContainer(userId) {
             `${sessionVolumeName}:/tmp/session_volume`,
             `${hostLogsPath}:/app/logs:rw`
           ],
-          NetworkMode: 'tg-network',
+          NetworkMode: networkName,
           RestartPolicy: { Name: 'unless-stopped' }
+        },
+        NetworkingConfig: {
+          EndpointsConfig: {
+            [networkName]: {}
+          }
         }
       });
       
@@ -6321,8 +6346,13 @@ async function startMultiLoginContainer(userId) {
                   `${sessionVolumeName}:/tmp/session_volume`,
                   `${hostLogsPath}:/app/logs:rw`
                 ],
-                NetworkMode: 'tg-network',
+                NetworkMode: networkName,
                 RestartPolicy: { Name: 'unless-stopped' }
+              },
+              NetworkingConfig: {
+                EndpointsConfig: {
+                  [networkName]: {}
+                }
               }
             });
             console.log(`✅ [多开登录] 已重新创建容器 ${containerName}`);
