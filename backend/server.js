@@ -4223,21 +4223,22 @@ async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHost
   }
   
   // 使用目录挂载方式，统一路径
+  // 如果参数中传入了 sessionHostPath，使用参数值；否则使用默认路径
   const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
-  const sessionHostPath = path.join(PROJECT_ROOT, 'data', 'session');
+  const actualSessionHostPath = sessionHostPath || path.join(PROJECT_ROOT, 'data', 'session');
   const sessionContainerPath = '/opt/telegram-monitor/data/session';
   
   // 确保 session 目录存在
-  if (!fs.existsSync(sessionHostPath)) {
-    fs.mkdirSync(sessionHostPath, { recursive: true });
-    console.log(`✅ [临时容器] 已创建 session 目录: ${sessionHostPath}`);
+  if (!fs.existsSync(actualSessionHostPath)) {
+    fs.mkdirSync(actualSessionHostPath, { recursive: true });
+    console.log(`✅ [临时容器] 已创建 session 目录: ${actualSessionHostPath}`);
   }
   
   const containerName = `tg_login_${userId}_${Date.now()}`;
   
   console.log(`🔨 [临时容器] 创建临时登录容器: ${containerName}`);
   console.log(`🔨 [临时容器] 使用镜像: ${containerImage}`);
-  console.log(`🔨 [临时容器] Session 目录挂载: ${sessionHostPath}:${sessionContainerPath}:rw`);
+  console.log(`🔨 [临时容器] Session 目录挂载: ${actualSessionHostPath}:${sessionContainerPath}:rw`);
   console.log(`🔨 [临时容器] Config 挂载: ${configHostPath}:/app/config.json:ro`);
   
   // 创建容器配置（长期运行，用于多次执行命令）
@@ -4252,7 +4253,7 @@ async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHost
     HostConfig: {
       Binds: [
         `${configHostPath}:/app/config.json:ro`,
-        `${sessionHostPath}:${sessionContainerPath}:rw`  // 使用目录挂载
+        `${actualSessionHostPath}:${sessionContainerPath}:rw`  // 使用目录挂载
       ],
       AutoRemove: false // 不自动删除，我们手动管理
     },
