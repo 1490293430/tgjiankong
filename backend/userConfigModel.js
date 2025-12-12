@@ -154,6 +154,11 @@ const userConfigSchema = new mongoose.Schema({
       type: String,
       default: ''
     }
+  },
+  // 多开登录功能：开启后可以多个账号同时接收消息
+  multi_login_enabled: {
+    type: Boolean,
+    default: false
   }
 }, {
   timestamps: true

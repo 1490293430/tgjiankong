@@ -2529,7 +2529,7 @@
                 });
                 
                 if (result && result.status === 'ok') {
-                    showToast('✅ 数据恢复成功！请重启服务以应用更改。', true);
+                    showToast('✅ 数据恢复成功！', true);
                     // 刷新备份列表
                     await loadBackupList();
                 } else {
@@ -3292,7 +3292,29 @@
                 const userList = document.getElementById('userList');
                 
                 if (data && data.length > 0) {
+                    // 先获取当前用户的配置以检查多开登录状态
+                    let multiLoginEnabled = false;
+                    try {
+                        const config = await apiRequest('/config');
+                        multiLoginEnabled = config.multi_login_enabled || false;
+                    } catch (e) {
+                        console.warn('获取多开登录配置失败:', e);
+                    }
+                    
                     userList.innerHTML = `
+                        <div style="margin-bottom: 15px; padding: 12px; background: #f8f9fa; border-radius: 8px;">
+                            <div style="display: flex; align-items: center; justify-content: space-between;">
+                                <div>
+                                    <label style="display: flex; align-items: center; cursor: pointer; font-weight: 500;">
+                                        <input type="checkbox" id="multiLoginEnabled" ${multiLoginEnabled ? 'checked' : ''} onchange="toggleMultiLogin(this.checked)" style="margin-right: 8px; width: 18px; height: 18px;">
+                                        <span>🔀 多开登录</span>
+                                    </label>
+                                    <div style="margin-top: 5px; font-size: 12px; color: #666;">
+                                        ${multiLoginEnabled ? '已开启：多个账号可同时接收消息' : '已关闭：切换用户后只有一个账号接收消息'}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                         <table style="width: 100%; border-collapse: collapse;">
                             <thead>
                                 <tr style="background: #f5f5f5; border-bottom: 2px solid #ddd;">
@@ -3382,6 +3404,43 @@
                 loadUsers();
             } catch (error) {
                 showToast('创建用户失败: ' + (error.message || '未知错误'), false);
+            }
+        }
+        
+        // 切换多开登录功能
+        async function toggleMultiLogin(enabled) {
+            const token = checkAuth();
+            if (!token) return;
+            
+            try {
+                // 获取当前配置
+                const currentConfig = await apiRequest('/config');
+                
+                // 更新多开登录配置
+                const updatedConfig = {
+                    ...currentConfig,
+                    multi_login_enabled: enabled
+                };
+                
+                // 保存配置
+                await apiRequest('/config', {
+                    method: 'POST',
+                    body: JSON.stringify(updatedConfig)
+                });
+                
+                showToast(enabled ? '多开登录已开启' : '多开登录已关闭', true);
+                
+                // 刷新用户列表以更新显示
+                setTimeout(() => {
+                    loadUsers();
+                }, 500);
+            } catch (error) {
+                showToast('切换多开登录失败: ' + (error.message || '未知错误'), false);
+                // 恢复复选框状态
+                const checkbox = document.getElementById('multiLoginEnabled');
+                if (checkbox) {
+                    checkbox.checked = !enabled;
+                }
             }
         }
         

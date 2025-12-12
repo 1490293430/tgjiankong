@@ -307,11 +307,12 @@ async function loadUserConfig(userId) {
         ai_send_telegram: true,
         ai_send_email: false,
         ai_send_webhook: false,
-        ai_trigger_enabled: false,
-        ai_trigger_users: [],
-        ai_trigger_prompt: ''
-      }
-    };
+      ai_trigger_enabled: false,
+      ai_trigger_users: [],
+      ai_trigger_prompt: ''
+    },
+    multi_login_enabled: false
+  };
   }
 }
 
@@ -855,10 +856,20 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
     loginStatusCache.delete(`login_status_${newUserId}`);
     console.log(`🗑️  已清除用户 ${oldUserId} 和 ${newUserId} 的登录状态缓存`);
     
+    // 检查是否启用多开登录（使用主账号的配置）
+    const accountConfig = await loadUserConfig(currentAccountId.toString());
+    const multiLoginEnabled = accountConfig.multi_login_enabled || false;
+    
     // 更新全局配置文件并同步用户配置（异步执行，不阻塞响应）
     setTimeout(async () => {
       try {
-        await syncUserConfigAndRestartTelethon(targetUser._id.toString());
+        if (multiLoginEnabled) {
+          // 多开登录模式：为每个用户创建独立容器
+          await syncUserConfigAndStartMultiLoginContainer(targetUser._id.toString());
+        } else {
+          // 单开模式：更新全局配置并重启主容器
+          await syncUserConfigAndRestartTelethon(targetUser._id.toString());
+        }
       } catch (error) {
         console.error('⚠️  切换用户后同步配置失败（不影响切换用户）:', error);
       }
@@ -1075,6 +1086,15 @@ app.post('/api/config', authMiddleware, async (req, res) => {
         telegramConfigChanged = true;
         console.log(`⚠️  检测到 Telegram API 配置变化 (用户ID: ${userId})`);
       }
+    }
+    
+    // 处理多开登录配置
+    if (incoming.multi_login_enabled !== undefined) {
+      incoming.multi_login_enabled = Boolean(incoming.multi_login_enabled);
+      console.log(`📋 [配置保存] multi_login_enabled: ${incoming.multi_login_enabled}`);
+    } else if (currentConfig.multi_login_enabled !== undefined) {
+      // 如果前端没有发送，保留原有配置
+      incoming.multi_login_enabled = currentConfig.multi_login_enabled;
     }
     
     // 准备更新数据
@@ -2526,6 +2546,27 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
       console.warn(`⚠️  [备份] 配置文件不存在，尝试过的路径: ${possibleConfigPaths.join(', ')}`);
     }
     
+    // 备份多开登录的独立配置文件（config_*.json）
+    try {
+      const backendDir = path.join(scriptDir, 'backend');
+      if (fs.existsSync(backendDir)) {
+        const files = fs.readdirSync(backendDir);
+        const multiLoginConfigFiles = files.filter(f => f.startsWith('config_') && f.endsWith('.json'));
+        if (multiLoginConfigFiles.length > 0) {
+          const multiLoginConfigDir = path.join(backupPath, 'multi_login_configs');
+          fs.mkdirSync(multiLoginConfigDir, { recursive: true });
+          for (const configFile of multiLoginConfigFiles) {
+            const sourcePath = path.join(backendDir, configFile);
+            const destPath = path.join(multiLoginConfigDir, configFile);
+            fs.copyFileSync(sourcePath, destPath);
+            console.log(`✅ [备份] 已备份多开登录配置文件: ${configFile}`);
+          }
+        }
+      }
+    } catch (multiLoginConfigError) {
+      console.warn(`⚠️  [备份] 备份多开登录配置文件失败: ${multiLoginConfigError.message}`);
+    }
+    
     // 备份 .env 文件（尝试多个可能的路径）
     const possibleEnvPaths = [
       path.join(scriptDir, '.env'),
@@ -2685,7 +2726,16 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
           const backupSessionPath = path.join(backupDataPath, 'session');
           copyDirectorySync(sessionPath, backupSessionPath);
           
+          // 统计备份的 session 文件类型
+          const telegramSessions = sessionFiles.filter(f => f.startsWith('telegram')).length;
+          const userSessions = sessionFiles.filter(f => f.startsWith('user_')).length;
           console.log(`✅ [备份] 已备份 session 目录: ${sessionPath}`);
+          if (telegramSessions > 0) {
+            console.log(`   - 单开模式 session 文件: ${telegramSessions} 个`);
+          }
+          if (userSessions > 0) {
+            console.log(`   - 多开模式 session 文件: ${userSessions} 个`);
+          }
           sessionBacked = true;
           break;
         }
@@ -2759,7 +2809,8 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
               ai_trigger_enabled: uc.ai_analysis?.ai_trigger_enabled || false,
               ai_trigger_users: uc.ai_analysis?.ai_trigger_users || [],
               ai_trigger_prompt: uc.ai_analysis?.ai_trigger_prompt || ''
-            }
+            },
+            multi_login_enabled: uc.multi_login_enabled || false
           }))
         };
         
@@ -2779,14 +2830,17 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
 备份路径: ${backupPath}
 备份内容:
 - 配置文件 (backend/config.json) - 注意：这只是默认模板，实际配置在MongoDB中
+- 多开登录独立配置文件 (multi_login_configs/config_*.json) - 多开登录模式下每个用户的独立配置
 - 环境变量 (.env)
 - MongoDB 数据库 (使用 ${mongoBacked ? 'mongodump (推荐)' : '文件系统备份'})
-  * 包含所有用户配置（keywords, channels, alert_keywords, ai_analysis等）
+  * 包含所有用户配置（keywords, channels, alert_keywords, ai_analysis, multi_login_enabled等）
   * 包含所有用户账号信息
   * 包含所有消息日志
   * 包含所有AI分析结果
 - 用户配置快照 (user_configs_snapshot.json) - JSON格式，方便查看
 - Session 文件 (Telegram 登录凭证)
+  * 单开模式：telegram*.session
+  * 多开模式：user_*.session
 
 重要提示：
 - 用户的实际配置存储在MongoDB的userconfigs集合中，不在config.json中
@@ -3096,6 +3150,27 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
         }
       } else {
         console.warn(`⚠️  [恢复] 备份中未找到环境变量文件: ${envSource}`);
+      }
+      
+      // 恢复多开登录的独立配置文件（config_*.json）
+      const multiLoginConfigSource = path.join(extractedDir, 'multi_login_configs');
+      if (fs.existsSync(multiLoginConfigSource)) {
+        try {
+          const backendDir = path.join(scriptDir, 'backend');
+          if (fs.existsSync(backendDir)) {
+            const configFiles = fs.readdirSync(multiLoginConfigSource);
+            for (const configFile of configFiles) {
+              if (configFile.startsWith('config_') && configFile.endsWith('.json')) {
+                const sourcePath = path.join(multiLoginConfigSource, configFile);
+                const destPath = path.join(backendDir, configFile);
+                fs.copyFileSync(sourcePath, destPath);
+                console.log(`✅ [恢复] 已恢复多开登录配置文件: ${configFile}`);
+              }
+            }
+          }
+        } catch (multiLoginConfigError) {
+          console.warn(`⚠️  [恢复] 恢复多开登录配置文件失败: ${multiLoginConfigError.message}`);
+        }
       }
       
       // 配置项恢复完成，立即返回成功响应
@@ -3685,6 +3760,63 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
           }
           
           console.log('✅ [恢复] 后台数据恢复完成');
+          
+          // 恢复后检查多开登录状态，如果启用则重新创建独立容器
+          try {
+            console.log('🔍 [恢复] 检查多开登录状态...');
+            const mongoose = require('mongoose');
+            const UserConfig = require('./userConfigModel');
+            const User = require('./userModel');
+            
+            if (mongoose.connection.readyState === 1) {
+              // 查找所有启用了多开登录的主账号
+              const allUserConfigs = await UserConfig.find({}).lean();
+              const allUsers = await User.find({}).select('_id username parent_account_id').lean();
+              
+              // 按主账号分组
+              const accountConfigs = new Map();
+              for (const userConfig of allUserConfigs) {
+                const userId = userConfig.userId.toString();
+                const user = allUsers.find(u => u._id.toString() === userId);
+                if (user) {
+                  // 获取主账号ID
+                  const accountId = user.parent_account_id ? user.parent_account_id.toString() : userId;
+                  if (!accountConfigs.has(accountId)) {
+                    accountConfigs.set(accountId, {
+                      accountId,
+                      multiLoginEnabled: false,
+                      userIds: []
+                    });
+                  }
+                  const accountConfig = accountConfigs.get(accountId);
+                  accountConfig.userIds.push(userId);
+                  // 如果主账号启用了多开登录，记录
+                  if (userId === accountId && userConfig.multi_login_enabled) {
+                    accountConfig.multiLoginEnabled = true;
+                  }
+                }
+              }
+              
+              // 为启用了多开登录的账号重新创建独立容器
+              for (const [accountId, accountInfo] of accountConfigs.entries()) {
+                if (accountInfo.multiLoginEnabled) {
+                  console.log(`🔄 [恢复] 检测到账号 ${accountId} 启用了多开登录，重新创建独立容器...`);
+                  for (const userId of accountInfo.userIds) {
+                    try {
+                      await syncUserConfigAndStartMultiLoginContainer(userId);
+                      console.log(`✅ [恢复] 已为用户 ${userId} 创建多开登录容器`);
+                    } catch (containerError) {
+                      console.warn(`⚠️  [恢复] 为用户 ${userId} 创建多开登录容器失败: ${containerError.message}`);
+                    }
+                  }
+                }
+              }
+            } else {
+              console.warn('⚠️  [恢复] MongoDB 未连接，跳过多开登录容器重建');
+            }
+          } catch (multiLoginCheckError) {
+            console.warn(`⚠️  [恢复] 检查多开登录状态失败: ${multiLoginCheckError.message}`);
+          }
         } catch (backgroundError) {
           console.error('❌ [恢复] 后台数据恢复失败:', backgroundError);
           console.error('❌ [恢复] 错误堆栈:', backgroundError.stack);
@@ -5033,6 +5165,235 @@ async function restartTelethonService(userId = null) {
     }
   } catch (error) {
     console.error('⚠️  重启 Telethon 服务失败:', error.message);
+    return false;
+  }
+}
+
+// 多开登录：为指定用户创建/启动独立容器
+async function syncUserConfigAndStartMultiLoginContainer(userId) {
+  try {
+    // 同步用户配置到独立配置文件
+    const userConfig = await loadUserConfig(userId.toString());
+    const configObj = userConfig.toObject ? userConfig.toObject() : userConfig;
+    
+    // 为每个用户创建独立的配置文件
+    const userConfigPath = path.join(__dirname, `config_${userId}.json`);
+    const userConfigData = {
+      // 注意：在多开模式下，不设置user_id，让monitor.py直接使用SESSION_PATH
+      // 因为monitor.py会检查user_id，如果存在会使用 SESSION_PATH_{user_id}
+      // 我们已经通过环境变量设置了USER_ID，所以不需要在配置文件中设置
+      // user_id: userId.toString(), // 多开模式下不设置，避免session路径重复
+      keywords: Array.isArray(configObj.keywords) ? configObj.keywords : [],
+      channels: Array.isArray(configObj.channels) ? configObj.channels : [],
+      alert_keywords: Array.isArray(configObj.alert_keywords) ? configObj.alert_keywords : [],
+      alert_regex: Array.isArray(configObj.alert_regex) ? configObj.alert_regex : [],
+      log_all_messages: configObj.log_all_messages || false,
+      alert_target: configObj.alert_target || ''
+    };
+    
+    // 如果用户配置中有 Telegram API 配置，也添加到配置文件
+    if (configObj.telegram && configObj.telegram.api_id && configObj.telegram.api_hash) {
+      userConfigData.telegram = {
+        api_id: configObj.telegram.api_id,
+        api_hash: configObj.telegram.api_hash
+      };
+    }
+    
+    // 同步 AI 分析配置
+    if (configObj.ai_analysis) {
+      userConfigData.ai_analysis = {
+        enabled: configObj.ai_analysis.enabled || false,
+        ai_trigger_enabled: configObj.ai_analysis.ai_trigger_enabled || false,
+        ai_trigger_users: Array.isArray(configObj.ai_analysis.ai_trigger_users) 
+          ? configObj.ai_analysis.ai_trigger_users 
+          : [],
+        ai_trigger_prompt: configObj.ai_analysis.ai_trigger_prompt || ''
+      };
+    }
+    
+    fs.writeFileSync(userConfigPath, JSON.stringify(userConfigData, null, 2));
+    console.log(`✅ [多开登录] 已创建用户 ${userId} 的独立配置文件: ${userConfigPath}`);
+    
+    // 启动或重启该用户的独立容器
+    await startMultiLoginContainer(userId.toString());
+    
+    return true;
+  } catch (error) {
+    console.error(`❌ [多开登录] 同步用户 ${userId} 配置失败:`, error);
+    return false;
+  }
+}
+
+// 启动多开登录容器
+async function startMultiLoginContainer(userId) {
+  try {
+    const Docker = require('dockerode');
+    const dockerSocketPaths = [
+      '/var/run/docker.sock',
+      process.env.DOCKER_HOST?.replace('unix://', '') || null
+    ].filter(Boolean);
+    
+    let docker = null;
+    for (const socketPath of dockerSocketPaths) {
+      if (fs.existsSync(socketPath)) {
+        try {
+          docker = new Docker({ socketPath });
+          await docker.ping();
+          break;
+        } catch (e) {
+          docker = null;
+        }
+      }
+    }
+    
+    if (!docker) {
+      throw new Error('无法连接到 Docker daemon');
+    }
+    
+    const containerName = `tg_listener_${userId}`;
+    
+    // 检查容器是否已存在
+    let container = null;
+    try {
+      container = docker.getContainer(containerName);
+      await container.inspect();
+      console.log(`📦 [多开登录] 容器 ${containerName} 已存在`);
+    } catch (e) {
+      // 容器不存在，需要创建
+      console.log(`📦 [多开登录] 容器 ${containerName} 不存在，准备创建...`);
+      container = null;
+    }
+    
+    if (!container) {
+      // 查找Telethon镜像
+      const images = await docker.listImages();
+      let containerImage = null;
+      for (const img of images) {
+        const tags = img.RepoTags || [];
+        for (const tag of tags) {
+          if ((tag.includes('tg_listener') || tag.includes('telethon')) && !tag.includes('<none>')) {
+            containerImage = tag;
+            break;
+          }
+        }
+        if (containerImage) break;
+      }
+      
+      if (!containerImage) {
+        // 尝试从docker-compose获取镜像名
+        const possibleNames = [
+          'tgjiankong-tg_listener',
+          'telethon',
+          'tg_listener'
+        ];
+        for (const name of possibleNames) {
+          try {
+            const img = docker.getImage(name);
+            await img.inspect();
+            containerImage = name;
+            break;
+          } catch (e) {
+            // 继续查找
+          }
+        }
+      }
+      
+      if (!containerImage) {
+        throw new Error('无法找到 Telethon 镜像');
+      }
+      
+      // 注意：session文件路径说明
+      // 单开模式：data/session/telegram.session 或 data/session/telegram_{userId}.session
+      // 多开模式：data/session/user_${userId}.session
+      // 路径不同，不会冲突
+      
+      // 检查是否有旧的session文件需要迁移（从单开模式的telegram目录）
+      // 如果用户之前使用单开模式，session文件可能是 data/session/telegram.session 或 data/session/telegram_{userId}.session
+      // 开启多开后，需要迁移到 data/session/user_${userId}.session
+      const sessionDir = path.join(__dirname, '..', 'data', 'session');
+      const oldSessionFile1 = path.join(sessionDir, 'telegram.session');
+      const oldSessionFile2 = path.join(sessionDir, `telegram_${userId}.session`);
+      const newSessionFile = path.join(sessionDir, `user_${userId}.session`);
+      
+      // 如果旧session文件存在且新文件不存在，则迁移
+      if (!fs.existsSync(newSessionFile)) {
+        try {
+          if (fs.existsSync(oldSessionFile2)) {
+            fs.copyFileSync(oldSessionFile2, newSessionFile);
+            console.log(`📦 [多开登录] 已迁移session文件: ${oldSessionFile2} -> ${newSessionFile}`);
+          } else if (fs.existsSync(oldSessionFile1)) {
+            fs.copyFileSync(oldSessionFile1, newSessionFile);
+            console.log(`📦 [多开登录] 已迁移session文件: ${oldSessionFile1} -> ${newSessionFile}`);
+          }
+        } catch (migrateError) {
+          console.warn(`⚠️  [多开登录] 迁移session文件失败（不影响功能）: ${migrateError.message}`);
+        }
+      }
+      
+      // 读取docker-compose.yml获取配置
+      // 注意：monitor.py的逻辑：
+      // 1. active_user_id = cfg.get("user_id") or USER_ID
+      // 2. 如果active_user_id存在，session文件是 SESSION_PATH_{active_user_id}
+      // 3. 否则直接使用 SESSION_PATH
+      // 
+      // 单开模式（docker-compose.yml）：
+      //   - SESSION_PATH=/app/session/telegram
+      //   - 如果设置了user_id，文件是 /app/session/telegram_{userId}
+      //   - 实际文件：data/session/telegram.session 或 data/session/telegram_{userId}.session
+      // 
+      // 多开模式：
+      //   - 由于需要设置USER_ID来获取用户配置，active_user_id会是userId
+      //   - 如果SESSION_PATH=/app/session/user_${userId}，文件会是 /app/session/user_${userId}_${userId}
+      //   - 为了避免路径过长，我们设置SESSION_PATH=/app/session/user，这样文件是 /app/session/user_${userId}
+      //   - 实际文件：data/session/user_${userId}.session
+      const dockerComposePath = path.join(__dirname, '..', 'docker-compose.yml');
+      let envVars = {
+        MONGO_URL: process.env.MONGO_URL || 'mongodb://mongo:27017/tglogs',
+        API_URL: process.env.API_URL || 'http://api:3000',
+        CONFIG_PATH: `/app/config_${userId}.json`,
+        // 多开模式：SESSION_PATH设置为 /app/session/user
+        // 由于USER_ID环境变量会设置，monitor.py会使用 SESSION_PATH_{USER_ID} = /app/session/user_${userId}
+        // 这样session文件是 data/session/user_${userId}.session，与单开模式的 data/session/telegram.session 不冲突
+        SESSION_PATH: `/app/session/user`,
+        API_ID: process.env.API_ID || '',
+        API_HASH: process.env.API_HASH || '',
+        // USER_ID环境变量用于从后端API获取用户配置，同时用于构建session路径
+        USER_ID: userId
+      };
+      
+      // 创建容器
+      container = await docker.createContainer({
+        Image: containerImage,
+        name: containerName,
+        Env: Object.entries(envVars).map(([k, v]) => `${k}=${v}`),
+        HostConfig: {
+          Binds: [
+            `${path.join(__dirname, '..', 'backend')}:/app:ro`,
+            `${path.join(__dirname, '..', 'data', 'session')}:/app/session`,
+            `${path.join(__dirname, '..', 'logs', 'telethon')}:/app/logs`
+          ],
+          NetworkMode: 'tg-network',
+          RestartPolicy: { Name: 'unless-stopped' }
+        }
+      });
+      
+      console.log(`✅ [多开登录] 已创建容器 ${containerName}`);
+    }
+    
+    // 启动或重启容器
+    const containerInfo = await container.inspect();
+    if (containerInfo.State.Running) {
+      console.log(`🔄 [多开登录] 容器 ${containerName} 正在运行，重启以应用新配置...`);
+      await container.restart({ t: 10 });
+    } else {
+      console.log(`▶️  [多开登录] 启动容器 ${containerName}...`);
+      await container.start();
+    }
+    
+    console.log(`✅ [多开登录] 容器 ${containerName} 已启动`);
+    return true;
+  } catch (error) {
+    console.error(`❌ [多开登录] 启动容器失败:`, error);
     return false;
   }
 }
