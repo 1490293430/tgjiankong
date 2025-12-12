@@ -984,7 +984,63 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
           await syncUserConfigAndStartMultiLoginContainer(targetUser._id.toString());
         } else {
           // 单开模式：更新全局配置并重启主容器
-        await syncUserConfigAndRestartTelethon(targetUser._id.toString());
+          // 如果之前是多开模式，先清理多开容器
+          try {
+            const Docker = require('dockerode');
+            const dockerSocketPaths = [
+              '/var/run/docker.sock',
+              process.env.DOCKER_HOST?.replace('unix://', '') || null
+            ].filter(Boolean);
+            
+            let docker = null;
+            for (const socketPath of dockerSocketPaths) {
+              if (fs.existsSync(socketPath)) {
+                try {
+                  docker = new Docker({ socketPath });
+                  await docker.ping();
+                  break;
+                } catch (e) {
+                  // 继续尝试下一个路径
+                }
+              }
+            }
+            
+            if (docker) {
+              // 查找所有多开容器（tg_listener_* 格式）
+              const containers = await docker.listContainers({ all: true });
+              const multiLoginContainers = containers.filter(c => 
+                c.Names && c.Names.some(name => 
+                  name.includes('tg_listener_') && !name.includes('tg_listener') // 排除主容器 tg_listener
+                )
+              );
+              
+              if (multiLoginContainers.length > 0) {
+                console.log(`🛑 [切换用户] 检测到多开容器，但多开登录已关闭，清理 ${multiLoginContainers.length} 个多开容器...`);
+                
+                for (const containerInfo of multiLoginContainers) {
+                  try {
+                    const container = docker.getContainer(containerInfo.Id);
+                    const containerName = containerInfo.Names[0]?.replace('/', '') || containerInfo.Id;
+                    
+                    const inspect = await container.inspect();
+                    if (inspect.State.Running || inspect.State.Restarting) {
+                      await container.stop({ t: 10 });
+                      await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                    
+                    await container.remove({ force: true });
+                    console.log(`✅ [切换用户] 已删除多开容器: ${containerName}`);
+                  } catch (containerError) {
+                    console.warn(`⚠️  [切换用户] 删除多开容器失败: ${containerError.message}`);
+                  }
+                }
+              }
+            }
+          } catch (cleanupError) {
+            console.warn(`⚠️  [切换用户] 清理多开容器失败: ${cleanupError.message}`);
+          }
+          
+          await syncUserConfigAndRestartTelethon(targetUser._id.toString());
         }
       } catch (error) {
         console.error('⚠️  切换用户后同步配置失败（不影响切换用户）:', error);
@@ -1205,13 +1261,20 @@ app.post('/api/config', authMiddleware, async (req, res) => {
     }
     
     // 处理多开登录配置
+    const oldMultiLoginEnabled = currentConfig.multi_login_enabled || false;
+    let newMultiLoginEnabled = oldMultiLoginEnabled;
+    let multiLoginStatusChanged = false;
+    
     if (incoming.multi_login_enabled !== undefined) {
-      incoming.multi_login_enabled = Boolean(incoming.multi_login_enabled);
-      console.log(`📋 [配置保存] multi_login_enabled: ${incoming.multi_login_enabled}`);
+      newMultiLoginEnabled = Boolean(incoming.multi_login_enabled);
+      multiLoginStatusChanged = oldMultiLoginEnabled !== newMultiLoginEnabled;
+      console.log(`📋 [配置保存] multi_login_enabled: ${newMultiLoginEnabled} (变化: ${multiLoginStatusChanged ? '是' : '否'})`);
     } else if (currentConfig.multi_login_enabled !== undefined) {
       // 如果前端没有发送，保留原有配置
-      incoming.multi_login_enabled = currentConfig.multi_login_enabled;
+      newMultiLoginEnabled = currentConfig.multi_login_enabled;
     }
+    
+    incoming.multi_login_enabled = newMultiLoginEnabled;
     
     // 准备更新数据
     const updateData = {
@@ -1361,6 +1424,94 @@ app.post('/api/config', authMiddleware, async (req, res) => {
           await startAIAnalysisTimer();
           console.log('✅ [配置保存] AI 分析定时器已重启');
         }, 1000);
+      }
+      
+      // 处理多开登录状态变化
+      if (multiLoginStatusChanged) {
+        try {
+          const accountId = await getAccountId(userId);
+          const accountIdObj = new mongoose.Types.ObjectId(accountId);
+          
+          if (!newMultiLoginEnabled) {
+            // 关闭多开登录：停止并删除所有多开容器
+            console.log(`🛑 [配置保存] 多开登录已关闭，开始清理所有多开容器...`);
+            
+            const Docker = require('dockerode');
+            const dockerSocketPaths = [
+              '/var/run/docker.sock',
+              process.env.DOCKER_HOST?.replace('unix://', '') || null
+            ].filter(Boolean);
+            
+            let docker = null;
+            for (const socketPath of dockerSocketPaths) {
+              if (fs.existsSync(socketPath)) {
+                try {
+                  docker = new Docker({ socketPath });
+                  await docker.ping();
+                  break;
+                } catch (e) {
+                  // 继续尝试下一个路径
+                }
+              }
+            }
+            
+            if (docker) {
+              try {
+                // 查找所有多开容器（tg_listener_* 格式）
+                const containers = await docker.listContainers({ all: true });
+                const multiLoginContainers = containers.filter(c => 
+                  c.Names && c.Names.some(name => 
+                    name.includes('tg_listener_') && !name.includes('tg_listener') // 排除主容器 tg_listener
+                  )
+                );
+                
+                console.log(`🔍 [配置保存] 找到 ${multiLoginContainers.length} 个多开容器`);
+                
+                for (const containerInfo of multiLoginContainers) {
+                  try {
+                    const container = docker.getContainer(containerInfo.Id);
+                    const containerName = containerInfo.Names[0]?.replace('/', '') || containerInfo.Id;
+                    
+                    console.log(`🗑️  [配置保存] 停止并删除多开容器: ${containerName}`);
+                    
+                    // 停止容器
+                    const inspect = await container.inspect();
+                    if (inspect.State.Running || inspect.State.Restarting) {
+                      await container.stop({ t: 10 });
+                      await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                    
+                    // 删除容器
+                    await container.remove({ force: true });
+                    console.log(`✅ [配置保存] 已删除多开容器: ${containerName}`);
+                  } catch (containerError) {
+                    console.warn(`⚠️  [配置保存] 删除多开容器失败: ${containerError.message}`);
+                  }
+                }
+                
+                // 重启主容器以应用单开模式
+                console.log(`🔄 [配置保存] 重启主容器以应用单开模式...`);
+                await syncUserConfigAndRestartTelethon(userId);
+                console.log(`✅ [配置保存] 多开登录已关闭，主容器已重启`);
+              } catch (cleanupError) {
+                console.error(`❌ [配置保存] 清理多开容器失败: ${cleanupError.message}`);
+              }
+            } else {
+              console.warn(`⚠️  [配置保存] 无法连接到 Docker，跳过多开容器清理`);
+            }
+          } else {
+            // 开启多开登录：为当前用户创建多开容器
+            console.log(`🔄 [配置保存] 多开登录已开启，为当前用户创建多开容器...`);
+            try {
+              await syncUserConfigAndStartMultiLoginContainer(userId);
+              console.log(`✅ [配置保存] 多开登录已开启，已为用户 ${userId} 创建多开容器`);
+            } catch (createError) {
+              console.error(`❌ [配置保存] 创建多开容器失败: ${createError.message}`);
+            }
+          }
+        } catch (multiLoginError) {
+          console.error(`❌ [配置保存] 处理多开登录状态变化失败: ${multiLoginError.message}`);
+        }
       }
     });
   } catch (error) {
@@ -2901,14 +3052,19 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
           // 统计备份的 session 文件
           if (fs.existsSync(backupSessionPath)) {
             const sessionFiles = fs.readdirSync(backupSessionPath);
-            const telegramSessions = sessionFiles.filter(f => f.startsWith('telegram')).length;
-            const userSessions = sessionFiles.filter(f => f.startsWith('user_')).length;
+            // 统计 .session 文件（不包括 .session-journal）
+            const telegramSessions = sessionFiles.filter(f => f.startsWith('telegram') && f.endsWith('.session') && !f.endsWith('.session-journal')).length;
+            const userSessions = sessionFiles.filter(f => f.startsWith('user_') && f.endsWith('.session') && !f.endsWith('.session-journal')).length;
+            // 统计 .session-journal 文件
+            const telegramJournals = sessionFiles.filter(f => f.startsWith('telegram') && f.endsWith('.session-journal')).length;
+            const userJournals = sessionFiles.filter(f => f.startsWith('user_') && f.endsWith('.session-journal')).length;
+            
             console.log(`✅ [备份] 已从 volume 备份 session 文件`);
-            if (telegramSessions > 0) {
-              console.log(`   - 单开模式 session 文件: ${telegramSessions} 个`);
+            if (telegramSessions > 0 || telegramJournals > 0) {
+              console.log(`   - 单开模式: ${telegramSessions} 个 .session 文件${telegramJournals > 0 ? `, ${telegramJournals} 个 .session-journal 文件` : ''}`);
             }
-            if (userSessions > 0) {
-              console.log(`   - 多开模式 session 文件: ${userSessions} 个`);
+            if (userSessions > 0 || userJournals > 0) {
+              console.log(`   - 多开模式: ${userSessions} 个 .session 文件${userJournals > 0 ? `, ${userJournals} 个 .session-journal 文件` : ''}`);
             }
             sessionBacked = true;
           }
