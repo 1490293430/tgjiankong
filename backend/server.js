@@ -4594,6 +4594,7 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
       // 容器不存在，尝试查找镜像
       console.log('⚠️  容器不存在，尝试查找 Telethon 镜像...');
     }
+  }
   
   // 如果没找到容器，查找镜像
   if (!containerImage) {
@@ -4670,15 +4671,14 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
     console.warn(`⚠️  创建 volume 失败: ${e.message}`);
   }
   
-    // 如果需要创建可复用的容器
-    if (!tempContainerName && userId && reuseContainer) {
-      // 创建可重用的临时容器（长期运行，用于多次执行命令）
-      tempContainerName = await getOrCreateTempLoginContainer(userId, configHostPath, null, containerImage, networkName);
-      isReusingContainer = true;
-    } else if (!tempContainerName) {
-      // 创建一次性临时容器
-      tempContainerName = `tg_login_temp_${Date.now()}`;
-    }
+  // 如果需要创建可复用的容器
+  if (!tempContainerName && userId && reuseContainer) {
+    // 创建可重用的临时容器（长期运行，用于多次执行命令）
+    tempContainerName = await getOrCreateTempLoginContainer(userId, configHostPath, null, containerImage, networkName);
+    isReusingContainer = true;
+  } else if (!tempContainerName) {
+    // 创建一次性临时容器
+    tempContainerName = `tg_login_temp_${Date.now()}`;
   }
   
   // 使用 -u 参数禁用 Python 输出缓冲，确保输出立即刷新
