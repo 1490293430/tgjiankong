@@ -6797,6 +6797,213 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
   }
 });
 
+// 删除当前用户的 Telegram 登录凭证
+app.post('/api/telegram/credentials/delete', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const deletedFiles = [];
+    const errors = [];
+    
+    console.log(`🗑️  [删除凭证] 开始删除用户 ${userId} 的 Telegram 凭证`);
+    
+    // 1. 删除 Docker volume 中的 session 文件
+    try {
+      const Docker = require('dockerode');
+      const dockerSocketPaths = [
+        '/var/run/docker.sock',
+        process.env.DOCKER_HOST?.replace('unix://', '') || null
+      ].filter(Boolean);
+      
+      let docker = null;
+      for (const socketPath of dockerSocketPaths) {
+        if (fs.existsSync(socketPath)) {
+          try {
+            docker = new Docker({ socketPath });
+            await docker.ping();
+            break;
+          } catch (e) {
+            // 继续尝试下一个路径
+          }
+        }
+      }
+      
+      if (docker) {
+        const volumeName = 'tg_session';
+        const volumeSessionFileName = `user_${userId}.session`;
+        const volumeJournalFileName = `user_${userId}.session-journal`;
+        
+        try {
+          const volume = docker.getVolume(volumeName);
+          await volume.inspect();
+          
+          // 使用临时容器删除 volume 中的文件
+          const tempImage = await getTempContainerImage(docker);
+          const deleteContainerName = `tg_session_delete_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          
+          try {
+            const deleteContainer = await docker.createContainer({
+              Image: tempImage,
+              name: deleteContainerName,
+              Cmd: ['sh', '-c', 'sleep 1'],
+              HostConfig: {
+                Binds: [
+                  `${volumeName}:/tmp/session_volume`
+                ]
+              }
+            });
+            
+            await deleteContainer.start();
+            
+            // 删除 .session 文件
+            try {
+              const deleteExec = await deleteContainer.exec({
+                Cmd: ['sh', '-c', `rm -f /tmp/session_volume/${volumeSessionFileName} && echo "deleted" || echo "not_found"`],
+                AttachStdout: true,
+                AttachStderr: true
+              });
+              
+              const deleteStream = await deleteExec.start({ hijack: true, stdin: false });
+              let output = '';
+              await new Promise((resolve) => {
+                deleteStream.on('data', (chunk) => {
+                  output += chunk.toString();
+                });
+                deleteStream.on('end', resolve);
+              });
+              
+              if (output.trim().includes('deleted')) {
+                deletedFiles.push(`volume:${volumeSessionFileName}`);
+                console.log(`✅ [删除凭证] 已删除 volume 中的文件: ${volumeSessionFileName}`);
+              }
+            } catch (e) {
+              console.warn(`⚠️  [删除凭证] 删除 volume 中的 .session 文件失败: ${e.message}`);
+            }
+            
+            // 删除 .session-journal 文件
+            try {
+              const deleteJournalExec = await deleteContainer.exec({
+                Cmd: ['sh', '-c', `rm -f /tmp/session_volume/${volumeJournalFileName} && echo "deleted" || echo "not_found"`],
+                AttachStdout: true,
+                AttachStderr: true
+              });
+              
+              const deleteJournalStream = await deleteJournalExec.start({ hijack: true, stdin: false });
+              let journalOutput = '';
+              await new Promise((resolve) => {
+                deleteJournalStream.on('data', (chunk) => {
+                  journalOutput += chunk.toString();
+                });
+                deleteJournalStream.on('end', resolve);
+              });
+              
+              if (journalOutput.trim().includes('deleted')) {
+                deletedFiles.push(`volume:${volumeJournalFileName}`);
+                console.log(`✅ [删除凭证] 已删除 volume 中的文件: ${volumeJournalFileName}`);
+              }
+            } catch (e) {
+              console.warn(`⚠️  [删除凭证] 删除 volume 中的 .session-journal 文件失败: ${e.message}`);
+            }
+            
+            await deleteContainer.stop();
+            await deleteContainer.remove();
+          } catch (e) {
+            console.warn(`⚠️  [删除凭证] 删除 volume 中的文件失败: ${e.message}`);
+            errors.push(`删除 volume 文件失败: ${e.message}`);
+          }
+        } catch (e) {
+          console.log(`ℹ️  [删除凭证] Volume ${volumeName} 不存在，跳过`);
+        }
+      } else {
+        console.warn('⚠️  [删除凭证] 无法连接到 Docker，跳过删除 volume 中的文件');
+      }
+    } catch (error) {
+      console.warn(`⚠️  [删除凭证] 删除 volume 文件时出错: ${error.message}`);
+      errors.push(`删除 volume 文件失败: ${error.message}`);
+    }
+    
+    // 2. 删除宿主机路径中的 session 文件
+    const sessionDirs = [
+      path.join(__dirname, '..', 'data', 'session'), // 宿主机路径
+      path.join(__dirname, 'data') // backend/data 路径
+    ];
+    
+    const sessionFileNames = [
+      'telegram',
+      `telegram_${userId}`
+    ];
+    
+    for (const sessionDir of sessionDirs) {
+      if (fs.existsSync(sessionDir)) {
+        for (const sessionFileName of sessionFileNames) {
+          const sessionFile = path.join(sessionDir, `${sessionFileName}.session`);
+          const journalFile = path.join(sessionDir, `${sessionFileName}.session-journal`);
+          
+          // 删除 .session 文件
+          if (fs.existsSync(sessionFile)) {
+            try {
+              fs.unlinkSync(sessionFile);
+              deletedFiles.push(`local:${sessionFile}`);
+              console.log(`✅ [删除凭证] 已删除本地文件: ${sessionFile}`);
+            } catch (e) {
+              console.warn(`⚠️  [删除凭证] 删除本地文件失败: ${sessionFile} - ${e.message}`);
+              errors.push(`删除本地文件失败: ${sessionFile}`);
+            }
+          }
+          
+          // 删除 .session-journal 文件
+          if (fs.existsSync(journalFile)) {
+            try {
+              fs.unlinkSync(journalFile);
+              deletedFiles.push(`local:${journalFile}`);
+              console.log(`✅ [删除凭证] 已删除本地文件: ${journalFile}`);
+            } catch (e) {
+              console.warn(`⚠️  [删除凭证] 删除本地文件失败: ${journalFile} - ${e.message}`);
+              errors.push(`删除本地文件失败: ${journalFile}`);
+            }
+          }
+        }
+      }
+    }
+    
+    // 3. 清除登录状态缓存
+    const cacheKey = `login_status_${userId}`;
+    loginStatusCache.delete(cacheKey);
+    sessionFileCache.clear();
+    
+    // 4. 清除用户配置缓存（如果存在）
+    const configCacheKey = `user_config_${userId}`;
+    userConfigCache.delete(configCacheKey);
+    
+    console.log(`✅ [删除凭证] 删除完成，共删除 ${deletedFiles.length} 个文件`);
+    
+    if (deletedFiles.length === 0 && errors.length === 0) {
+      return res.json({
+        status: 'ok',
+        message: '未找到需要删除的凭证文件（可能已经删除）',
+        deleted_files: []
+      });
+    }
+    
+    if (errors.length > 0) {
+      return res.json({
+        status: 'ok',
+        message: `已删除 ${deletedFiles.length} 个文件，但有 ${errors.length} 个错误`,
+        deleted_files: deletedFiles,
+        errors: errors
+      });
+    }
+    
+    res.json({
+      status: 'ok',
+      message: `成功删除 ${deletedFiles.length} 个凭证文件`,
+      deleted_files: deletedFiles
+    });
+  } catch (error) {
+    console.error('❌ [删除凭证] 删除失败:', error);
+    res.status(500).json({ error: '删除凭证失败：' + error.message });
+  }
+});
+
 // 通知Telethon服务重新加载配置（不阻塞，静默失败）
 async function notifyTelethonConfigReload() {
   try {

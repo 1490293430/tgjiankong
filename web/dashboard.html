@@ -722,7 +722,10 @@
                                 </p>
                                 <p id="telegramUserInfo" style="margin: 5px 0 0 0; color: #666; font-size: 13px;"></p>
                             </div>
-                            <button class="btn btn-secondary" onclick="checkTelegramLoginStatus(true)" style="margin-top: 10px;">🔄 刷新状态</button>
+                            <div style="margin-top: 10px; display: flex; gap: 10px;">
+                                <button class="btn btn-secondary" onclick="checkTelegramLoginStatus(true)">🔄 刷新状态</button>
+                                <button class="btn btn-danger" onclick="deleteTelegramCredentials()" style="background: #dc3545; border-color: #dc3545;">🗑️ 删除凭证</button>
+                            </div>
                         </div>
                         
                         <!-- 未登录状态 -->
@@ -2276,6 +2279,50 @@
                     saveButton.textContent = originalText;
                 }
                 alert('❌ 保存失败：' + (error.message || '未知错误'));
+            }
+        }
+        
+        // 删除 Telegram 凭证
+        async function deleteTelegramCredentials() {
+            if (!confirm('⚠️ 确定要删除当前用户的 Telegram 登录凭证吗？\n\n删除后需要重新登录才能使用 Telegram 功能。')) {
+                return;
+            }
+            
+            const deleteButton = document.querySelector('button[onclick="deleteTelegramCredentials()"]');
+            const originalText = deleteButton?.textContent || '🗑️ 删除凭证';
+            if (deleteButton) {
+                deleteButton.disabled = true;
+                deleteButton.textContent = '🗑️ 删除中...';
+            }
+            
+            try {
+                const result = await apiRequest('/telegram/credentials/delete', {
+                    method: 'POST'
+                });
+                
+                // 恢复按钮状态
+                if (deleteButton) {
+                    deleteButton.disabled = false;
+                    deleteButton.textContent = originalText;
+                }
+                
+                if (result && result.status === 'ok') {
+                    alert(`✅ Telegram 凭证删除成功！${result.message ? '\n' + result.message : ''}`);
+                    
+                    // 延迟刷新登录状态（强制刷新，清除缓存）
+                    setTimeout(() => {
+                        checkTelegramLoginStatus(true);
+                    }, 1000);
+                } else {
+                    alert('❌ 删除失败：' + (result?.error || '未知错误'));
+                }
+            } catch (error) {
+                // 恢复按钮状态
+                if (deleteButton) {
+                    deleteButton.disabled = false;
+                    deleteButton.textContent = originalText;
+                }
+                alert('❌ 删除失败：' + (error.message || '未知错误'));
             }
         }
         
