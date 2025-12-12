@@ -98,3 +98,4 @@ networks:
 volumes:
   mongo-data:
   session-data:
+  tg_session:  # 统一使用 volume 存储 session 文件
