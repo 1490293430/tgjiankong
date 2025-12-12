@@ -5740,18 +5740,22 @@ async function startMultiLoginContainer(userId) {
       const alpineImage = 'alpine:latest';
       let sessionExistsInVolume = false;
       
+      console.log(`🔍 [多开登录] 检查 volume 中是否存在 session 文件: ${volumeSessionFileName}`);
+      
       try {
         // 创建临时容器检查 volume 中是否有 session 文件
         const tempContainer = await docker.createContainer({
           Image: alpineImage,
           name: tempContainerName,
-          Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "exists" || echo "not_exists"`],
+          Cmd: ['sh', '-c', 'sleep 1'],
           HostConfig: {
             Binds: [
               `${sessionVolumeName}:/tmp/session_volume`
             ]
           }
         });
+        
+        await tempContainer.start();
         
         const exec = await tempContainer.exec({
           Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "exists" || echo "not_exists"`],
@@ -5769,6 +5773,9 @@ async function startMultiLoginContainer(userId) {
         });
         
         sessionExistsInVolume = output.trim().includes('exists');
+        console.log(`🔍 [多开登录] Volume 检查结果: ${sessionExistsInVolume ? '已存在' : '不存在'} (输出: ${output.trim()})`);
+        
+        await tempContainer.stop();
         await tempContainer.remove();
       } catch (checkError) {
         console.warn(`⚠️  [多开登录] 检查 volume 中的 session 文件失败: ${checkError.message}`);
@@ -5776,25 +5783,37 @@ async function startMultiLoginContainer(userId) {
       
       // 如果 volume 中没有 session 文件，且宿主机上有旧文件，则迁移
       if (!sessionExistsInVolume) {
+        console.log(`🔍 [多开登录] Volume 中没有 session 文件，开始查找源文件...`);
         let sourceFile = null;
         // 按优先级查找 session 文件
+        console.log(`🔍 [多开登录] 检查路径1: ${oldSessionFile2} (存在: ${fs.existsSync(oldSessionFile2)})`);
+        console.log(`🔍 [多开登录] 检查路径2: ${oldSessionFile4} (存在: ${fs.existsSync(oldSessionFile4)})`);
+        console.log(`🔍 [多开登录] 检查路径3: ${oldSessionFile1} (存在: ${fs.existsSync(oldSessionFile1)})`);
+        console.log(`🔍 [多开登录] 检查路径4: ${oldSessionFile3} (存在: ${fs.existsSync(oldSessionFile3)})`);
+        
         if (fs.existsSync(oldSessionFile2)) {
           sourceFile = oldSessionFile2;
+          console.log(`✅ [多开登录] 找到 session 文件: ${oldSessionFile2}`);
         } else if (fs.existsSync(oldSessionFile4)) {
           sourceFile = oldSessionFile4;
+          console.log(`✅ [多开登录] 找到 session 文件: ${oldSessionFile4}`);
         } else if (fs.existsSync(oldSessionFile1)) {
           sourceFile = oldSessionFile1;
+          console.log(`✅ [多开登录] 找到 session 文件: ${oldSessionFile1}`);
         } else if (fs.existsSync(oldSessionFile3)) {
           sourceFile = oldSessionFile3;
+          console.log(`✅ [多开登录] 找到 session 文件: ${oldSessionFile3}`);
         }
         
         // 如果还是没找到，尝试查找所有 .session 文件
         if (!sourceFile) {
+          console.log(`🔍 [多开登录] 标准路径未找到，搜索所有 .session 文件...`);
           const searchDirs = [sessionDir1, sessionDir2];
           for (const dir of searchDirs) {
             if (fs.existsSync(dir)) {
               try {
                 const files = fs.readdirSync(dir);
+                console.log(`🔍 [多开登录] 目录 ${dir} 中的文件: ${files.join(', ')}`);
                 const sessionFiles = files.filter(f => f.endsWith('.session') && !f.includes('restore'));
                 if (sessionFiles.length > 0) {
                   // 优先使用包含 userId 的文件，否则使用第一个
@@ -5804,10 +5823,16 @@ async function startMultiLoginContainer(userId) {
                   break;
                 }
               } catch (e) {
-                // 忽略读取错误
+                console.warn(`⚠️  [多开登录] 读取目录 ${dir} 失败: ${e.message}`);
               }
+            } else {
+              console.log(`⚠️  [多开登录] 目录不存在: ${dir}`);
             }
           }
+        }
+        
+        if (!sourceFile) {
+          console.warn(`⚠️  [多开登录] 未找到任何 session 文件，多开容器可能需要重新登录`);
         }
         
         if (sourceFile) {
@@ -5942,7 +5967,31 @@ async function startMultiLoginContainer(userId) {
       }
     }
     
-    console.log(`✅ [多开登录] 容器 ${containerName} 已启动`);
+      console.log(`✅ [多开登录] 容器 ${containerName} 已启动`);
+      
+      // 等待容器启动并检查状态
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      try {
+        const finalInfo = await container.inspect();
+        if (finalInfo.State.Running) {
+          console.log(`✅ [多开登录] 容器 ${containerName} 运行正常`);
+          // 检查容器日志，确认是否成功加载 session
+          const logs = await container.logs({
+            stdout: true,
+            stderr: true,
+            tail: 20
+          });
+          const logText = logs.toString();
+          if (logText.includes('已登录为') || logText.includes('Session 文件不存在')) {
+            console.log(`📋 [多开登录] 容器 ${containerName} 日志摘要: ${logText.split('\n').filter(l => l.includes('已登录') || l.includes('Session')).join('; ')}`);
+          }
+        } else {
+          console.warn(`⚠️  [多开登录] 容器 ${containerName} 未运行，状态: ${finalInfo.State.Status}`);
+        }
+      } catch (checkError) {
+        console.warn(`⚠️  [多开登录] 检查容器状态失败: ${checkError.message}`);
+      }
     return true;
   } catch (error) {
     console.error(`❌ [多开登录] 启动容器失败:`, error);
