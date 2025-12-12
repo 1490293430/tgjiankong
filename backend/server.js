@@ -5726,9 +5726,13 @@ async function startMultiLoginContainer(userId) {
       // 检查是否有旧的session文件需要迁移到 volume
       // 如果用户之前使用单开模式，session文件可能是 data/session/telegram.session 或 data/session/telegram_{userId}.session
       // 开启多开后，需要迁移到 volume 中的 user_${userId}.session
-      const sessionDir = path.join(__dirname, '..', 'data', 'session');
-      const oldSessionFile1 = path.join(sessionDir, 'telegram.session');
-      const oldSessionFile2 = path.join(sessionDir, `telegram_${userId}.session`);
+      // 注意：session 文件可能在 backend/data 目录下（容器内路径）或 data/session 目录下（宿主机路径）
+      const sessionDir1 = path.join(__dirname, '..', 'data', 'session'); // 宿主机路径
+      const sessionDir2 = path.join(__dirname, 'data'); // backend/data 路径
+      const oldSessionFile1 = path.join(sessionDir1, 'telegram.session');
+      const oldSessionFile2 = path.join(sessionDir1, `telegram_${userId}.session`);
+      const oldSessionFile3 = path.join(sessionDir2, 'telegram.session');
+      const oldSessionFile4 = path.join(sessionDir2, `telegram_${userId}.session`);
       const volumeSessionFileName = `user_${userId}.session`;
       
       // 检查 volume 中是否已有 session 文件
@@ -5773,10 +5777,37 @@ async function startMultiLoginContainer(userId) {
       // 如果 volume 中没有 session 文件，且宿主机上有旧文件，则迁移
       if (!sessionExistsInVolume) {
         let sourceFile = null;
+        // 按优先级查找 session 文件
         if (fs.existsSync(oldSessionFile2)) {
           sourceFile = oldSessionFile2;
+        } else if (fs.existsSync(oldSessionFile4)) {
+          sourceFile = oldSessionFile4;
         } else if (fs.existsSync(oldSessionFile1)) {
           sourceFile = oldSessionFile1;
+        } else if (fs.existsSync(oldSessionFile3)) {
+          sourceFile = oldSessionFile3;
+        }
+        
+        // 如果还是没找到，尝试查找所有 .session 文件
+        if (!sourceFile) {
+          const searchDirs = [sessionDir1, sessionDir2];
+          for (const dir of searchDirs) {
+            if (fs.existsSync(dir)) {
+              try {
+                const files = fs.readdirSync(dir);
+                const sessionFiles = files.filter(f => f.endsWith('.session') && !f.includes('restore'));
+                if (sessionFiles.length > 0) {
+                  // 优先使用包含 userId 的文件，否则使用第一个
+                  const userIdFile = sessionFiles.find(f => f.includes(userId));
+                  sourceFile = userIdFile ? path.join(dir, userIdFile) : path.join(dir, sessionFiles[0]);
+                  console.log(`📦 [多开登录] 找到 session 文件: ${sourceFile}`);
+                  break;
+                }
+              } catch (e) {
+                // 忽略读取错误
+              }
+            }
+          }
         }
         
         if (sourceFile) {
