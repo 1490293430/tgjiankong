@@ -926,11 +926,26 @@ async def main():
             if os.path.exists(session_path_with_ext):
                 file_mtime = os.path.getmtime(session_path_with_ext)
                 time_since_modify = time.time() - file_mtime
-                # 如果文件在最近 10 秒内被修改，等待 5 秒确保完全同步
-                if time_since_modify < 10:
-                    wait_time = max(5.0, 10.0 - time_since_modify)
+                # 如果文件在最近 15 秒内被修改，等待足够的时间确保完全同步
+                if time_since_modify < 15:
+                    wait_time = max(8.0, 15.0 - time_since_modify)
                     logger.info("🔍 [客户端启动] Session 文件最近被修改（%.1f 秒前），等待 %.1f 秒确保完全同步...", time_since_modify, wait_time)
                     await asyncio.sleep(wait_time)
+                    
+                    # 等待后再次检查文件大小，确保文件已完全写入
+                    if os.path.exists(session_path_with_ext):
+                        try:
+                            file_stat = os.stat(session_path_with_ext)
+                            # Session 文件应该至少 1KB（实际通常为几KB到几十KB）
+                            if file_stat.st_size < 1000:
+                                logger.warning("⚠️  [客户端启动] Session 文件过小（%d 字节），可能未完全写入，再等待 3 秒...", file_stat.st_size)
+                                await asyncio.sleep(3.0)
+                                # 再次检查
+                                file_stat2 = os.stat(session_path_with_ext)
+                                if file_stat2.st_size < 1000:
+                                    logger.error("❌ [客户端启动] Session 文件仍然过小（%d 字节），可能文件损坏", file_stat2.st_size)
+                        except Exception as stat_error:
+                            logger.warning("⚠️  [客户端启动] 无法检查文件大小: %s", str(stat_error))
         
         # 先连接（不触发交互式输入）
         logger.info("🔍 [客户端启动] 正在连接到 Telegram 服务器...")
@@ -1190,28 +1205,28 @@ async def main():
                 client_started = True
             except EOFError as eof_error:
                 # EOFError 表示尝试了交互式输入，说明 session 无效
+                import traceback
                 logger.error("🔍 [授权检查] EOFError 详情: %s", str(eof_error))
-            import traceback
-            logger.error("🔍 [授权检查] EOFError 堆栈: %s", traceback.format_exc())
-            await client.disconnect()
-            logger.error("")
-            logger.error("=" * 60)
-            logger.error("❌ Telegram 客户端未授权，Session 文件无效或不存在")
-            logger.error("")
-            logger.error("📱 请先登录 Telegram 才能开始监控消息：")
-            logger.error("   1. 访问 Web 界面")
-            logger.error("   2. 进入 '设置' 标签")
-            logger.error("   3. 点击 'Telegram 首次登录' 按钮")
-            logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
-            logger.error("   5. 登录成功后，重启 Telethon 服务：")
-            logger.error("      docker compose restart telethon")
-            logger.error("")
-            logger.error("⚠️  服务将退出，请完成登录后重启服务")
-            logger.error("=" * 60)
-            logger.error("")
-            # 使用 sys.exit(1) 非正常退出，触发 on-failure 重启策略
-            import sys
-            sys.exit(1)
+                logger.error("🔍 [授权检查] EOFError 堆栈: %s", traceback.format_exc())
+                await client.disconnect()
+                logger.error("")
+                logger.error("=" * 60)
+                logger.error("❌ Telegram 客户端未授权，Session 文件无效或不存在")
+                logger.error("")
+                logger.error("📱 请先登录 Telegram 才能开始监控消息：")
+                logger.error("   1. 访问 Web 界面")
+                logger.error("   2. 进入 '设置' 标签")
+                logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+                logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
+                logger.error("   5. 登录成功后，重启 Telethon 服务：")
+                logger.error("      docker compose restart telethon")
+                logger.error("")
+                logger.error("⚠️  服务将退出，请完成登录后重启服务")
+                logger.error("=" * 60)
+                logger.error("")
+                # 使用 sys.exit(1) 非正常退出，触发 on-failure 重启策略
+                import sys
+                sys.exit(1)
         except Exception as start_error:
             # 其他异常，可能是网络问题或其他错误
             # 尝试检查授权状态作为备用方案
