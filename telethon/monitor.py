@@ -24,7 +24,9 @@ CONFIG_PATH = os.getenv("CONFIG_PATH", "/app/config.json")
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017")
 MONGO_DBNAME = os.getenv("MONGO_DBNAME", "tglogs")
 API_URL = os.getenv("API_URL", "http://api:3000")
-ENV_API_ID = int(os.getenv("API_ID", "0"))
+# 安全地解析 API_ID，如果为空字符串则使用 0
+api_id_str = os.getenv("API_ID", "0")
+ENV_API_ID = int(api_id_str) if api_id_str and api_id_str.strip() else 0
 ENV_API_HASH = os.getenv("API_HASH", "")
 SESSION_PATH = os.getenv("SESSION_PATH", "/app/session/telegram")
 SESSION_STRING = os.getenv("SESSION_STRING", "").strip()

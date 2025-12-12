@@ -5734,8 +5734,10 @@ async function startMultiLoginContainer(userId) {
       // 直接使用 volume 挂载点，避免 Docker overlay 文件系统只读问题
       // 这样session文件是 /tmp/session_volume/user_${userId}.session，与单开模式的 /app/session/telegram.session 不冲突
       SESSION_PATH: `/tmp/session_volume/user`,
-      API_ID: process.env.API_ID || '',
-      API_HASH: process.env.API_HASH || '',
+      // 从用户配置中读取 API_ID 和 API_HASH（配置文件已包含这些信息）
+      // 如果配置文件中没有，则从环境变量读取（向后兼容）
+      API_ID: (configObj.telegram && configObj.telegram.api_id) ? String(configObj.telegram.api_id) : (process.env.API_ID || '0'),
+      API_HASH: (configObj.telegram && configObj.telegram.api_hash) ? configObj.telegram.api_hash : (process.env.API_HASH || ''),
       // USER_ID环境变量用于从后端API获取用户配置，同时用于构建session路径
       USER_ID: userId
     };
