@@ -391,8 +391,10 @@ mongoose.connect(MONGO_URL, {
   // 初始化默认管理员
   await initDefaultAdmin();
 })
-.catch(() => {
-  // 静默连接失败，不输出日志
+.catch((err) => {
+  // 静默连接失败，但记录到控制台（不输出到日志）
+  // 注意：这里不抛出错误，让服务继续运行，即使 MongoDB 暂时不可用
+  // 服务会在后续请求中检查连接状态并返回适当的错误
 });
 
 // JWT 验证中间件
@@ -8717,6 +8719,30 @@ async function checkMessageCountTrigger() {
 
 // 定期检查消息计数（每分钟检查一次）
 setInterval(checkMessageCountTrigger, 60000);
+
+// 全局错误处理，防止未捕获的异常导致服务崩溃
+process.on('uncaughtException', (error) => {
+  console.error('❌ [未捕获异常] 服务可能崩溃:', error.message);
+  console.error('错误堆栈:', error.stack);
+  // 不退出进程，让服务继续运行
+  // 在生产环境中，可以考虑重启或记录到日志系统
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ [未处理的 Promise 拒绝] 服务可能崩溃:', reason);
+  // 不退出进程，让服务继续运行
+});
+
+// 监听进程退出信号
+process.on('SIGTERM', () => {
+  console.log('收到 SIGTERM 信号，正在优雅关闭...');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('收到 SIGINT 信号，正在优雅关闭...');
+  process.exit(0);
+});
 
 // 启动服务器
 app.listen(PORT, () => {
