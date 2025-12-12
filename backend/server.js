@@ -3240,8 +3240,9 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
               // 在容器内执行 mongorestore
               // 如果备份路径就是 mongo_dump 目录，mongorestore 会自动检测数据库名称
               // 但我们需要指定目标数据库名称
+              // 优化：使用并行恢复以加快速度
               const restoreExec = await container.exec({
-                Cmd: ['mongorestore', '--db', mongoDbName, '--drop', containerBackupPath],
+                Cmd: ['mongorestore', '--db', mongoDbName, '--drop', '--numParallelCollections', '4', containerBackupPath],
                 AttachStdout: true,
                 AttachStderr: true
               });
@@ -3295,7 +3296,8 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
                 });
                 
                 // 在容器内执行 mongorestore
-                await execAsync(`docker exec ${mongoContainerName} mongorestore --db ${mongoDbName} --drop "${containerBackupPath}"`, {
+                // 优化：使用并行恢复以加快速度
+                await execAsync(`docker exec ${mongoContainerName} mongorestore --db ${mongoDbName} --drop --numParallelCollections 4 "${containerBackupPath}"`, {
                   timeout: 300000
                 });
                 
@@ -3312,7 +3314,8 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
                 
                 // 方法3：使用本地 mongorestore（如果已安装）
                 try {
-                  await execAsync(`mongorestore --host mongo:27017 --db ${mongoDbName} --drop "${dbBackupPath}"`, {
+                  // 优化：使用并行恢复以加快速度
+                  await execAsync(`mongorestore --host mongo:27017 --db ${mongoDbName} --drop --numParallelCollections 4 "${dbBackupPath}"`, {
                     timeout: 300000
                   });
                   console.log(`✅ [恢复] 已使用本地 mongorestore 恢复 MongoDB 数据`);
@@ -3418,7 +3421,7 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
         // 等待容器完全停止并释放文件句柄
         if (telethonContainerStopped) {
           console.log(`⏳ [恢复] 等待容器完全停止并释放文件句柄...`);
-          await new Promise(resolve => setTimeout(resolve, 5000)); // 增加到5秒
+          await new Promise(resolve => setTimeout(resolve, 2000)); // 优化：减少到2秒
         }
         
         // 使用 Docker API 在 tg_listener 容器内恢复 session 目录
@@ -3447,6 +3450,7 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
             console.log(`📦 [恢复] 准备将 session 文件复制到容器内...`);
             
             // 使用 exec 命令创建 tar 文件
+            // 优化：使用不压缩的 tar 格式以加快速度
             const sessionTarPath = path.join(extractedDir, 'session_restore.tar');
             try {
               await execAsync(`cd "${sessionSource}" && tar -cf "${sessionTarPath}" .`, {
@@ -3571,8 +3575,25 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
             
             // 如果恢复了 session，等待容器完全启动后触发配置重载，确保 Telethon 客户端重新初始化
             if (sessionRestored) {
-              console.log(`⏳ [恢复] 等待容器完全启动（10秒）...`);
-              await new Promise(resolve => setTimeout(resolve, 10000));
+              console.log(`⏳ [恢复] 等待容器完全启动...`);
+              // 优化：使用容器就绪检查代替固定等待时间
+              try {
+                const containerNames = ['tg_listener', 'telethon', 'listener'];
+                for (const containerName of containerNames) {
+                  try {
+                    const container = docker.getContainer(containerName);
+                    await waitForContainerReady(container, 10); // 最多等待10秒，但通常更快
+                    console.log(`✅ [恢复] 容器 ${containerName} 已就绪`);
+                    break;
+                  } catch (e) {
+                    // 容器不存在或检查失败，继续
+                  }
+                }
+              } catch (waitError) {
+                // 如果检查失败，使用较短的固定等待时间
+                console.warn(`⚠️  [恢复] 容器就绪检查失败，使用固定等待: ${waitError.message}`);
+                await new Promise(resolve => setTimeout(resolve, 5000));
+              }
               
               // 触发配置重载，这会重新初始化 Telethon 客户端
               try {
@@ -3599,8 +3620,27 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
               
               // 如果恢复了 session，等待后触发配置重载
               if (sessionRestored) {
-                console.log(`⏳ [恢复] 等待容器完全启动（10秒）...`);
-                await new Promise(resolve => setTimeout(resolve, 10000));
+                console.log(`⏳ [恢复] 等待容器完全启动...`);
+                // 优化：使用容器就绪检查代替固定等待时间
+                try {
+                  const Docker = require('dockerode');
+                  const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+                  const containerNames = ['tg_listener', 'telethon', 'listener'];
+                  for (const containerName of containerNames) {
+                    try {
+                      const container = docker.getContainer(containerName);
+                      await waitForContainerReady(container, 10); // 最多等待10秒，但通常更快
+                      console.log(`✅ [恢复] 容器 ${containerName} 已就绪`);
+                      break;
+                    } catch (e) {
+                      // 容器不存在或检查失败，继续
+                    }
+                  }
+                } catch (waitError) {
+                  // 如果检查失败，使用较短的固定等待时间
+                  console.warn(`⚠️  [恢复] 容器就绪检查失败，使用固定等待: ${waitError.message}`);
+                  await new Promise(resolve => setTimeout(resolve, 5000));
+                }
                 
                 try {
                   const axios = require('axios');
