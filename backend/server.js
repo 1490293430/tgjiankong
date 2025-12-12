@@ -5252,6 +5252,43 @@ async function startMultiLoginContainer(userId) {
     
     const containerName = `tg_listener_${userId}`;
     
+    // 查找Telethon镜像（提升到函数作用域，以便在错误处理中使用）
+    let containerImage = null;
+    const images = await docker.listImages();
+    for (const img of images) {
+      const tags = img.RepoTags || [];
+      for (const tag of tags) {
+        if ((tag.includes('tg_listener') || tag.includes('telethon')) && !tag.includes('<none>')) {
+          containerImage = tag;
+          break;
+        }
+      }
+      if (containerImage) break;
+    }
+    
+    if (!containerImage) {
+      // 尝试从docker-compose获取镜像名
+      const possibleNames = [
+        'tgjiankong-tg_listener',
+        'telethon',
+        'tg_listener'
+      ];
+      for (const name of possibleNames) {
+        try {
+          const img = docker.getImage(name);
+          await img.inspect();
+          containerImage = name;
+          break;
+        } catch (e) {
+          // 继续尝试下一个
+        }
+      }
+    }
+    
+    if (!containerImage) {
+      throw new Error('无法找到 Telethon 镜像');
+    }
+    
     // 检查容器是否已存在
     let container = null;
     let needRecreate = false;
@@ -5396,10 +5433,24 @@ async function startMultiLoginContainer(userId) {
       const hostSessionPath = path.join(projectRoot, 'data', 'session');
       const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
       
+      // 确保宿主机上的目录存在（通过 Docker API 在宿主机上创建）
+      // 注意：由于我们在容器内，无法直接创建宿主机目录
+      // 但 Docker 会在挂载时自动创建目录（如果不存在）
+      // 如果目录不存在，Docker 会创建它，但需要确保父目录存在
+      
       console.log(`📂 [多开登录] 使用项目根目录: ${projectRoot}`);
       console.log(`📂 [多开登录] 挂载路径: backend=${hostBackendPath}, session=${hostSessionPath}, logs=${hostLogsPath}`);
       
       // 创建容器
+      // 注意：挂载 session 目录时，如果容器内 /app/session 不存在，Docker 会尝试创建它
+      // 但 overlay 文件系统是只读的，所以我们需要使用不同的方法
+      // 解决方案：挂载到容器内的一个不存在的路径，或者使用 volume
+      // 但最简单的方法是：挂载到 /app/session，Docker 会自动处理
+      // 如果还是失败，可能需要使用 Cmd 在容器启动时创建目录
+      // 创建容器
+      // 注意：虽然镜像中已经创建了 /app/session 目录，但 Docker 在挂载时可能仍会遇到问题
+      // 解决方案：不覆盖 Cmd，使用镜像的默认 CMD（python -u monitor.py）
+      // 挂载时 Docker 会自动处理目录创建（如果宿主机目录存在）
       container = await docker.createContainer({
         Image: containerImage,
         name: containerName,
@@ -5407,8 +5458,8 @@ async function startMultiLoginContainer(userId) {
         HostConfig: {
           Binds: [
             `${hostBackendPath}:/app:ro`,
-            `${hostSessionPath}:/app/session`,
-            `${hostLogsPath}:/app/logs`
+            `${hostSessionPath}:/app/session:rw`,
+            `${hostLogsPath}:/app/logs:rw`
           ],
           NetworkMode: 'tg-network',
           RestartPolicy: { Name: 'unless-stopped' }
@@ -5449,18 +5500,8 @@ async function startMultiLoginContainer(userId) {
           console.log(`🗑️  [多开登录] 删除旧容器并重新创建...`);
           try {
             await container.remove();
-            // 重新创建容器
-            const projectRoot = process.env.PROJECT_ROOT || (() => {
-              try {
-                const { execSync } = require('child_process');
-                const containerId = fs.readFileSync('/etc/hostname', 'utf8').trim();
-                const inspectOutput = execSync(`docker inspect ${containerId} --format '{{range .Mounts}}{{if eq .Destination "/app"}}{{.Source}}{{end}}{{end}}'`, { encoding: 'utf8' }).trim();
-                return inspectOutput ? path.dirname(inspectOutput) : '/opt/telegram-monitor';
-              } catch (e) {
-                return '/opt/telegram-monitor';
-              }
-            })();
-            
+            // 重新创建容器（使用相同的配置）
+            const projectRoot = '/opt/telegram-monitor';
             const hostBackendPath = path.join(projectRoot, 'backend');
             const hostSessionPath = path.join(projectRoot, 'data', 'session');
             const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
@@ -5472,8 +5513,8 @@ async function startMultiLoginContainer(userId) {
               HostConfig: {
                 Binds: [
                   `${hostBackendPath}:/app:ro`,
-                  `${hostSessionPath}:/app/session`,
-                  `${hostLogsPath}:/app/logs`
+                  `${hostSessionPath}:/app/session:rw`,
+                  `${hostLogsPath}:/app/logs:rw`
                 ],
                 NetworkMode: 'tg-network',
                 RestartPolicy: { Name: 'unless-stopped' }
