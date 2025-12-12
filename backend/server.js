@@ -307,12 +307,12 @@ async function loadUserConfig(userId) {
         ai_send_telegram: true,
         ai_send_email: false,
         ai_send_webhook: false,
-      ai_trigger_enabled: false,
-      ai_trigger_users: [],
-      ai_trigger_prompt: ''
+        ai_trigger_enabled: false,
+        ai_trigger_users: [],
+        ai_trigger_prompt: ''
     },
     multi_login_enabled: false
-  };
+    };
   }
 }
 
@@ -868,7 +868,7 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
           await syncUserConfigAndStartMultiLoginContainer(targetUser._id.toString());
         } else {
           // 单开模式：更新全局配置并重启主容器
-          await syncUserConfigAndRestartTelethon(targetUser._id.toString());
+        await syncUserConfigAndRestartTelethon(targetUser._id.toString());
         }
       } catch (error) {
         console.error('⚠️  切换用户后同步配置失败（不影响切换用户）:', error);
@@ -2434,32 +2434,32 @@ app.post('/api/ai/analyze-now', authMiddleware, async (req, res) => {
 
 // 辅助函数：检测项目根目录（与备份功能使用相同的逻辑）
 function detectProjectRoot() {
-  // 检查容器内路径
-  const containerAppDir = '/app';
-  const containerConfigPath = path.join(containerAppDir, 'config.json');
-  
-  // 如果 /app/config.json 存在，说明在容器内，使用 /app 作为工作目录
-  if (fs.existsSync(containerConfigPath)) {
+    // 检查容器内路径
+    const containerAppDir = '/app';
+    const containerConfigPath = path.join(containerAppDir, 'config.json');
+    
+    // 如果 /app/config.json 存在，说明在容器内，使用 /app 作为工作目录
+    if (fs.existsSync(containerConfigPath)) {
     return containerAppDir;
   }
   
-  // 尝试其他路径
-  const possibleRootPaths = [
-    path.resolve(__dirname, '..'),  // 相对于 server.js 的上级目录
-    '/opt/telegram-monitor',        // 常见部署路径
-    process.cwd()                   // 当前工作目录
-  ];
-  
-  for (const rootPath of possibleRootPaths) {
-    const configPath1 = path.join(rootPath, 'backend', 'config.json');
-    const configPath2 = path.join(rootPath, 'config.json');
-    
-    if (fs.existsSync(configPath1) || fs.existsSync(configPath2)) {
+      // 尝试其他路径
+      const possibleRootPaths = [
+        path.resolve(__dirname, '..'),  // 相对于 server.js 的上级目录
+        '/opt/telegram-monitor',        // 常见部署路径
+        process.cwd()                   // 当前工作目录
+      ];
+      
+      for (const rootPath of possibleRootPaths) {
+        const configPath1 = path.join(rootPath, 'backend', 'config.json');
+        const configPath2 = path.join(rootPath, 'config.json');
+        
+        if (fs.existsSync(configPath1) || fs.existsSync(configPath2)) {
       return rootPath;
-    }
-  }
-  
-  // 如果都没找到，使用默认路径
+        }
+      }
+      
+      // 如果都没找到，使用默认路径
   return path.resolve(__dirname, '..');
 }
 
@@ -2674,21 +2674,21 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
       
       // 回退方案：备份数据目录（文件系统备份）
       // 注意：在容器内，data/mongo 可能没有挂载，需要从宿主机路径查找
-      const possibleDataPaths = [
+    const possibleDataPaths = [
         path.join(scriptDir, 'data'),     // 项目根目录下的 data（宿主机路径）
-        '/opt/telegram-monitor/data',     // 常见部署路径
-        path.join(__dirname, '..', 'data') // 相对于 server.js
-      ];
-      
-      for (const dataPath of possibleDataPaths) {
-        if (fs.existsSync(dataPath)) {
+      '/opt/telegram-monitor/data',     // 常见部署路径
+      path.join(__dirname, '..', 'data') // 相对于 server.js
+    ];
+    
+    for (const dataPath of possibleDataPaths) {
+      if (fs.existsSync(dataPath)) {
           const mongoDataPath = path.join(dataPath, 'mongo');
           if (fs.existsSync(mongoDataPath)) {
             const dataFiles = fs.readdirSync(mongoDataPath);
-            if (dataFiles.length > 0) {
-              const backupDataPath = path.join(backupPath, 'data');
-              fs.mkdirSync(backupDataPath, { recursive: true });
-              
+        if (dataFiles.length > 0) {
+          const backupDataPath = path.join(backupPath, 'data');
+          fs.mkdirSync(backupDataPath, { recursive: true });
+          
               // 只备份 mongo 子目录
               const backupMongoPath = path.join(backupDataPath, 'mongo');
               copyDirectorySync(mongoDataPath, backupMongoPath);
@@ -3165,10 +3165,10 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
         }
         
         try {
-          await execAsync(`tar -xzf "${backupPath}" -C "${tempDir}"`, {
-            cwd: scriptDir,
-            timeout: 300000
-          });
+        await execAsync(`tar -xzf "${backupPath}" -C "${tempDir}"`, {
+          cwd: scriptDir,
+          timeout: 300000
+        });
           extractedDir = path.join(tempDir, backupName.replace('.tar.gz', ''));
           
           if (!fs.existsSync(extractedDir)) {
@@ -3187,7 +3187,7 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
       }
       
       // 恢复配置文件（尝试多个可能的路径）
-      const configSource = path.join(extractedDir, 'config.json');
+        const configSource = path.join(extractedDir, 'config.json');
       const possibleConfigDests = [
         path.join(scriptDir, 'backend', 'config.json'),  // 宿主机路径
         path.join(scriptDir, 'config.json'),              // 容器内路径
@@ -3195,7 +3195,7 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
       ];
       
       let configRestored = false;
-      if (fs.existsSync(configSource)) {
+        if (fs.existsSync(configSource)) {
         for (const configDest of possibleConfigDests) {
           try {
             // 确保目标目录存在
@@ -3203,7 +3203,7 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
             if (!fs.existsSync(destDir)) {
               fs.mkdirSync(destDir, { recursive: true });
             }
-            fs.copyFileSync(configSource, configDest);
+          fs.copyFileSync(configSource, configDest);
             console.log(`✅ [恢复] 已恢复配置文件: ${configDest}`);
             configRestored = true;
             break;
@@ -3219,17 +3219,17 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
       }
       
       // 恢复.env文件（尝试多个可能的路径）
-      const envSource = path.join(extractedDir, '.env');
+        const envSource = path.join(extractedDir, '.env');
       const possibleEnvDests = [
         path.join(scriptDir, '.env'),
         path.join(__dirname, '..', '.env')
       ];
       
       let envRestored = false;
-      if (fs.existsSync(envSource)) {
+        if (fs.existsSync(envSource)) {
         for (const envDest of possibleEnvDests) {
           try {
-            fs.copyFileSync(envSource, envDest);
+          fs.copyFileSync(envSource, envDest);
             console.log(`✅ [恢复] 已恢复环境变量文件: ${envDest}`);
             envRestored = true;
             break;
@@ -3526,12 +3526,12 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
             
             for (const dataDest of possibleDataDests) {
               try {
-                // 备份现有数据
-                if (fs.existsSync(dataDest)) {
-                  const backupDataPath = `${dataDest}.backup.${Date.now()}`;
-                  fs.renameSync(dataDest, backupDataPath);
-                  console.log(`✅ [恢复] 已备份现有数据到: ${backupDataPath}`);
-                }
+          // 备份现有数据
+          if (fs.existsSync(dataDest)) {
+            const backupDataPath = `${dataDest}.backup.${Date.now()}`;
+            fs.renameSync(dataDest, backupDataPath);
+            console.log(`✅ [恢复] 已备份现有数据到: ${backupDataPath}`);
+          }
                 
                 // 使用 Node.js API 复制目录（跨平台）
                 copyDirectorySync(mongoDataSource, dataDest);
@@ -3744,8 +3744,8 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
                   } catch (tarError) {
                     console.warn(`⚠️  [恢复] 创建 tar 文件失败: ${tarError.message}`);
                     throw tarError;
-                  }
-                } else {
+        }
+      } else {
                   console.warn(`⚠️  [恢复] 未找到 tg_listener 容器，尝试在主机文件系统恢复...`);
                   // 回退到主机文件系统恢复
                   const hostSessionPath = path.join(scriptDir, 'data', 'session');
@@ -5624,13 +5624,21 @@ async function startMultiLoginContainer(userId) {
       console.log(`📦 [多开登录] 容器 ${containerName} 已存在`);
       
       // 检查容器的挂载配置是否正确
-      // 如果挂载路径不正确（比如使用了 /data/session），需要重新创建
+      // 如果使用的是 bind mount 而不是 volume，需要重新创建
       if (containerInfo.Mounts && containerInfo.Mounts.length > 0) {
         for (const mount of containerInfo.Mounts) {
           if (mount.Destination === '/app/session') {
-            // 检查挂载源路径是否合理（不应该包含 /data/session 这样的路径）
-            if (mount.Source && (mount.Source.startsWith('/data/') || mount.Source === '/data/session')) {
-              console.warn(`⚠️  [多开登录] 检测到容器使用错误的挂载路径: ${mount.Source}`);
+            // 检查是否使用 volume（volume 的 Source 路径通常包含 /var/lib/docker/volumes/）
+            const isVolume = mount.Source && mount.Source.includes('/var/lib/docker/volumes/');
+            // 检查是否是错误的 bind mount（如 /data/session 或 /opt/telegram-monitor/data/session）
+            const isWrongBindMount = mount.Source && (
+              mount.Source.startsWith('/data/') || 
+              mount.Source === '/data/session' ||
+              mount.Source.includes('/opt/telegram-monitor/data/session')
+            );
+            
+            if (!isVolume || isWrongBindMount) {
+              console.warn(`⚠️  [多开登录] 检测到容器使用错误的挂载方式: ${mount.Source} (类型: ${isVolume ? 'volume' : 'bind mount'})`);
               console.log(`🗑️  [多开登录] 将删除旧容器并重新创建...`);
               try {
                 if (containerInfo.State.Running) {
