@@ -926,10 +926,11 @@ async def main():
             if os.path.exists(session_path_with_ext):
                 file_mtime = os.path.getmtime(session_path_with_ext)
                 time_since_modify = time.time() - file_mtime
-                # 如果文件在最近 5 秒内被修改，等待 2 秒确保完全同步
-                if time_since_modify < 5:
-                    logger.info("🔍 [客户端启动] Session 文件最近被修改（%d 秒前），等待 2 秒确保同步...", int(time_since_modify))
-                    await asyncio.sleep(2.0)
+                # 如果文件在最近 10 秒内被修改，等待 5 秒确保完全同步
+                if time_since_modify < 10:
+                    wait_time = max(5.0, 10.0 - time_since_modify)
+                    logger.info("🔍 [客户端启动] Session 文件最近被修改（%.1f 秒前），等待 %.1f 秒确保完全同步...", time_since_modify, wait_time)
+                    await asyncio.sleep(wait_time)
         
         # 先连接（不触发交互式输入）
         logger.info("🔍 [客户端启动] 正在连接到 Telegram 服务器...")
@@ -1034,33 +1035,59 @@ async def main():
                         if session_file and not SESSION_STRING:
                             session_path_with_ext = f"{session_file}.session"
                             if os.path.exists(session_path_with_ext):
-                                logger.error("🔍 [授权检查] Session 文件存在但认证密钥未注册，可能原因：")
-                                logger.error("   1. Session 文件中的认证密钥已过期或无效")
-                                logger.error("   2. Session 文件是用不同的 API_ID/API_HASH 创建的")
-                                logger.error("   3. Session 文件内容损坏或不完整")
-                                logger.error("   4. Session 文件在写入时没有完全同步")
-                                logger.error("   建议：删除旧的 session 文件后重新登录")
+                                import time
+                                file_mtime = os.path.getmtime(session_path_with_ext)
+                                time_since_modify = time.time() - file_mtime
+                                
+                                # 如果文件在最近 15 秒内被修改，可能是文件还没完全同步，等待一下
+                                if time_since_modify < 15:
+                                    wait_time = 15.0 - time_since_modify
+                                    logger.warning("⚠️  [授权检查] Session 文件在最近 %.1f 秒内被修改，可能是文件还没完全同步", time_since_modify)
+                                    logger.info("⏳ [授权检查] 等待 %.1f 秒后再验证...", wait_time)
+                                    await asyncio.sleep(wait_time)
+                                    
+                                    # 等待后再次尝试验证
+                                    try:
+                                        await client.disconnect()
+                                        await asyncio.sleep(1)
+                                        await client.connect()
+                                        await client.start()
+                                        logger.info("✅ [授权检查] 等待后验证成功，session 有效")
+                                        is_authorized = True
+                                        start_success = True
+                                        break
+                                    except Exception as retry_error:
+                                        logger.error("❌ [授权检查] 等待后验证仍然失败: %s", str(retry_error))
+                                
+                                if not is_authorized:
+                                    logger.error("🔍 [授权检查] Session 文件存在但认证密钥未注册，可能原因：")
+                                    logger.error("   1. Session 文件中的认证密钥已过期或无效")
+                                    logger.error("   2. Session 文件是用不同的 API_ID/API_HASH 创建的")
+                                    logger.error("   3. Session 文件内容损坏或不完整")
+                                    logger.error("   4. Session 文件在写入时没有完全同步")
+                                    logger.error("   建议：删除旧的 session 文件后重新登录")
                             else:
                                 logger.error("🔍 [授权检查] Session 文件不存在: %s", session_path_with_ext)
                         
-                        await client.disconnect()
-                        logger.error("")
-                        logger.error("=" * 60)
-                        logger.error("❌ Telegram 客户端未授权，Session 文件中的认证密钥无效")
-                        logger.error("")
-                        logger.error("📱 请先登录 Telegram 才能开始监控消息：")
-                        logger.error("   1. 访问 Web 界面")
-                        logger.error("   2. 进入 '设置' 标签")
-                        logger.error("   3. 点击 'Telegram 首次登录' 按钮")
-                        logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
-                        logger.error("   5. 登录成功后，重启 Telethon 服务：")
-                        logger.error("      docker compose restart telethon")
-                        logger.error("")
-                        logger.error("⚠️  服务将退出，请完成登录后重启服务")
-                        logger.error("=" * 60)
-                        logger.error("")
-                        import sys
-                        sys.exit(1)
+                        if not is_authorized:
+                            await client.disconnect()
+                            logger.error("")
+                            logger.error("=" * 60)
+                            logger.error("❌ Telegram 客户端未授权，Session 文件中的认证密钥无效")
+                            logger.error("")
+                            logger.error("📱 请先登录 Telegram 才能开始监控消息：")
+                            logger.error("   1. 访问 Web 界面")
+                            logger.error("   2. 进入 '设置' 标签")
+                            logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+                            logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
+                            logger.error("   5. 登录成功后，重启 Telethon 服务：")
+                            logger.error("      docker compose restart telethon")
+                            logger.error("")
+                            logger.error("⚠️  服务将退出，请完成登录后重启服务")
+                            logger.error("=" * 60)
+                            logger.error("")
+                            import sys
+                            sys.exit(1)
                     else:
                         # 其他 RpcError，可能是网络问题或其他错误
                         retry_count += 1

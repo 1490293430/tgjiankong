@@ -5592,6 +5592,10 @@ async function syncUserConfigAndRestartTelethon(userId) {
     userConfigCache.delete(`user_config_${userId}`);
     console.log(`🗑️  已清除用户 ${userId} 的配置缓存`);
     
+    // 在重启 Telethon 服务前，再等待 2 秒确保 session 文件完全同步
+    console.log(`⏳ [配置同步] 等待 2 秒确保 session 文件完全同步到 volume...`);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
     // 重启 Telethon 服务以应用新配置
     const restartSuccess = await restartTelethonService(userId);
     if (restartSuccess) {
@@ -7916,9 +7920,13 @@ asyncio.run(verify())
         
         // Telegram 登录成功后，同步用户配置并重启 Telethon 服务
         // 异步执行，不阻塞响应
+        // 增加等待时间（5秒），确保 session 文件完全同步到 volume 后再重启服务
         setTimeout(async () => {
           try {
-            console.log(`🔄 Telegram 登录成功，开始同步用户 ${userId} 的配置并重启 Telethon 服务...`);
+            console.log(`🔄 Telegram 登录成功，等待 5 秒确保 session 文件完全同步...`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            
+            console.log(`🔄 开始同步用户 ${userId} 的配置并重启 Telethon 服务...`);
             
             await syncUserConfigAndRestartTelethon(userId);
           } catch (error) {
