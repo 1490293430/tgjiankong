@@ -2436,11 +2436,11 @@
                     saveButton.textContent = originalText;
                 }
                 
-                // 使用 Toast 通知显示消息（自动消失，显示1秒）
+                // 使用 Toast 通知显示消息（与注册成功提示一致）
                 if (result && result.status === 'ok') {
-                    showToast('✅ 配置保存成功！', true, 1000);
+                    showToast('配置保存成功！', true);
                 } else {
-                    showToast('❌ 保存失败：' + (result?.error || '未知错误'), false);
+                    showToast('保存失败：' + (result?.error || '未知错误'), false);
                 }
             } catch (error) {
                 // 恢复按钮状态
