@@ -3568,6 +3568,26 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
                 // 容器不存在，忽略
               }
             }
+            
+            // 如果恢复了 session，等待容器完全启动后触发配置重载，确保 Telethon 客户端重新初始化
+            if (sessionRestored) {
+              console.log(`⏳ [恢复] 等待容器完全启动（10秒）...`);
+              await new Promise(resolve => setTimeout(resolve, 10000));
+              
+              // 触发配置重载，这会重新初始化 Telethon 客户端
+              try {
+                const axios = require('axios');
+                const telethonUrl = process.env.TELETHON_URL || 'http://telethon:8888';
+                console.log(`🔄 [恢复] 触发 Telethon 配置重载以重新初始化客户端...`);
+                await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
+                  timeout: 10000
+                });
+                console.log(`✅ [恢复] 已触发 Telethon 配置重载`);
+              } catch (reloadError) {
+                console.warn(`⚠️  [恢复] 触发配置重载失败: ${reloadError.message}`);
+                console.warn(`⚠️  [恢复] 请手动重启 tg_listener 容器或使用切换账号功能`);
+              }
+            }
           } catch (dockerError) {
             console.warn(`⚠️  [恢复] 无法通过 Docker API 启动容器: ${dockerError.message}`);
             // 尝试使用 shell 命令
@@ -3576,6 +3596,24 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
                 timeout: 15000
               });
               console.log(`✅ [恢复] 已通过 shell 命令启动容器`);
+              
+              // 如果恢复了 session，等待后触发配置重载
+              if (sessionRestored) {
+                console.log(`⏳ [恢复] 等待容器完全启动（10秒）...`);
+                await new Promise(resolve => setTimeout(resolve, 10000));
+                
+                try {
+                  const axios = require('axios');
+                  const telethonUrl = process.env.TELETHON_URL || 'http://telethon:8888';
+                  console.log(`🔄 [恢复] 触发 Telethon 配置重载以重新初始化客户端...`);
+                  await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
+                    timeout: 10000
+                  });
+                  console.log(`✅ [恢复] 已触发 Telethon 配置重载`);
+                } catch (reloadError) {
+                  console.warn(`⚠️  [恢复] 触发配置重载失败: ${reloadError.message}`);
+                }
+              }
             } catch (shellError) {
               console.warn(`⚠️  [恢复] 无法启动容器，请手动启动: ${shellError.message}`);
             }
