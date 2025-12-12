@@ -5254,17 +5254,44 @@ async function startMultiLoginContainer(userId) {
     
     // 检查容器是否已存在
     let container = null;
+    let needRecreate = false;
     try {
       container = docker.getContainer(containerName);
-      await container.inspect();
+      const containerInfo = await container.inspect();
       console.log(`📦 [多开登录] 容器 ${containerName} 已存在`);
+      
+      // 检查容器的挂载配置是否正确
+      // 如果挂载路径不正确（比如使用了 /data/session），需要重新创建
+      if (containerInfo.Mounts && containerInfo.Mounts.length > 0) {
+        for (const mount of containerInfo.Mounts) {
+          if (mount.Destination === '/app/session') {
+            // 检查挂载源路径是否合理（不应该包含 /data/session 这样的路径）
+            if (mount.Source && (mount.Source.startsWith('/data/') || mount.Source === '/data/session')) {
+              console.warn(`⚠️  [多开登录] 检测到容器使用错误的挂载路径: ${mount.Source}`);
+              console.log(`🗑️  [多开登录] 将删除旧容器并重新创建...`);
+              try {
+                if (containerInfo.State.Running) {
+                  await container.stop();
+                }
+                await container.remove();
+                needRecreate = true;
+                container = null;
+              } catch (removeError) {
+                console.warn(`⚠️  [多开登录] 删除旧容器失败: ${removeError.message}`);
+                // 继续尝试创建新容器，可能会因为名称冲突而失败
+              }
+              break;
+            }
+          }
+        }
+      }
     } catch (e) {
       // 容器不存在，需要创建
       console.log(`📦 [多开登录] 容器 ${containerName} 不存在，准备创建...`);
       container = null;
     }
     
-    if (!container) {
+    if (!container || needRecreate) {
       // 查找Telethon镜像
       const images = await docker.listImages();
       let containerImage = null;
@@ -5361,46 +5388,8 @@ async function startMultiLoginContainer(userId) {
         USER_ID: userId
       };
       
-      // 获取项目根目录（宿主机路径）
-      // 注意：在容器内创建容器时，需要使用宿主机的绝对路径
-      // 由于 backend 挂载为 ./backend:/app，我们需要推断项目根目录
-      let projectRoot = null;
-      
-      // 方法1：从环境变量获取（推荐）
-      if (process.env.PROJECT_ROOT) {
-        projectRoot = process.env.PROJECT_ROOT;
-      } else {
-        // 方法2：尝试读取 docker-compose.yml 来推断
-        // 由于我们在容器内，/app 对应宿主机的 ./backend
-        // 我们需要找到项目根目录
-        const scriptDir = detectProjectRoot();
-        
-        if (scriptDir === '/app') {
-          // 在容器内，尝试通过检查挂载信息或使用默认路径
-          // 由于无法直接获取宿主机路径，我们使用一个常见路径
-          // 或者通过读取 /proc/self/mountinfo 来获取挂载点
-          try {
-            // 尝试读取挂载信息（需要 root 权限）
-            const mountInfo = fs.readFileSync('/proc/self/mountinfo', 'utf8');
-            // 查找 /app 的挂载点
-            const appMountMatch = mountInfo.match(/^\d+ \d+ \d+:\d+ \S+ \S+ \S+ \S+ \S+ \S+ \S+ \/app/);
-            if (appMountMatch) {
-              // 从挂载信息中提取宿主机路径（这需要解析 mountinfo 格式）
-              // mountinfo 格式复杂，这里使用简化方法
-            }
-          } catch (e) {
-            // 忽略错误
-          }
-          
-          // 使用默认路径（用户需要在 docker-compose.yml 中设置 PROJECT_ROOT 环境变量）
-          projectRoot = '/opt/telegram-monitor';
-          console.warn(`⚠️  [多开登录] 未设置 PROJECT_ROOT 环境变量，使用默认路径: ${projectRoot}`);
-          console.warn(`⚠️  [多开登录] 如果项目不在 ${projectRoot}，请在 docker-compose.yml 的 api 服务中添加环境变量: PROJECT_ROOT=/实际项目路径`);
-        } else {
-          // 不在容器内，直接使用检测到的路径
-          projectRoot = scriptDir;
-        }
-      }
+      // 固定使用项目根目录路径
+      const projectRoot = '/opt/telegram-monitor';
       
       // 构建宿主机路径
       const hostBackendPath = path.join(projectRoot, 'backend');
@@ -5433,10 +5422,72 @@ async function startMultiLoginContainer(userId) {
     const containerInfo = await container.inspect();
     if (containerInfo.State.Running) {
       console.log(`🔄 [多开登录] 容器 ${containerName} 正在运行，重启以应用新配置...`);
-      await container.restart({ t: 10 });
+      try {
+        await container.restart({ t: 10 });
+      } catch (restartError) {
+        // 如果重启失败，可能是挂载配置有问题，删除容器并重新创建
+        console.warn(`⚠️  [多开登录] 重启容器失败: ${restartError.message}`);
+        console.log(`🗑️  [多开登录] 删除旧容器并重新创建...`);
+        try {
+          await container.stop();
+          await container.remove();
+          // 重新创建容器（上面的代码已经创建过了，这里需要重新执行创建逻辑）
+          // 但由于 container 变量已经指向了被删除的容器，我们需要重新获取
+          throw new Error('需要重新创建容器');
+        } catch (removeError) {
+          throw new Error(`无法删除旧容器: ${removeError.message}`);
+        }
+      }
     } else {
       console.log(`▶️  [多开登录] 启动容器 ${containerName}...`);
-      await container.start();
+      try {
+        await container.start();
+      } catch (startError) {
+        // 如果启动失败，可能是挂载配置有问题，删除容器并重新创建
+        if (startError.message.includes('mount') || startError.message.includes('read-only file system')) {
+          console.warn(`⚠️  [多开登录] 启动容器失败（可能是挂载路径错误）: ${startError.message}`);
+          console.log(`🗑️  [多开登录] 删除旧容器并重新创建...`);
+          try {
+            await container.remove();
+            // 重新创建容器
+            const projectRoot = process.env.PROJECT_ROOT || (() => {
+              try {
+                const { execSync } = require('child_process');
+                const containerId = fs.readFileSync('/etc/hostname', 'utf8').trim();
+                const inspectOutput = execSync(`docker inspect ${containerId} --format '{{range .Mounts}}{{if eq .Destination "/app"}}{{.Source}}{{end}}{{end}}'`, { encoding: 'utf8' }).trim();
+                return inspectOutput ? path.dirname(inspectOutput) : '/opt/telegram-monitor';
+              } catch (e) {
+                return '/opt/telegram-monitor';
+              }
+            })();
+            
+            const hostBackendPath = path.join(projectRoot, 'backend');
+            const hostSessionPath = path.join(projectRoot, 'data', 'session');
+            const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
+            
+            container = await docker.createContainer({
+              Image: containerImage,
+              name: containerName,
+              Env: Object.entries(envVars).map(([k, v]) => `${k}=${v}`),
+              HostConfig: {
+                Binds: [
+                  `${hostBackendPath}:/app:ro`,
+                  `${hostSessionPath}:/app/session`,
+                  `${hostLogsPath}:/app/logs`
+                ],
+                NetworkMode: 'tg-network',
+                RestartPolicy: { Name: 'unless-stopped' }
+              }
+            });
+            console.log(`✅ [多开登录] 已重新创建容器 ${containerName}`);
+            await container.start();
+          } catch (recreateError) {
+            throw new Error(`重新创建容器失败: ${recreateError.message}`);
+          }
+        } else {
+          throw startError;
+        }
+      }
     }
     
     console.log(`✅ [多开登录] 容器 ${containerName} 已启动`);
