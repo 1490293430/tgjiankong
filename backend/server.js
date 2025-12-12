@@ -4953,6 +4953,31 @@ async function getDockerAndContainer(checkReady = false, allowCreateTemp = false
         containerInfo = info;
         break;
       } else {
+        // 容器存在但未运行，在多开模式下不要启动主容器
+        if (name === 'tg_listener') {
+          // 检查是否有独立容器在运行（多开模式）
+          try {
+            // 只获取运行中的容器（all: false 只返回运行中的容器）
+            const runningContainers = await docker.listContainers({ all: false });
+            const hasMultiLoginContainer = runningContainers.some(c => {
+              if (!c.Names || c.Names.length === 0) return false;
+              return c.Names.some(containerName => {
+                const cleanName = containerName.replace(/^\//, '');
+                // 检查是否有独立容器在运行（tg_listener_* 格式）
+                return cleanName.startsWith('tg_listener_');
+              });
+            });
+            
+            if (hasMultiLoginContainer) {
+              console.log(`⏭️  [多开模式] 检测到独立容器正在运行，跳过启动主容器 ${name}`);
+              container = null;
+              continue; // 跳过主容器，继续查找其他容器
+            }
+          } catch (checkError) {
+            console.warn(`⚠️  检查多开容器状态失败，继续尝试启动主容器: ${checkError.message}`);
+          }
+        }
+        
         // 容器存在但未运行，尝试启动
         console.log(`⚠️  检测到容器 ${name} 已停止，尝试启动...`);
         try {
@@ -5827,6 +5852,42 @@ async function restartTelethonService(userId = null) {
     
     if (!docker) {
       throw new Error('无法连接到 Docker daemon');
+    }
+    
+    // 检查是否启用了多开模式
+    let multiLoginEnabled = false;
+    if (userId) {
+      try {
+        const accountId = await getAccountId(userId);
+        const accountConfig = await loadUserConfig(accountId.toString());
+        multiLoginEnabled = accountConfig.multi_login_enabled || false;
+        if (multiLoginEnabled) {
+          console.log(`⏭️  [重启服务] 多开模式已启用，跳过重启主容器（应使用独立容器）`);
+          return false; // 多开模式下不重启主容器
+        }
+      } catch (configError) {
+        console.warn(`⚠️  [重启服务] 检查多开模式失败，继续重启主容器: ${configError.message}`);
+      }
+    }
+    
+    // 检查是否有独立容器在运行（作为额外检查）
+    try {
+      // 只获取运行中的容器（all: false 只返回运行中的容器）
+      const runningContainers = await docker.listContainers({ all: false });
+      const hasMultiLoginContainer = runningContainers.some(c => {
+        if (!c.Names || c.Names.length === 0) return false;
+        return c.Names.some(containerName => {
+          const cleanName = containerName.replace(/^\//, '');
+          return cleanName.startsWith('tg_listener_');
+        });
+      });
+      
+      if (hasMultiLoginContainer) {
+        console.log(`⏭️  [重启服务] 检测到独立容器正在运行，跳过重启主容器（多开模式）`);
+        return false; // 有独立容器运行时，不重启主容器
+      }
+    } catch (checkError) {
+      console.warn(`⚠️  [重启服务] 检查独立容器状态失败，继续重启主容器: ${checkError.message}`);
     }
     
     // 尝试获取容器
