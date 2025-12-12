@@ -861,17 +861,36 @@ async def main():
         logger.info("🔍 [客户端启动] API_ID: %s", cfg_api_id)
         logger.info("🔍 [客户端启动] API_HASH: %s", "已设置" if cfg_api_hash else "未设置")
         
+        # 如果使用文件 session，在启动前等待一小段时间确保文件完全同步
+        if session_file and not SESSION_STRING:
+            import time
+            # 检查 session 文件是否存在，如果存在但刚修改过，等待一下
+            session_path_with_ext = f"{session_file}.session"
+            if os.path.exists(session_path_with_ext):
+                file_mtime = os.path.getmtime(session_path_with_ext)
+                time_since_modify = time.time() - file_mtime
+                # 如果文件在最近 5 秒内被修改，等待 2 秒确保完全同步
+                if time_since_modify < 5:
+                    logger.info("🔍 [客户端启动] Session 文件最近被修改（%d 秒前），等待 2 秒确保同步...", int(time_since_modify))
+                    await asyncio.sleep(2.0)
+        
         # 先连接（不触发交互式输入）
         logger.info("🔍 [客户端启动] 正在连接到 Telegram 服务器...")
         await client.connect()
         logger.info("✅ [客户端启动] 已连接到 Telegram 服务器")
         
-        # 检查是否已登录（如果未登录，不会触发交互式输入，只是返回 False）
-        logger.info("🔍 [授权检查] 检查用户是否已授权...")
-        is_authorized = await client.is_user_authorized()
-        logger.info("🔍 [授权检查] 授权状态: %s", is_authorized)
+        # 直接使用 start() 方法，它会自动检查 session 是否有效
+        # 如果 session 有效，start() 不会触发交互式输入
+        # 如果 session 无效，start() 会尝试交互式输入（在非交互式环境中会抛出 EOFError）
+        logger.info("🔍 [授权检查] 尝试启动客户端并验证 session...")
         
-        if not is_authorized:
+        # 尝试启动客户端，如果 session 有效，start() 会直接使用
+        # 如果 session 无效，start() 会抛出 EOFError（尝试交互式输入时）
+        try:
+            await client.start()
+            logger.info("✅ [授权检查] 客户端启动成功，session 有效")
+        except EOFError:
+            # EOFError 表示尝试了交互式输入，说明 session 无效
             await client.disconnect()
             logger.error("")
             logger.error("=" * 60)
@@ -891,12 +910,62 @@ async def main():
             # 使用 sys.exit(1) 非正常退出，触发 on-failure 重启策略
             import sys
             sys.exit(1)
-        
-        # 如果已授权，直接使用客户端（不需要重新启动）
-        # 注意：如果已授权，client.start() 不会触发交互式输入
-        if not client.is_connected():
-            await client.connect()
-        await client.start()
+        except Exception as start_error:
+            # 其他异常，可能是网络问题或其他错误
+            # 尝试检查授权状态作为备用方案
+            logger.warning("⚠️  [授权检查] start() 失败: %s，尝试检查授权状态...", str(start_error))
+            try:
+                is_authorized = await client.is_user_authorized()
+                logger.info("🔍 [授权检查] 授权状态: %s", is_authorized)
+                
+                if not is_authorized:
+                    await client.disconnect()
+                    logger.error("")
+                    logger.error("=" * 60)
+                    logger.error("❌ Telegram 客户端未授权，Session 文件无效或不存在")
+                    logger.error("")
+                    logger.error("📱 请先登录 Telegram 才能开始监控消息：")
+                    logger.error("   1. 访问 Web 界面")
+                    logger.error("   2. 进入 '设置' 标签")
+                    logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+                    logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
+                    logger.error("   5. 登录成功后，重启 Telethon 服务：")
+                    logger.error("      docker compose restart telethon")
+                    logger.error("")
+                    logger.error("⚠️  服务将退出，请完成登录后重启服务")
+                    logger.error("=" * 60)
+                    logger.error("")
+                    import sys
+                    sys.exit(1)
+                else:
+                    # 如果授权状态为 True，但 start() 失败，可能是其他问题
+                    # 尝试重新连接并启动
+                    logger.warning("⚠️  [授权检查] 授权状态为 True，但 start() 失败，尝试重新连接...")
+                    if not client.is_connected():
+                        await client.connect()
+                    await client.start()
+            except Exception as auth_check_error:
+                # 检查授权状态也失败，说明 session 确实有问题
+                await client.disconnect()
+                logger.error("")
+                logger.error("=" * 60)
+                logger.error("❌ 无法验证 Telegram 客户端授权状态")
+                logger.error("🔍 [错误详情] start() 错误: %s", str(start_error))
+                logger.error("🔍 [错误详情] 授权检查错误: %s", str(auth_check_error))
+                logger.error("")
+                logger.error("📱 请先登录 Telegram 才能开始监控消息：")
+                logger.error("   1. 访问 Web 界面")
+                logger.error("   2. 进入 '设置' 标签")
+                logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+                logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
+                logger.error("   5. 登录成功后，重启 Telethon 服务：")
+                logger.error("      docker compose restart telethon")
+                logger.error("")
+                logger.error("⚠️  服务将退出，请完成登录后重启服务")
+                logger.error("=" * 60)
+                logger.error("")
+                import sys
+                sys.exit(1)
     except EOFError as e:
         # 如果遇到 EOFError，说明尝试了交互式输入（session 无效或不存在）
         logger.error("=" * 60)
