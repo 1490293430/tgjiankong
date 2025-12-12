@@ -144,6 +144,7 @@ PORT=3000
 MONGO_URL=mongodb://mongo:27017/tglogs
 ALLOWED_ORIGINS=http://localhost,http://localhost:3000
 WEB_PORT=5555
+PROJECT_ROOT=${APP_DIR}
 ENVEOF
   fi
 fi

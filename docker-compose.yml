@@ -32,6 +32,7 @@ services:
       - PORT=3000
       - NODE_ENV=production
       - TELETHON_URL=http://telethon:8888
+      - PROJECT_ROOT=${PROJECT_ROOT:-/opt/telegram-monitor}
     volumes:
       - ./backend:/app
       - /app/node_modules

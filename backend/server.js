@@ -5361,6 +5361,55 @@ async function startMultiLoginContainer(userId) {
         USER_ID: userId
       };
       
+      // 获取项目根目录（宿主机路径）
+      // 注意：在容器内创建容器时，需要使用宿主机的绝对路径
+      // 由于 backend 挂载为 ./backend:/app，我们需要推断项目根目录
+      let projectRoot = null;
+      
+      // 方法1：从环境变量获取（推荐）
+      if (process.env.PROJECT_ROOT) {
+        projectRoot = process.env.PROJECT_ROOT;
+      } else {
+        // 方法2：尝试读取 docker-compose.yml 来推断
+        // 由于我们在容器内，/app 对应宿主机的 ./backend
+        // 我们需要找到项目根目录
+        const scriptDir = detectProjectRoot();
+        
+        if (scriptDir === '/app') {
+          // 在容器内，尝试通过检查挂载信息或使用默认路径
+          // 由于无法直接获取宿主机路径，我们使用一个常见路径
+          // 或者通过读取 /proc/self/mountinfo 来获取挂载点
+          try {
+            // 尝试读取挂载信息（需要 root 权限）
+            const mountInfo = fs.readFileSync('/proc/self/mountinfo', 'utf8');
+            // 查找 /app 的挂载点
+            const appMountMatch = mountInfo.match(/^\d+ \d+ \d+:\d+ \S+ \S+ \S+ \S+ \S+ \S+ \S+ \/app/);
+            if (appMountMatch) {
+              // 从挂载信息中提取宿主机路径（这需要解析 mountinfo 格式）
+              // mountinfo 格式复杂，这里使用简化方法
+            }
+          } catch (e) {
+            // 忽略错误
+          }
+          
+          // 使用默认路径（用户需要在 docker-compose.yml 中设置 PROJECT_ROOT 环境变量）
+          projectRoot = '/opt/telegram-monitor';
+          console.warn(`⚠️  [多开登录] 未设置 PROJECT_ROOT 环境变量，使用默认路径: ${projectRoot}`);
+          console.warn(`⚠️  [多开登录] 如果项目不在 ${projectRoot}，请在 docker-compose.yml 的 api 服务中添加环境变量: PROJECT_ROOT=/实际项目路径`);
+        } else {
+          // 不在容器内，直接使用检测到的路径
+          projectRoot = scriptDir;
+        }
+      }
+      
+      // 构建宿主机路径
+      const hostBackendPath = path.join(projectRoot, 'backend');
+      const hostSessionPath = path.join(projectRoot, 'data', 'session');
+      const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
+      
+      console.log(`📂 [多开登录] 使用项目根目录: ${projectRoot}`);
+      console.log(`📂 [多开登录] 挂载路径: backend=${hostBackendPath}, session=${hostSessionPath}, logs=${hostLogsPath}`);
+      
       // 创建容器
       container = await docker.createContainer({
         Image: containerImage,
@@ -5368,9 +5417,9 @@ async function startMultiLoginContainer(userId) {
         Env: Object.entries(envVars).map(([k, v]) => `${k}=${v}`),
         HostConfig: {
           Binds: [
-            `${path.join(__dirname, '..', 'backend')}:/app:ro`,
-            `${path.join(__dirname, '..', 'data', 'session')}:/app/session`,
-            `${path.join(__dirname, '..', 'logs', 'telethon')}:/app/logs`
+            `${hostBackendPath}:/app:ro`,
+            `${hostSessionPath}:/app/session`,
+            `${hostLogsPath}:/app/logs`
           ],
           NetworkMode: 'tg-network',
           RestartPolicy: { Name: 'unless-stopped' }
