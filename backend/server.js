@@ -1485,21 +1485,29 @@ app.post('/api/config/telegram', authMiddleware, async (req, res) => {
     const currentConfig = await loadUserConfig(userId);
     const { api_id, api_hash } = req.body;
     
-    // 允许 API_ID 为 0 或空（用于清除配置），但需要提示用户
-    const apiIdNum = Number(api_id) || 0;
+    // 验证输入
+    const apiIdNum = Number(api_id);
     const apiHashStr = (api_hash || '').toString().trim();
     
-    if (apiIdNum === 0 || !apiHashStr) {
-      return res.status(400).json({ error: 'API_ID 和 API_HASH 不能为空，请填写有效的 Telegram API 凭证' });
+    // 验证 API_ID 是否为有效数字
+    if (!api_id || isNaN(apiIdNum) || apiIdNum <= 0) {
+      return res.status(400).json({ error: 'API_ID 必须是有效的正整数' });
     }
     
-    // 准备更新数据
+    // 验证 API_HASH 是否为空
+    if (!apiHashStr) {
+      return res.status(400).json({ error: 'API_HASH 不能为空，请填写有效的 Telegram API 凭证' });
+    }
+    
+    // 准备更新数据（直接使用传入的值，不使用旧值作为回退）
     const updateData = {
       telegram: {
-        api_id: Number(api_id),
-        api_hash: api_hash || (currentConfig.telegram?.api_hash || '').toString()
+        api_id: apiIdNum,
+        api_hash: apiHashStr
       }
     };
+    
+    console.log(`💾 [Telegram凭证保存] API_ID: ${apiIdNum}, API_HASH: ${apiHashStr.substring(0, 8)}...`);
     
     console.log(`💾 [Telegram凭证保存] 准备保存到数据库 (userId: ${userId})`);
     

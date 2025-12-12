@@ -2308,14 +2308,20 @@
                 }
                 
                 if (result && result.status === 'ok') {
-                    alert(`✅ Telegram 凭证保存成功！${result.message ? '\n' + result.message : ''}`);
+                    showToast(`✅ Telegram 凭证保存成功！${result.message ? '\n' + result.message : ''}`, true);
+                    
+                    // 清空 API_HASH 输入框（因为后端不返回，需要重新输入才能看到）
+                    document.getElementById('tgApiHash').value = '';
+                    document.getElementById('tgApiHash').placeholder = '🔒 已隐藏 - 如果需要更改请输入新值';
                     
                     // 延迟刷新登录状态
                     setTimeout(() => {
                         checkTelegramLoginStatus(true);
                     }, 2000);
                 } else {
-                    alert('❌ 保存失败：' + (result?.error || '未知错误'));
+                    const errorMsg = result?.error || '未知错误';
+                    showToast('❌ 保存失败：' + errorMsg, false);
+                    console.error('保存 Telegram 凭证失败:', result);
                 }
             } catch (error) {
                 // 恢复按钮状态
@@ -2323,7 +2329,9 @@
                     saveButton.disabled = false;
                     saveButton.textContent = originalText;
                 }
-                alert('❌ 保存失败：' + (error.message || '未知错误'));
+                const errorMsg = error.message || '网络错误或服务器无响应';
+                showToast('❌ 保存失败：' + errorMsg, false);
+                console.error('保存 Telegram 凭证异常:', error);
             }
         }
         
