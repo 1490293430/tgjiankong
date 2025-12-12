@@ -49,16 +49,18 @@ app.set('trust proxy', 1);
 
 app.use(express.json());
 
-// 🔒 配置 CORS 白名单
+// 🔒 配置 CORS
+// 注意：由于通过 nginx 反向代理，允许所有源（nginx 会处理安全）
+// 如果直接访问 API，可以通过 ALLOWED_ORIGINS 环境变量限制
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-  : ['http://localhost', 'http://localhost:3000', 'http://127.0.0.1'];
+  : true; // 默认允许所有源（通过 nginx 代理时）
 
 app.use(cors({
   origin: allowedOrigins,
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   maxAge: 3600,
   optionsSuccessStatus: 200
 }));
@@ -377,14 +379,25 @@ const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017/tglogs';
 
 // 禁用 Mongoose 的所有日志输出
 mongoose.set('debug', false);
-// 静默处理连接事件
-mongoose.connection.on('error', () => {}); // 静默错误
-mongoose.connection.on('disconnected', () => {}); // 静默断开
-mongoose.connection.on('reconnected', () => {}); // 静默重连
+// 静默处理连接事件（但保留关键错误信息）
+mongoose.connection.on('error', (err) => {
+  // 只在控制台输出关键错误，不输出详细堆栈
+  if (err.message && !err.message.includes('ECONNREFUSED')) {
+    console.error('❌ MongoDB 连接错误:', err.message);
+  }
+});
+mongoose.connection.on('disconnected', () => {
+  // 静默断开，不输出日志
+});
+mongoose.connection.on('reconnected', () => {
+  // 静默重连，不输出日志
+});
 
 mongoose.connect(MONGO_URL, {
   useNewUrlParser: true,
-  useUnifiedTopology: true
+  useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 5000, // 5秒超时
+  heartbeatFrequencyMS: 10000 // 10秒心跳
 })
 .then(async () => {
   // 静默连接成功，不输出日志
@@ -395,6 +408,10 @@ mongoose.connect(MONGO_URL, {
   // 静默连接失败，但记录到控制台（不输出到日志）
   // 注意：这里不抛出错误，让服务继续运行，即使 MongoDB 暂时不可用
   // 服务会在后续请求中检查连接状态并返回适当的错误
+  // 只在控制台输出关键错误信息
+  if (err.message && !err.message.includes('ECONNREFUSED')) {
+    console.error('❌ MongoDB 连接失败，请检查 MongoDB 服务是否运行:', err.message);
+  }
 });
 
 // JWT 验证中间件
