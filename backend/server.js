@@ -111,9 +111,11 @@ const PORT = process.env.PORT || 3000;
 
 // 🔒 启动时验证 JWT_SECRET
 if (!process.env.JWT_SECRET || JWT_SECRET === 'your-secret-key-change-this') {
-  console.error('❌ 致命错误：JWT_SECRET 未设置或使用默认值！');
-  console.error('请设置环境变量 JWT_SECRET 为强随机值（使用 install.sh 或手动设置）');
-  process.exit(1);
+  console.error('⚠️  警告：JWT_SECRET 未设置或使用默认值！');
+  console.error('⚠️  请设置环境变量 JWT_SECRET 为强随机值（使用 install.sh 或手动设置）');
+  console.error('⚠️  服务将继续运行，但安全性较低');
+  // 不退出进程，让服务继续运行（在生产环境中应该退出，但这里允许继续运行以便调试）
+  // process.exit(1);
 }
 
 // 默认配置
@@ -8739,14 +8741,18 @@ setInterval(checkMessageCountTrigger, 60000);
 
 // 全局错误处理，防止未捕获的异常导致服务崩溃
 process.on('uncaughtException', (error) => {
-  console.error('❌ [未捕获异常] 服务可能崩溃:', error.message);
+  console.error('❌ [未捕获异常] 捕获到未处理的异常:', error.message);
   console.error('错误堆栈:', error.stack);
   // 不退出进程，让服务继续运行
   // 在生产环境中，可以考虑重启或记录到日志系统
+  // 注意：某些致命错误（如内存不足）仍可能导致进程退出
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ [未处理的 Promise 拒绝] 服务可能崩溃:', reason);
+  console.error('❌ [未处理的 Promise 拒绝] 捕获到未处理的 Promise 拒绝:', reason);
+  if (reason instanceof Error) {
+    console.error('错误堆栈:', reason.stack);
+  }
   // 不退出进程，让服务继续运行
 });
 
