@@ -895,8 +895,57 @@ async def main():
         
         # 先检查授权状态，避免不必要的 start() 调用
         logger.info("🔍 [授权检查] 检查用户是否已授权...")
-        is_authorized = await client.is_user_authorized()
-        logger.info("🔍 [授权检查] 授权状态: %s", is_authorized)
+        logger.info("🔍 [授权检查] 使用的 API_ID: %s", cfg_api_id)
+        logger.info("🔍 [授权检查] 使用的 API_HASH: %s", "已设置" if cfg_api_hash else "未设置")
+        logger.info("🔍 [授权检查] Session 文件路径: %s", session_file if session_file else "StringSession")
+        
+        # 先尝试检查授权状态
+        is_authorized = False
+        try:
+            is_authorized = await client.is_user_authorized()
+            logger.info("🔍 [授权检查] 授权状态: %s", is_authorized)
+        except Exception as auth_check_ex:
+            logger.warning("⚠️  [授权检查] 检查授权状态时出错: %s，将尝试启动客户端验证", str(auth_check_ex))
+            # 如果检查授权状态失败，继续尝试启动客户端
+        
+        # 如果授权检查返回 False，尝试启动客户端验证（因为 is_user_authorized() 可能不准确）
+        if not is_authorized:
+            logger.info("🔍 [授权检查] 授权状态为 False，尝试启动客户端验证 session 是否有效...")
+            try:
+                # 尝试启动客户端，如果成功说明 session 有效
+                await client.start()
+                logger.info("✅ [授权检查] 客户端启动成功，session 有效（is_user_authorized() 可能不准确）")
+                is_authorized = True
+            except EOFError as eof_error:
+                # EOFError 表示尝试了交互式输入，说明 session 无效
+                logger.error("🔍 [授权检查] EOFError 详情: %s", str(eof_error))
+                await client.disconnect()
+                logger.error("")
+                logger.error("=" * 60)
+                logger.error("❌ Telegram 客户端未授权，Session 文件无效或不存在")
+                logger.error("")
+                logger.error("📱 请先登录 Telegram 才能开始监控消息：")
+                logger.error("   1. 访问 Web 界面")
+                logger.error("   2. 进入 '设置' 标签")
+                logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+                logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
+                logger.error("   5. 登录成功后，重启 Telethon 服务：")
+                logger.error("      docker compose restart telethon")
+                logger.error("")
+                logger.error("⚠️  服务将退出，请完成登录后重启服务")
+                logger.error("=" * 60)
+                logger.error("")
+                import sys
+                sys.exit(1)
+            except Exception as start_error:
+                # 其他错误，可能是网络问题或其他错误
+                logger.warning("⚠️  [授权检查] 启动客户端失败: %s，但继续尝试检查授权状态", str(start_error))
+                # 再次检查授权状态
+                try:
+                    is_authorized = await client.is_user_authorized()
+                    logger.info("🔍 [授权检查] 重新检查授权状态: %s", is_authorized)
+                except Exception:
+                    pass
         
         if not is_authorized:
             await client.disconnect()
@@ -915,18 +964,30 @@ async def main():
             logger.error("⚠️  服务将退出，请完成登录后重启服务")
             logger.error("=" * 60)
             logger.error("")
-            # 使用 sys.exit(1) 非正常退出，触发 on-failure 重启策略
             import sys
             sys.exit(1)
         
-        # 如果已授权，使用 start() 方法启动客户端
-        logger.info("🔍 [授权检查] 尝试启动客户端...")
+        # 如果已授权但还未启动，使用 start() 方法启动客户端
+        if not client.is_connected():
+            await client.connect()
+        
+        # 检查客户端是否已经启动（如果之前已经启动过，就不需要再次启动）
+        client_started = False
         try:
-            await client.start()
-            logger.info("✅ [授权检查] 客户端启动成功，session 有效")
-        except EOFError as eof_error:
-            # EOFError 表示尝试了交互式输入，说明 session 无效
-            logger.error("🔍 [授权检查] EOFError 详情: %s", str(eof_error))
+            # 尝试获取用户信息，如果成功说明已经启动
+            me = await client.get_me()
+            logger.info("✅ [授权检查] 客户端已启动，已登录为: %s (ID: %s)", getattr(me, "username", None) or getattr(me, "first_name", None), me.id)
+            client_started = True
+        except Exception:
+            # 如果获取用户信息失败，说明需要启动客户端
+            logger.info("🔍 [授权检查] 客户端已连接但未启动，尝试启动客户端...")
+            try:
+                await client.start()
+                logger.info("✅ [授权检查] 客户端启动成功，session 有效")
+                client_started = True
+            except EOFError as eof_error:
+                # EOFError 表示尝试了交互式输入，说明 session 无效
+                logger.error("🔍 [授权检查] EOFError 详情: %s", str(eof_error))
             import traceback
             logger.error("🔍 [授权检查] EOFError 堆栈: %s", traceback.format_exc())
             await client.disconnect()
