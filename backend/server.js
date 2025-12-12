@@ -4889,7 +4889,8 @@ async function getDockerAndContainer(checkReady = false, allowCreateTemp = false
 }
 
 // 使用 Docker SDK 创建临时容器执行登录脚本（当主容器未运行时使用）
-async function execLoginScriptWithDockerRun(command, args, userId = null, reuseContainer = false) {
+// allowCreateTemp: 如果为 false，当容器不存在时不创建新容器，而是返回错误
+async function execLoginScriptWithDockerRun(command, args, userId = null, reuseContainer = false, allowCreateTemp = true) {
   const Docker = require('dockerode');
   const dockerSocketPaths = [
     '/var/run/docker.sock',
@@ -5033,16 +5034,6 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
     console.warn(`⚠️  创建 volume 失败: ${e.message}`);
   }
   
-  // 如果需要创建可复用的容器
-  if (!tempContainerName && userId && reuseContainer) {
-    // 创建可重用的临时容器（长期运行，用于多次执行命令）
-    tempContainerName = await getOrCreateTempLoginContainer(userId, configHostPath, null, containerImage, networkName);
-    isReusingContainer = true;
-  } else if (!tempContainerName) {
-    // 创建一次性临时容器
-    tempContainerName = `tg_login_temp_${Date.now()}`;
-  }
-  
   // 使用 -u 参数禁用 Python 输出缓冲，确保输出立即刷新
   const execArgs = ['python3', '-u', '/app/login_helper.py', command, ...args];
   
@@ -5056,71 +5047,127 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
     
     // 如果容器已存在（复用场景），在容器中使用 exec 执行命令
     if (isReusingContainer && tempContainerName) {
-      container = docker.getContainer(tempContainerName);
-      // 在已有容器中执行命令（使用 exec）
-      console.log(`♻️  在已有容器中执行命令: ${tempContainerName}`);
-      
-      // 创建 exec 实例
-      const exec = await container.exec({
-        Cmd: execArgs,
-        AttachStdout: true,
-        AttachStderr: true,
-        Env: ['PYTHONUNBUFFERED=1']
-      });
-      
-      // 启动 exec 并获取输出
-      const execStream = await exec.start({
-        hijack: true,
-        stdin: false
-      });
-      
-      let stdout = '';
-      let stderr = '';
-      
-      return new Promise((resolve, reject) => {
-        execStream.on('data', (chunk) => {
-          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-          let offset = 0;
-          
-          while (offset < buffer.length) {
-            if (buffer.length - offset < 8) break;
-            
-            const streamType = buffer[offset];
-            const payloadLength = buffer.readUInt32BE(offset + 4);
-            
-            if (buffer.length - offset < 8 + payloadLength) break;
-            
-            const payload = buffer.slice(offset + 8, offset + 8 + payloadLength);
-            
-            if (streamType === 1) {
-              stdout += payload.toString();
-            } else if (streamType === 2) {
-              stderr += payload.toString();
-            }
-            
-            offset += 8 + payloadLength;
-          }
-        });
-        
-        execStream.on('end', () => {
+      try {
+        container = docker.getContainer(tempContainerName);
+        // 检查容器是否存在且运行中
+        const containerInfo = await container.inspect();
+        if (!containerInfo.State.Running) {
+          console.warn(`⚠️  临时容器 ${tempContainerName} 未运行，状态: ${containerInfo.State.Status}，尝试启动...`);
           try {
-            const outputText = stdout.trim() || stderr.trim();
-            let jsonText = outputText;
-            const jsonMatch = outputText.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-              jsonText = jsonMatch[0];
-            }
-            const result = JSON.parse(jsonText);
-            resolve(result);
-          } catch (parseError) {
-            reject(new Error(`解析输出失败: ${parseError.message}, 输出: ${stdout || stderr}`));
+            await container.start();
+            // 等待容器启动
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          } catch (startError) {
+            console.error(`❌ 无法启动容器 ${tempContainerName}: ${startError.message}`);
+            // 容器无法启动，创建新容器
+            isReusingContainer = false;
+            tempContainerName = null;
+            tempLoginContainers.delete(userId);
           }
+        }
+      } catch (inspectError) {
+        console.warn(`⚠️  临时容器 ${tempContainerName} 不存在或无法访问: ${inspectError.message}`);
+        // 容器不存在，清除记录
+        tempLoginContainers.delete(userId);
+        // 如果 allowCreateTemp=false，不允许创建新容器，返回错误
+        if (!allowCreateTemp) {
+          throw new Error(
+            `临时登录容器不存在。请先点击"Telegram 首次登录"按钮初始化登录容器。\n\n` +
+            `如果容器被意外删除，请重新点击"Telegram 首次登录"按钮。`
+          );
+        }
+        // 如果 allowCreateTemp=true，允许创建新容器
+        isReusingContainer = false;
+        tempContainerName = null;
+      }
+      
+      // 如果容器仍然可用，使用 exec 执行命令
+      if (isReusingContainer && tempContainerName) {
+        // 在已有容器中执行命令（使用 exec）
+        console.log(`♻️  在已有容器中执行命令: ${tempContainerName}`);
+        
+        // 创建 exec 实例
+        const exec = await container.exec({
+          Cmd: execArgs,
+          AttachStdout: true,
+          AttachStderr: true,
+          Env: ['PYTHONUNBUFFERED=1']
         });
         
-        execStream.on('error', (err) => {
-          reject(new Error(`执行失败: ${err.message}`));
+        // 启动 exec 并获取输出
+        const execStream = await exec.start({
+          hijack: true,
+          stdin: false
         });
-      });
+        
+        let stdout = '';
+        let stderr = '';
+        
+        return new Promise((resolve, reject) => {
+          execStream.on('data', (chunk) => {
+            const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            let offset = 0;
+            
+            while (offset < buffer.length) {
+              if (buffer.length - offset < 8) break;
+              
+              const streamType = buffer[offset];
+              const payloadLength = buffer.readUInt32BE(offset + 4);
+              
+              if (buffer.length - offset < 8 + payloadLength) break;
+              
+              const payload = buffer.slice(offset + 8, offset + 8 + payloadLength);
+              
+              if (streamType === 1) {
+                stdout += payload.toString();
+              } else if (streamType === 2) {
+                stderr += payload.toString();
+              }
+              
+              offset += 8 + payloadLength;
+            }
+          });
+          
+          execStream.on('end', () => {
+            try {
+              const outputText = stdout.trim() || stderr.trim();
+              let jsonText = outputText;
+              const jsonMatch = outputText.match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                jsonText = jsonMatch[0];
+              }
+              const result = JSON.parse(jsonText);
+              resolve(result);
+            } catch (parseError) {
+              reject(new Error(`解析输出失败: ${parseError.message}, 输出: ${stdout || stderr}`));
+            }
+          });
+          
+          execStream.on('error', (err) => {
+            reject(new Error(`执行失败: ${err.message}`));
+          });
+        });
+      }
+    }
+    
+    // 如果容器不存在或无法复用，根据 allowCreateTemp 决定是否创建新容器
+    if (!tempContainerName) {
+      // 如果 allowCreateTemp=false，不允许创建新容器，返回错误
+      if (!allowCreateTemp) {
+        throw new Error(
+          `临时登录容器不存在。请先点击"Telegram 首次登录"按钮初始化登录容器。\n\n` +
+          `如果容器被意外删除，请重新点击"Telegram 首次登录"按钮。`
+        );
+      }
+      
+      // 如果需要创建可复用的容器
+      if (userId && reuseContainer) {
+        tempContainerName = await getOrCreateTempLoginContainer(userId, configHostPath, null, containerImage, networkName);
+        isReusingContainer = true;
+      } else {
+        // 创建一次性临时容器
+        tempContainerName = `tg_login_temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      }
     }
     
     // 创建新的一次性容器（统一使用 volume）
@@ -6686,6 +6733,24 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0, allow
     try {
       containerResult = await getDockerAndContainer(true, allowCreateTemp);
     } catch (containerError) {
+      // 如果 allowCreateTemp=false，不允许创建新容器，直接返回错误
+      if (!allowCreateTemp) {
+        // 检查是否有临时登录容器
+        if (userId && reuseContainer) {
+          const existing = tempLoginContainers.get(userId);
+          if (!existing) {
+            throw new Error(
+              `临时登录容器不存在。请先点击"Telegram 首次登录"按钮初始化登录容器。\n\n` +
+              `如果容器被意外删除，请重新点击"Telegram 首次登录"按钮。`
+            );
+          }
+        }
+        throw new Error(
+          `无法找到登录容器。请先点击"Telegram 首次登录"按钮初始化登录容器。\n\n` +
+          `原始错误: ${containerError.message}`
+        );
+      }
+      
       // 如果容器未运行且允许创建临时容器，则使用 docker run 执行脚本
       if (allowCreateTemp && (
         containerError.message.includes('无法找到运行中的 Telethon 容器') ||
@@ -6695,7 +6760,7 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0, allow
         console.log('📦 容器未运行，使用 docker run 执行登录脚本...');
         // 直接使用 docker run 执行脚本，不需要容器运行
         try {
-          return await execLoginScriptWithDockerRun(command, args, userId, reuseContainer);
+          return await execLoginScriptWithDockerRun(command, args, userId, reuseContainer, allowCreateTemp);
         } catch (runError) {
           // 如果 docker run 也失败，抛出原始错误
           throw new Error(`容器未运行，且 docker run 执行失败: ${runError.message}`);
@@ -7540,7 +7605,7 @@ app.post('/api/telegram/login/send-code', authMiddleware, async (req, res) => {
         sessionPath,
         validatedApiId.toString(),
         validatedApiHash
-      ], 0, true, userId, true); // allowCreateTemp=true, reuseContainer=true
+      ], 0, false, userId, true); // allowCreateTemp=false（不创建新容器）, reuseContainer=true（复用已有容器）
       
       if (result.success) {
         if (result.already_logged_in) {
@@ -7654,7 +7719,7 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
     const sessionPath = `/tmp/session_volume/user_${userId}`;
     
     try {
-      // 使用安全的脚本调用方式，复用已创建的临时容器
+      // 使用安全的脚本调用方式，复用已创建的临时容器（不创建新容器）
       const result = await execTelethonLoginScript('sign_in', [
         validatedPhone,
         validatedCode,
@@ -7663,7 +7728,7 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
         sessionPath,
         validatedApiId.toString(),
         validatedApiHash
-      ], 0, true, userId, true); // allowCreateTemp=true, reuseContainer=true
+      ], 0, false, userId, true); // allowCreateTemp=false（不创建新容器）, reuseContainer=true（复用已有容器）
       
       // 检查是否需要密码（这是正常情况，不是错误）
       if (result.password_required) {
