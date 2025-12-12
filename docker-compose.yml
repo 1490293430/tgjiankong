@@ -89,6 +89,7 @@ services:
 
 networks:
   tg-network:
+    name: tg-network  # 固定网络名称，不使用项目前缀
     driver: bridge
   npm-net:
     external: true   # 外部网络，需要先创建或已存在

@@ -5696,44 +5696,9 @@ async function startMultiLoginContainer(userId) {
     
     const containerName = `tg_listener_${userId}`;
     
-    // 查找正确的网络名称（从主容器 tg_listener 获取）
-    let networkName = 'telegram-monitor_tg-network'; // 默认使用 docker-compose 创建的网络
-    try {
-      // 首先尝试从主容器获取网络信息
-      try {
-        const mainContainer = docker.getContainer('tg_listener');
-        const mainContainerInfo = await mainContainer.inspect();
-        if (mainContainerInfo.NetworkSettings && mainContainerInfo.NetworkSettings.Networks) {
-          const networks = Object.keys(mainContainerInfo.NetworkSettings.Networks);
-          if (networks.length > 0) {
-            // 优先使用包含 'telegram-monitor' 或 '_tg-network' 的网络
-            const preferredNetwork = networks.find(n => 
-              n.includes('telegram-monitor') || n.includes('_tg-network')
-            ) || networks[0];
-            networkName = preferredNetwork;
-            console.log(`🔗 [多开登录] 从主容器获取网络: ${networkName}`);
-          }
-        }
-      } catch (mainContainerError) {
-        // 主容器不存在，尝试查找网络（优先查找 docker-compose 创建的网络）
-        const networks = await docker.listNetworks();
-        const tgNetwork = networks.find(n => 
-          n.Name === 'telegram-monitor_tg-network' ||
-          n.Name.includes('telegram-monitor') && n.Name.includes('tg-network')
-        ) || networks.find(n => 
-          n.Name === 'tg-network' || 
-          n.Name.endsWith('_tg-network')
-        );
-        if (tgNetwork) {
-          networkName = tgNetwork.Name;
-          console.log(`🔗 [多开登录] 从网络列表获取网络: ${networkName}`);
-        } else {
-          console.warn(`⚠️  [多开登录] 未找到 tg-network，使用默认网络名称: ${networkName}`);
-        }
-      }
-    } catch (netError) {
-      console.warn(`⚠️  [多开登录] 查找网络失败: ${netError.message}，使用默认网络名称: ${networkName}`);
-    }
+    // 使用 docker-compose.yml 中定义的固定网络名称 tg-network
+    const networkName = 'tg-network';
+    console.log(`🔗 [多开登录] 使用网络: ${networkName}`);
     
     // 查找Telethon镜像（提升到函数作用域，以便在错误处理中使用）
     let containerImage = null;
@@ -6011,10 +5976,47 @@ async function startMultiLoginContainer(userId) {
       const containerInfo = await container.inspect();
       console.log(`📦 [多开登录] 容器 ${containerName} 已存在`);
       
+      // 检查容器的网络配置是否正确
+      if (containerInfo.NetworkSettings && containerInfo.NetworkSettings.Networks) {
+        const connectedNetworks = Object.keys(containerInfo.NetworkSettings.Networks);
+        const isOnCorrectNetwork = connectedNetworks.some(n => 
+          n === networkName || 
+          n.includes('telegram-monitor') && n.includes('tg-network')
+        );
+        if (!isOnCorrectNetwork && connectedNetworks.length > 0) {
+          console.warn(`⚠️  [多开登录] 容器连接到错误的网络: ${connectedNetworks.join(', ')}，预期: ${networkName}`);
+          console.log(`🗑️  [多开登录] 将删除旧容器并重新创建以修复网络配置...`);
+          try {
+            if (containerInfo.State.Running) {
+              await container.stop();
+            }
+            await container.remove();
+            needRecreate = true;
+            container = null;
+          } catch (removeError) {
+            console.warn(`⚠️  [多开登录] 删除旧容器失败: ${removeError.message}`);
+          }
+        } else if (isOnCorrectNetwork) {
+          console.log(`✅ [多开登录] 容器已连接到正确网络: ${connectedNetworks.find(n => n === networkName || n.includes('telegram-monitor'))}`);
+        }
+      } else {
+        console.warn(`⚠️  [多开登录] 容器网络配置异常，将重新创建...`);
+        try {
+          if (containerInfo.State.Running) {
+            await container.stop();
+          }
+          await container.remove();
+          needRecreate = true;
+          container = null;
+        } catch (removeError) {
+          console.warn(`⚠️  [多开登录] 删除旧容器失败: ${removeError.message}`);
+        }
+      }
+      
       // 检查容器的挂载配置是否正确
       // 如果使用的是 bind mount 而不是 volume，需要重新创建
       // 检查是否错误地挂载了 /app 目录（会导致只读文件系统问题）
-      if (containerInfo.Mounts && containerInfo.Mounts.length > 0) {
+      if (!needRecreate && containerInfo.Mounts && containerInfo.Mounts.length > 0) {
         for (const mount of containerInfo.Mounts) {
           // 检查是否错误地挂载了整个 /app 目录（这会导致只读文件系统问题）
           if (mount.Destination === '/app' && mount.Source && !mount.Source.includes('/var/lib/docker/volumes/')) {
