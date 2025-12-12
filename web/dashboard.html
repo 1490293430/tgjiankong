@@ -2166,10 +2166,41 @@
                     return;
                 }
                 // Telegram API 凭证
-                document.getElementById('tgApiId').value = (config.telegram?.api_id ?? 0) || 0;
+                const apiId = (config.telegram?.api_id ?? 0) || 0;
+                document.getElementById('tgApiId').value = apiId;
                 // 🔒 API Hash 不发送给前端，使用占位符
-                document.getElementById('tgApiHash').placeholder = '🔒 已隐藏 - 严仅保存在服务器，如果需要更改请输入新值';
-                document.getElementById('tgApiHash').value = '';
+                const apiHash = config.telegram?.api_hash || '';
+                if (!apiId || apiId === 0 || !apiHash) {
+                    // 如果未配置，显示提示
+                    document.getElementById('tgApiHash').placeholder = '请填写 API_HASH（从 https://my.telegram.org/apps 获取）';
+                    document.getElementById('tgApiHash').value = '';
+                    // 显示提示信息
+                    const telegramApiCard = document.querySelector('[data-card-id="telegram-api"]');
+                    if (telegramApiCard) {
+                        const cardContent = telegramApiCard.nextElementSibling;
+                        if (cardContent && cardContent.classList.contains('collapsed')) {
+                            // 如果卡片是折叠的，展开它并显示提示
+                            telegramApiCard.click(); // 展开卡片
+                        }
+                        // 在卡片内容顶部添加提示
+                        let hintDiv = cardContent.querySelector('.api-config-hint');
+                        if (!hintDiv) {
+                            hintDiv = document.createElement('div');
+                            hintDiv.className = 'api-config-hint';
+                            hintDiv.style.cssText = 'background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px; margin-bottom: 15px; color: #856404;';
+                            hintDiv.innerHTML = '⚠️ <strong>未配置 Telegram API 凭证</strong><br>请填写 API_ID 和 API_HASH 后才能使用 Telegram 功能。获取方式：访问 <a href="https://my.telegram.org/apps" target="_blank" style="color: #0066cc;">https://my.telegram.org/apps</a> 创建应用后获取。';
+                            cardContent.insertBefore(hintDiv, cardContent.firstChild);
+                        }
+                    }
+                } else {
+                    document.getElementById('tgApiHash').placeholder = '🔒 已隐藏 - 仅保存在服务器，如果需要更改请输入新值';
+                    document.getElementById('tgApiHash').value = '';
+                    // 移除提示信息（如果存在）
+                    const hintDiv = document.querySelector('.api-config-hint');
+                    if (hintDiv) {
+                        hintDiv.remove();
+                    }
+                }
                 
                 // 记录所有消息开关
                 document.getElementById('logAllMessages').checked = !!config.log_all_messages;

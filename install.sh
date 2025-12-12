@@ -375,17 +375,20 @@ cat <<SUCCESS
 - API：http://${SERVER_IP}:3000
 - 默认登录：admin / admin123（⚠️  请立即修改密码！）
 
-📝 首次 Telegram 登录（推荐通过 Web 界面）：
+📝 首次使用步骤（推荐通过 Web 界面）：
   1. 访问 http://${SERVER_IP}:${WEB_PORT}
   2. 登录后台（admin / admin123）
   3. 进入"设置"标签
-  4. 配置 API_ID 和 API_HASH
-  5. 点击"Telegram 首次登录"按钮
-  6. 按照提示完成登录
+  4. 展开"Telegram API 凭证"卡片
+  5. 填写 API_ID 和 API_HASH（从 https://my.telegram.org/apps 获取）
+  6. 点击"保存 Telegram 凭证"按钮
+  7. 等待 Telethon 服务重启后，点击"Telegram 首次登录"按钮
+  8. 按照提示完成登录（输入手机号和验证码）
 
-  或者使用命令行（需要先配置 API_ID 和 API_HASH）：
-  cd ${APP_DIR}
-  docker compose exec telethon python3 /app/login_helper.py check /tmp/session_volume/user_$(docker compose exec -T api node -e "const mongoose=require('mongoose'); mongoose.connect(process.env.MONGO_URL||'mongodb://mongo:27017/tglogs'); const User=require('./userModel'); User.findOne({username:'admin'}).then(u=>{if(u)console.log(u._id.toString()); process.exit(0);})" 2>/dev/null | head -1) $(grep API_ID .env | cut -d'=' -f2) $(grep API_HASH .env | cut -d'=' -f2) || echo "请先通过 Web 界面配置 API_ID 和 API_HASH"
+💡 提示：
+  - API_ID 和 API_HASH 可以在安装时通过环境变量提供，也可以在 Web 界面中配置
+  - 如果安装时未提供，系统会在后台等待配置完成
+  - 配置完成后，Telethon 服务会自动重启并开始监控
 
 🔧 常用命令：
   查看状态：docker compose ps

@@ -782,10 +782,57 @@ async def main():
             cfg_api_hash = str(cfg.get("telegram", {}).get("api_hash", "") or "") or ENV_API_HASH or ""
 
     if cfg_api_id == 0 or not cfg_api_hash:
-        logger.error("❌ 未配置 API_ID/API_HASH，请在以下位置之一设置：")
-        logger.error("   1. 环境变量 API_ID 和 API_HASH")
-        logger.error("   2. 用户配置中（如果设置了 USER_ID）")
-        logger.error("   3. 全局配置文件 %s", CONFIG_PATH)
+        logger.warning("")
+        logger.warning("=" * 60)
+        logger.warning("⚠️  未配置 API_ID/API_HASH")
+        logger.warning("")
+        logger.warning("📱 请通过 Web 界面配置 Telegram API 凭证：")
+        logger.warning("   1. 访问 Web 界面")
+        logger.warning("   2. 进入 '设置' 标签")
+        logger.warning("   3. 展开 'Telegram API 凭证' 卡片")
+        logger.warning("   4. 填写 API_ID 和 API_HASH（从 https://my.telegram.org/apps 获取）")
+        logger.warning("   5. 点击 '保存 Telegram 凭证' 按钮")
+        logger.warning("")
+        logger.warning("💡 配置完成后，Telethon 服务将自动重启并开始监控")
+        logger.warning("")
+        logger.warning("ℹ️  服务将在后台运行，等待配置完成...")
+        logger.warning("=" * 60)
+        logger.warning("")
+        
+        # 不退出，而是等待配置完成
+        # 定期检查配置是否已更新（每 30 秒检查一次）
+        check_count = 0
+        while not SHUTDOWN.is_set():
+            try:
+                await asyncio.sleep(30.0)  # 等待 30 秒
+                check_count += 1
+                
+                # 每 10 次检查（5分钟）输出一次提示
+                if check_count % 10 == 0:
+                    logger.info("⏳ 仍在等待 API_ID/API_HASH 配置...（已等待 %d 分钟）", check_count // 2)
+                
+                # 重新加载配置
+                await asyncio.get_event_loop().run_in_executor(None, load_config_sync)
+                cfg = CONFIG_CACHE or default_config()
+                
+                # 检查是否已配置 API_ID/API_HASH
+                check_api_id = cfg.get("telegram", {}).get("api_id", 0) or 0
+                check_api_hash = cfg.get("telegram", {}).get("api_hash", "") or ""
+                
+                if check_api_id and check_api_id != 0 and check_api_hash:
+                    logger.info("✅ 检测到 API_ID/API_HASH 已配置，准备重新启动...")
+                    logger.info("📱 API_ID: %s", check_api_id)
+                    # 正常退出，让 Docker 重启容器（restart: unless-stopped 会自动重启）
+                    import sys
+                    sys.exit(0)
+            except KeyboardInterrupt:
+                # 处理 Ctrl+C
+                logger.info("收到中断信号，退出...")
+                break
+            except Exception as e:
+                logger.exception("检查配置时出错: %s", e)
+                await asyncio.sleep(30.0)  # 出错时也等待 30 秒
+        
         return
 
     logger.info("📱 使用 API_ID: %s", cfg_api_id)

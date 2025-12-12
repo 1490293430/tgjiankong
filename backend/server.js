@@ -1485,8 +1485,12 @@ app.post('/api/config/telegram', authMiddleware, async (req, res) => {
     const currentConfig = await loadUserConfig(userId);
     const { api_id, api_hash } = req.body;
     
-    if (!api_id) {
-      return res.status(400).json({ error: 'API_ID 不能为空' });
+    // 允许 API_ID 为 0 或空（用于清除配置），但需要提示用户
+    const apiIdNum = Number(api_id) || 0;
+    const apiHashStr = (api_hash || '').toString().trim();
+    
+    if (apiIdNum === 0 || !apiHashStr) {
+      return res.status(400).json({ error: 'API_ID 和 API_HASH 不能为空，请填写有效的 Telegram API 凭证' });
     }
     
     // 准备更新数据
