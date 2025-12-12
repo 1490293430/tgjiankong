@@ -167,9 +167,24 @@ async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, 
         log_debug(f"断开连接...")
         await client.disconnect()
         
+        # 显式同步文件系统，确保文件写入磁盘
+        import sys
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            # 使用 sync 命令强制同步文件系统
+            import subprocess
+            try:
+                subprocess.run(['sync'], check=False, timeout=5)
+                log_debug(f"已执行 sync 命令同步文件系统")
+            except Exception as sync_error:
+                log_debug(f"执行 sync 失败（不影响功能）: {sync_error}")
+        except Exception as e:
+            log_debug(f"同步文件系统时出错（不影响功能）: {e}")
+        
         # 等待一小段时间确保文件写入完成
         import asyncio
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1.0)  # 增加到 1 秒，确保文件完全写入
         
         # 检查登录后的文件状态
         log_debug(f"=== 登录后文件检查 ===")
@@ -181,6 +196,16 @@ async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, 
             log_debug(f"Session 文件大小: {file_stat.st_size} 字节")
             log_debug(f"Session 文件权限: {oct(file_stat.st_mode)}")
             log_debug(f"Session 文件修改时间: {file_stat.st_mtime}")
+            
+            # 尝试读取文件内容验证文件完整性
+            try:
+                with open(session_file, 'rb') as f:
+                    file_content = f.read()
+                    log_debug(f"Session 文件可读，内容长度: {len(file_content)} 字节")
+                    if len(file_content) == 0:
+                        log_debug(f"⚠️  Session 文件为空！")
+            except Exception as read_error:
+                log_debug(f"⚠️  无法读取 Session 文件: {read_error}")
         else:
             log_debug(f"⚠️  Session 文件不存在！")
             # 列出目录内容
@@ -194,7 +219,16 @@ async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, 
         log_debug(f"检查 /tmp/session_volume 目录...")
         if os.path.exists('/tmp/session_volume'):
             log_debug(f"/tmp/session_volume 存在")
-            log_debug(f"/tmp/session_volume 内容: {os.listdir('/tmp/session_volume')}")
+            volume_files = os.listdir('/tmp/session_volume')
+            log_debug(f"/tmp/session_volume 内容: {volume_files}")
+            log_debug(f"/tmp/session_volume 文件数量: {len(volume_files)}")
+            
+            # 检查目标文件是否在 volume 中
+            target_file = os.path.basename(session_file)
+            if target_file in volume_files:
+                log_debug(f"✅ 目标文件 {target_file} 在 volume 中")
+            else:
+                log_debug(f"⚠️  目标文件 {target_file} 不在 volume 中")
         else:
             log_debug(f"⚠️  /tmp/session_volume 不存在！")
         

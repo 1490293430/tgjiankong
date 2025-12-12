@@ -5340,6 +5340,42 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
     // 解析结果
     const resultText = stdout.trim() || stderr.trim();
     
+    // 如果退出码是 137（OOM Killer），但已有输出，尝试解析
+    if (exitCode === 137 && resultText) {
+      console.warn(`⚠️  容器被 OOM Killer 终止（退出码: 137），但检测到输出，尝试解析...`);
+      console.warn(`⚠️  stdout: ${stdout.substring(0, 500)}`);
+      console.warn(`⚠️  stderr: ${stderr.substring(0, 500)}`);
+      
+      try {
+        // 尝试提取 JSON
+        const jsonMatch = resultText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const result = JSON.parse(jsonMatch[0]);
+          if (result.success) {
+            console.log(`✅ 从被终止的进程中成功解析结果: ${JSON.stringify(result).substring(0, 200)}`);
+            return result;
+          }
+        }
+      } catch (parseError) {
+        console.warn(`⚠️  无法解析输出: ${parseError.message}`);
+      }
+      
+      // 如果无法解析或结果不成功，抛出错误
+      throw new Error(
+        `脚本执行被强制终止（退出码: 137，OOM Killer）\n` +
+        `可能原因：\n` +
+        `1. 容器内存不足\n` +
+        `2. 进程执行时间过长被系统终止\n` +
+        `3. Docker 容器资源限制\n\n` +
+        `建议：\n` +
+        `- 检查容器内存使用: docker stats\n` +
+        `- 查看系统日志: dmesg | grep -i oom\n` +
+        `- 检查容器资源限制: docker inspect <container> | grep -A 10 Memory\n` +
+        `- 尝试增加容器内存限制\n` +
+        `- 输出: ${resultText.substring(0, 500)}`
+      );
+    }
+    
     if (!resultText) {
       // 如果没有任何输出，检查容器状态和可能的错误
       const errorDetails = [];
@@ -6760,6 +6796,31 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0, allow
                 }
               } else if (data.ExitCode === 137) {
                 // 退出码 137 = 128 + 9 (SIGKILL)，表示进程被强制终止
+                // 但可能已经输出了有效结果，先尝试解析
+                console.warn(`⚠️  脚本执行被强制终止（退出码: 137），尝试解析已有输出...`);
+                console.warn(`⚠️  stdout: ${stdout.substring(0, 500)}`);
+                console.warn(`⚠️  stderr: ${stderr.substring(0, 500)}`);
+                
+                // 尝试从 stdout 或 stderr 中解析 JSON
+                const outputText = stdout.trim() || stderr.trim();
+                if (outputText) {
+                  try {
+                    // 尝试提取 JSON
+                    const jsonMatch = outputText.match(/\{[\s\S]*\}/);
+                    if (jsonMatch) {
+                      const result = JSON.parse(jsonMatch[0]);
+                      console.log(`✅ 从被终止的进程中成功解析结果: ${JSON.stringify(result).substring(0, 200)}`);
+                      // 如果结果成功，返回结果；否则继续抛出错误
+                      if (result.success) {
+                        return resolve(result);
+                      }
+                    }
+                  } catch (parseError) {
+                    console.warn(`⚠️  无法解析输出: ${parseError.message}`);
+                  }
+                }
+                
+                // 如果无法解析或结果不成功，抛出错误
                 reject(new Error(
                   `脚本执行被强制终止（退出码: 137）\n` +
                   `可能原因：\n` +
@@ -6767,11 +6828,11 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0, allow
                   `2. 进程执行时间过长被系统终止\n` +
                   `3. Docker 容器资源限制\n\n` +
                   `建议：\n` +
-                  `- 检查容器内存使用: docker stats tg_listener\n` +
+                  `- 检查容器内存使用: docker stats\n` +
                   `- 查看系统日志: dmesg | grep -i oom\n` +
-                  `- 检查容器资源限制: docker inspect tg_listener | grep -A 10 Memory\n` +
+                  `- 检查容器资源限制: docker inspect <container> | grep -A 10 Memory\n` +
                   `- 尝试增加容器内存限制或优化脚本执行时间\n` +
-                  `- 输出: ${stderr || stdout || '无输出'}`
+                  `- 输出: ${(stderr || stdout || '无输出').substring(0, 500)}`
                 ));
               } else {
                 reject(new Error(`脚本执行失败 (退出码: ${data.ExitCode}): ${stderr || stdout || '无输出'}`));
@@ -7542,12 +7603,20 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
         validatedApiHash
       ], 0, true, userId, true); // allowCreateTemp=true, reuseContainer=true
       
+      // 检查是否需要密码（这是正常情况，不是错误）
+      if (result.password_required) {
+        console.log(`🔐 [登录验证] 需要两步验证密码`);
+        // 需要密码，不清理容器（用户可能还要输入密码）
+        return res.json({
+          success: false,
+          password_required: true,
+          message: '需要两步验证密码'
+        });
+      }
+      
       if (result.success) {
         console.log(`✅ [登录验证] 登录脚本返回成功`);
         console.log(`📁 [登录验证] Session 路径: ${sessionPath}`);
-        
-        // 登录成功，清理临时容器
-        await cleanupTempLoginContainer(userId);
         
         // 立即清除并更新登录状态缓存，确保前端能正确显示已登录状态
         const cacheKey = `login_status_${userId}`;
@@ -7557,16 +7626,19 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
         loginStatusCache.delete(cacheKey);
         sessionFileCache.delete(volumeCacheKey);
         
-        // 立即检查 volume 中的文件（登录脚本应该已经保存）
-        console.log(`🔍 [登录验证] 立即检查 volume 中的 session 文件...`);
+        // 等待一小段时间确保 session 文件完全写入 volume（在清理容器之前）
+        console.log(`⏳ [登录验证] 等待 2 秒确保文件同步到 volume...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // 在清理容器之前，先检查文件是否已写入 volume
+        console.log(`🔍 [登录验证] 在清理容器前检查 volume 中的 session 文件...`);
         try {
           const Docker = require('dockerode');
           const docker = new Docker({ socketPath: '/var/run/docker.sock' });
           const volumeName = 'tg_session';
           const volumeSessionFileName = `user_${userId}.session`;
-          const volumeJournalFileName = `user_${userId}.session-journal`;
           
-          // 创建临时容器检查文件
+          // 创建临时容器检查文件（使用不同的容器，不依赖登录容器）
           const tempImage = await getTempContainerImage(docker);
           const checkContainerName = `tg_session_check_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
           
@@ -7623,9 +7695,9 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
           console.error(`❌ [登录验证] 检查 volume 文件失败: ${checkError.message}`);
         }
         
-        // 等待一小段时间确保 session 文件完全写入
-        console.log(`⏳ [登录验证] 等待 800ms 确保文件写入完成...`);
-        await new Promise(resolve => setTimeout(resolve, 800));
+        // 现在才清理临时登录容器（确保文件已同步）
+        console.log(`🧹 [登录验证] 清理临时登录容器...`);
+        await cleanupTempLoginContainer(userId);
         
         // 验证 session 文件是否已生成（统一使用 volume 路径）
         // 先清除缓存，强制重新检查
@@ -7707,8 +7779,34 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
       }
     } catch (error) {
       console.error('验证登录失败:', error);
+      console.error('错误堆栈:', error.stack);
+      
       // 出错时清理临时容器
       await cleanupTempLoginContainer(userId).catch(() => {});
+      
+      // 检查是否是 OOM Killer 错误
+      if (error.message && error.message.includes('退出码: 137')) {
+        return res.status(500).json({ 
+          error: '登录验证时进程被系统终止（内存不足）。\n\n' +
+                 '可能原因：\n' +
+                 '1. 服务器内存不足\n' +
+                 '2. 容器内存限制过低\n\n' +
+                 '建议：\n' +
+                 '- 检查系统内存: free -h\n' +
+                 '- 检查容器内存: docker stats\n' +
+                 '- 查看 OOM 日志: dmesg | grep -i oom | tail -20\n' +
+                 '- 如果内存不足，请增加服务器内存或关闭其他服务'
+        });
+      }
+      
+      // 检查是否是密码需要错误（这是正常的，不是错误）
+      if (error.message && error.message.includes('password_required')) {
+        return res.status(400).json({ 
+          error: '需要两步验证密码',
+          password_required: true
+        });
+      }
+      
       res.status(500).json({ 
         error: '验证失败：' + error.message 
       });
