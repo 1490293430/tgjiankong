@@ -5289,6 +5289,36 @@ async function startMultiLoginContainer(userId) {
       throw new Error('无法找到 Telethon 镜像');
     }
     
+    // 准备环境变量（提升到函数作用域，以便在错误处理中使用）
+    // 注意：monitor.py的逻辑：
+    // 1. active_user_id = cfg.get("user_id") or USER_ID
+    // 2. 如果active_user_id存在，session文件是 SESSION_PATH_{active_user_id}
+    // 3. 否则直接使用 SESSION_PATH
+    // 
+    // 单开模式（docker-compose.yml）：
+    //   - SESSION_PATH=/app/session/telegram
+    //   - 如果设置了user_id，文件是 /app/session/telegram_{userId}
+    //   - 实际文件：data/session/telegram.session 或 data/session/telegram_{userId}.session
+    // 
+    // 多开模式：
+    //   - 由于需要设置USER_ID来获取用户配置，active_user_id会是userId
+    //   - 如果SESSION_PATH=/app/session/user_${userId}，文件会是 /app/session/user_${userId}_${userId}
+    //   - 为了避免路径过长，我们设置SESSION_PATH=/app/session/user，这样文件是 /app/session/user_${userId}
+    //   - 实际文件：data/session/user_${userId}.session
+    const envVars = {
+      MONGO_URL: process.env.MONGO_URL || 'mongodb://mongo:27017/tglogs',
+      API_URL: process.env.API_URL || 'http://api:3000',
+      CONFIG_PATH: `/app/config_${userId}.json`,
+      // 多开模式：SESSION_PATH设置为 /app/session/user
+      // 由于USER_ID环境变量会设置，monitor.py会使用 SESSION_PATH_{USER_ID} = /app/session/user_${userId}
+      // 这样session文件是 data/session/user_${userId}.session，与单开模式的 data/session/telegram.session 不冲突
+      SESSION_PATH: `/app/session/user`,
+      API_ID: process.env.API_ID || '',
+      API_HASH: process.env.API_HASH || '',
+      // USER_ID环境变量用于从后端API获取用户配置，同时用于构建session路径
+      USER_ID: userId
+    };
+    
     // 检查容器是否已存在
     let container = null;
     let needRecreate = false;
@@ -5394,36 +5424,6 @@ async function startMultiLoginContainer(userId) {
         }
       }
       
-      // 读取docker-compose.yml获取配置
-      // 注意：monitor.py的逻辑：
-      // 1. active_user_id = cfg.get("user_id") or USER_ID
-      // 2. 如果active_user_id存在，session文件是 SESSION_PATH_{active_user_id}
-      // 3. 否则直接使用 SESSION_PATH
-      // 
-      // 单开模式（docker-compose.yml）：
-      //   - SESSION_PATH=/app/session/telegram
-      //   - 如果设置了user_id，文件是 /app/session/telegram_{userId}
-      //   - 实际文件：data/session/telegram.session 或 data/session/telegram_{userId}.session
-      // 
-      // 多开模式：
-      //   - 由于需要设置USER_ID来获取用户配置，active_user_id会是userId
-      //   - 如果SESSION_PATH=/app/session/user_${userId}，文件会是 /app/session/user_${userId}_${userId}
-      //   - 为了避免路径过长，我们设置SESSION_PATH=/app/session/user，这样文件是 /app/session/user_${userId}
-      //   - 实际文件：data/session/user_${userId}.session
-      const dockerComposePath = path.join(__dirname, '..', 'docker-compose.yml');
-      let envVars = {
-        MONGO_URL: process.env.MONGO_URL || 'mongodb://mongo:27017/tglogs',
-        API_URL: process.env.API_URL || 'http://api:3000',
-        CONFIG_PATH: `/app/config_${userId}.json`,
-        // 多开模式：SESSION_PATH设置为 /app/session/user
-        // 由于USER_ID环境变量会设置，monitor.py会使用 SESSION_PATH_{USER_ID} = /app/session/user_${userId}
-        // 这样session文件是 data/session/user_${userId}.session，与单开模式的 data/session/telegram.session 不冲突
-        SESSION_PATH: `/app/session/user`,
-        API_ID: process.env.API_ID || '',
-        API_HASH: process.env.API_HASH || '',
-        // USER_ID环境变量用于从后端API获取用户配置，同时用于构建session路径
-        USER_ID: userId
-      };
       
       // 固定使用项目根目录路径
       const projectRoot = '/opt/telegram-monitor';
@@ -5442,15 +5442,11 @@ async function startMultiLoginContainer(userId) {
       console.log(`📂 [多开登录] 挂载路径: backend=${hostBackendPath}, session=${hostSessionPath}, logs=${hostLogsPath}`);
       
       // 创建容器
-      // 注意：挂载 session 目录时，如果容器内 /app/session 不存在，Docker 会尝试创建它
-      // 但 overlay 文件系统是只读的，所以我们需要使用不同的方法
-      // 解决方案：挂载到容器内的一个不存在的路径，或者使用 volume
-      // 但最简单的方法是：挂载到 /app/session，Docker 会自动处理
-      // 如果还是失败，可能需要使用 Cmd 在容器启动时创建目录
-      // 创建容器
-      // 注意：虽然镜像中已经创建了 /app/session 目录，但 Docker 在挂载时可能仍会遇到问题
-      // 解决方案：不覆盖 Cmd，使用镜像的默认 CMD（python -u monitor.py）
-      // 挂载时 Docker 会自动处理目录创建（如果宿主机目录存在）
+      // 注意：镜像中已经创建了 /app/session 目录（在 Dockerfile 中 RUN mkdir -p /app/session）
+      // Docker 在挂载时，如果目标路径在镜像中已存在，应该能够正常挂载
+      // 但如果 Docker 试图在 overlay 文件系统中创建挂载点，可能会失败
+      // 解决方案：确保镜像中的目录存在，并且使用正确的挂载方式
+      // 由于镜像中已经有 /app/session，直接挂载应该可以工作
       container = await docker.createContainer({
         Image: containerImage,
         name: containerName,
