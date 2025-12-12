@@ -884,7 +884,14 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
               ]);
               
               // 如果验证失败（文件存在但无效），自动删除
-              if (checkResult && !checkResult.logged_in) {
+              // 注意：只有在明确验证失败（不是系统错误）时才删除
+              const isSwitchUserValidationError = checkResult && 
+                checkResult.success !== undefined &&
+                !checkResult.success &&
+                !checkResult.logged_in &&
+                !checkResult.error; // 没有错误信息
+              
+              if (isSwitchUserValidationError) {
                 console.warn(`⚠️  [切换用户] 检测到无效的 session 文件，自动删除: ${sessionPath}`);
                 // 调用删除凭证逻辑（只删除 volume 中的文件）
                 const Docker = require('dockerode');
@@ -7207,7 +7214,23 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       }
       
       // 如果验证失败（文件存在但无效），自动删除无效的 session 文件
-      if (checkResult && (!checkResult.success || !checkResult.logged_in) && sessionExists) {
+      // 注意：只有在明确验证失败（不是系统错误如 OOM Killer）时才删除
+      // 如果 checkResult 为 null 或包含错误信息，说明是系统错误，不应该删除
+      // 如果 checkError 存在，说明验证过程出错（如超时、OOM Killer），不应该删除
+      if (checkError) {
+        // 验证过程出错（如超时、OOM Killer），不删除 session 文件
+        console.warn(`⚠️  [登录状态] session 文件验证过程出错，不删除文件: ${checkError.message}`);
+        return; // 已经返回了错误结果，这里直接返回
+      }
+      
+      const isValidationError = checkResult && 
+        checkResult.success !== undefined && // 必须有明确的 success 字段
+        !checkResult.success && // 验证失败
+        !checkResult.logged_in && // 未登录
+        sessionExists &&
+        !checkResult.error; // 没有错误信息（如果有错误，说明是系统错误，不应该删除）
+      
+      if (isValidationError) {
         console.warn(`⚠️  [登录状态] 检测到无效的 session 文件，自动删除: ${sessionPath}`);
         try {
           // 调用删除凭证逻辑（只删除 volume 中的文件）
@@ -7343,7 +7366,14 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
               ]);
               
               // 如果验证失败（文件存在但无效），自动删除
-              if (checkResult && !checkResult.logged_in) {
+              // 注意：只有在明确验证失败（不是系统错误）时才删除
+              const isBackgroundValidationError = checkResult && 
+                checkResult.success !== undefined &&
+                !checkResult.success &&
+                !checkResult.logged_in &&
+                !checkResult.error; // 没有错误信息
+              
+              if (isBackgroundValidationError) {
                 console.warn(`⚠️  [登录状态] 后台验证发现无效的 session 文件，自动删除: ${sessionPath}`);
                 // 调用删除凭证逻辑（只删除 volume 中的文件）
                 const Docker = require('dockerode');
