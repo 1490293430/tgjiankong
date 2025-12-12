@@ -5346,6 +5346,31 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
       console.warn(`⚠️  stdout: ${stdout.substring(0, 500)}`);
       console.warn(`⚠️  stderr: ${stderr.substring(0, 500)}`);
       
+      // 首先检查是否有 Telegram API 错误（优先于 OOM 错误）
+      if (resultText.includes('AuthRestartError') || resultText.includes('Restart the authorization process')) {
+        const errorMatch = resultText.match(/(AuthRestartError[^\n]*|Restart the authorization process[^\n]*)/);
+        const errorMsg = errorMatch ? errorMatch[0] : 'Telegram 授权需要重新开始';
+        console.error(`❌ 检测到 Telegram API 错误: ${errorMsg}`);
+        throw new Error(
+          `Telegram API 错误：${errorMsg}\n\n` +
+          `这通常表示：\n` +
+          `1. Telegram 服务器内部问题\n` +
+          `2. 需要重新开始授权流程\n` +
+          `3. 请稍后重试或删除旧的 session 文件后重新登录`
+        );
+      }
+      
+      // 检查其他 Telegram 错误
+      if (resultText.includes('Telegram is having internal issues')) {
+        throw new Error(
+          `Telegram 服务器内部问题\n\n` +
+          `Telegram 服务器当前可能遇到问题，请稍后重试。\n` +
+          `如果问题持续，可以尝试：\n` +
+          `1. 等待几分钟后重试\n` +
+          `2. 删除旧的 session 文件后重新登录`
+        );
+      }
+      
       try {
         // 尝试提取 JSON
         const jsonMatch = resultText.match(/\{[\s\S]*\}/);
@@ -5354,25 +5379,32 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
           if (result.success) {
             console.log(`✅ 从被终止的进程中成功解析结果: ${JSON.stringify(result).substring(0, 200)}`);
             return result;
+          } else if (result.error) {
+            // 如果有错误信息，返回错误
+            throw new Error(result.error);
           }
         }
       } catch (parseError) {
+        // 如果是我们抛出的错误，直接抛出
+        if (parseError.message && (parseError.message.includes('Telegram') || parseError.message.includes('授权'))) {
+          throw parseError;
+        }
         console.warn(`⚠️  无法解析输出: ${parseError.message}`);
       }
       
-      // 如果无法解析或结果不成功，抛出错误
+      // 如果无法解析或结果不成功，抛出 OOM 错误
       throw new Error(
-        `脚本执行被强制终止（退出码: 137，OOM Killer）\n` +
+        `脚本执行被强制终止（退出码: 137，可能是内存不足）\n\n` +
         `可能原因：\n` +
         `1. 容器内存不足\n` +
         `2. 进程执行时间过长被系统终止\n` +
         `3. Docker 容器资源限制\n\n` +
         `建议：\n` +
         `- 检查容器内存使用: docker stats\n` +
-        `- 查看系统日志: dmesg | grep -i oom\n` +
+        `- 查看系统日志: dmesg | grep -i oom | tail -20\n` +
         `- 检查容器资源限制: docker inspect <container> | grep -A 10 Memory\n` +
-        `- 尝试增加容器内存限制\n` +
-        `- 输出: ${resultText.substring(0, 500)}`
+        `- 如果内存不足，请增加服务器内存或关闭其他服务\n\n` +
+        `输出信息: ${resultText.substring(0, 500)}`
       );
     }
     
@@ -6801,18 +6833,48 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0, allow
                 console.warn(`⚠️  stdout: ${stdout.substring(0, 500)}`);
                 console.warn(`⚠️  stderr: ${stderr.substring(0, 500)}`);
                 
-                // 尝试从 stdout 或 stderr 中解析 JSON
-                const outputText = stdout.trim() || stderr.trim();
-                if (outputText) {
+                // 首先检查是否有 Telegram API 错误（优先于 OOM 错误）
+                const allOutput = (stdout + stderr).trim();
+                if (allOutput) {
+                  // 检查常见的 Telegram API 错误
+                  if (allOutput.includes('AuthRestartError') || allOutput.includes('Restart the authorization process')) {
+                    const errorMatch = allOutput.match(/(AuthRestartError[^\n]*|Restart the authorization process[^\n]*)/);
+                    const errorMsg = errorMatch ? errorMatch[0] : 'Telegram 授权需要重新开始';
+                    console.error(`❌ 检测到 Telegram API 错误: ${errorMsg}`);
+                    return reject(new Error(
+                      `Telegram API 错误：${errorMsg}\n\n` +
+                      `这通常表示：\n` +
+                      `1. Telegram 服务器内部问题\n` +
+                      `2. 需要重新开始授权流程\n` +
+                      `3. 请稍后重试或删除旧的 session 文件后重新登录`
+                    ));
+                  }
+                  
+                  // 检查其他 Telegram 错误
+                  if (allOutput.includes('Telegram is having internal issues')) {
+                    return reject(new Error(
+                      `Telegram 服务器内部问题\n\n` +
+                      `Telegram 服务器当前可能遇到问题，请稍后重试。\n` +
+                      `如果问题持续，可以尝试：\n` +
+                      `1. 等待几分钟后重试\n` +
+                      `2. 删除旧的 session 文件后重新登录`
+                    ));
+                  }
+                  
+                  // 尝试从 stdout 或 stderr 中解析 JSON
+                  const outputText = stdout.trim() || stderr.trim();
                   try {
                     // 尝试提取 JSON
                     const jsonMatch = outputText.match(/\{[\s\S]*\}/);
                     if (jsonMatch) {
                       const result = JSON.parse(jsonMatch[0]);
                       console.log(`✅ 从被终止的进程中成功解析结果: ${JSON.stringify(result).substring(0, 200)}`);
-                      // 如果结果成功，返回结果；否则继续抛出错误
+                      // 如果结果成功，返回结果；否则返回错误信息
                       if (result.success) {
                         return resolve(result);
+                      } else if (result.error) {
+                        // 如果有错误信息，返回错误
+                        return reject(new Error(result.error));
                       }
                     }
                   } catch (parseError) {
@@ -6820,19 +6882,19 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0, allow
                   }
                 }
                 
-                // 如果无法解析或结果不成功，抛出错误
+                // 如果无法解析或结果不成功，抛出 OOM 错误
                 reject(new Error(
-                  `脚本执行被强制终止（退出码: 137）\n` +
+                  `脚本执行被强制终止（退出码: 137，可能是内存不足）\n\n` +
                   `可能原因：\n` +
                   `1. 容器内存不足 (OOM Killer)\n` +
                   `2. 进程执行时间过长被系统终止\n` +
                   `3. Docker 容器资源限制\n\n` +
                   `建议：\n` +
                   `- 检查容器内存使用: docker stats\n` +
-                  `- 查看系统日志: dmesg | grep -i oom\n` +
+                  `- 查看系统日志: dmesg | grep -i oom | tail -20\n` +
                   `- 检查容器资源限制: docker inspect <container> | grep -A 10 Memory\n` +
-                  `- 尝试增加容器内存限制或优化脚本执行时间\n` +
-                  `- 输出: ${(stderr || stdout || '无输出').substring(0, 500)}`
+                  `- 如果内存不足，请增加服务器内存或关闭其他服务\n\n` +
+                  `输出信息: ${(stderr || stdout || '无输出').substring(0, 500)}`
                 ));
               } else {
                 reject(new Error(`脚本执行失败 (退出码: ${data.ExitCode}): ${stderr || stdout || '无输出'}`));
