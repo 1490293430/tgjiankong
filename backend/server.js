@@ -856,6 +856,122 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
     loginStatusCache.delete(`login_status_${newUserId}`);
     console.log(`🗑️  已清除用户 ${oldUserId} 和 ${newUserId} 的登录状态缓存`);
     
+    // 切换用户后，检查并自动删除无效的 session 文件（异步执行，不阻塞响应）
+    setTimeout(async () => {
+      try {
+        // 检查新用户的 session 文件是否存在
+        const sessionExists = await checkSessionFileInVolume(newUserId);
+        if (sessionExists) {
+          // 如果文件存在，验证它是否有效
+          const userConfig = await loadUserConfig(newUserId);
+          const config = userConfig.toObject ? userConfig.toObject() : userConfig;
+          const apiId = config.telegram?.api_id || 0;
+          const apiHash = config.telegram?.api_hash || '';
+          
+          if (apiId && apiHash) {
+            const sessionPath = `/tmp/session_volume/user_${newUserId}`;
+            try {
+              // 验证 session 文件是否有效（使用较短的超时）
+              const checkResult = await Promise.race([
+                execTelethonLoginScript('check', [
+                  sessionPath,
+                  apiId.toString(),
+                  apiHash
+                ], 0, true),
+                new Promise((_, reject) => 
+                  setTimeout(() => reject(new Error('验证超时')), 3000)
+                )
+              ]);
+              
+              // 如果验证失败（文件存在但无效），自动删除
+              if (checkResult && !checkResult.logged_in) {
+                console.warn(`⚠️  [切换用户] 检测到无效的 session 文件，自动删除: ${sessionPath}`);
+                // 调用删除凭证逻辑（只删除 volume 中的文件）
+                const Docker = require('dockerode');
+                const dockerSocketPaths = [
+                  '/var/run/docker.sock',
+                  process.env.DOCKER_HOST?.replace('unix://', '') || null
+                ].filter(Boolean);
+                
+                let docker = null;
+                for (const socketPath of dockerSocketPaths) {
+                  if (fs.existsSync(socketPath)) {
+                    try {
+                      docker = new Docker({ socketPath });
+                      await docker.ping();
+                      break;
+                    } catch (e) {
+                      // 继续尝试下一个路径
+                    }
+                  }
+                }
+                
+                if (docker) {
+                  const volumeName = 'tg_session';
+                  const volumeSessionFileName = `user_${newUserId}.session`;
+                  const volumeJournalFileName = `user_${newUserId}.session-journal`;
+                  
+                  try {
+                    const volume = docker.getVolume(volumeName);
+                    await volume.inspect();
+                    
+                    const tempImage = await getTempContainerImage(docker);
+                    const deleteContainerName = `tg_session_auto_delete_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                    
+                    const deleteContainer = await docker.createContainer({
+                      Image: tempImage,
+                      name: deleteContainerName,
+                      Cmd: ['sh', '-c', 'sleep 1'],
+                      HostConfig: {
+                        Binds: [`${volumeName}:/tmp/session_volume`]
+                      }
+                    });
+                    
+                    await deleteContainer.start();
+                    
+                    // 删除 session 文件
+                    const deleteExec = await deleteContainer.exec({
+                      Cmd: ['sh', '-c', `rm -rf /tmp/session_volume/${volumeSessionFileName} /tmp/session_volume/${volumeJournalFileName} && echo "deleted"`],
+                      AttachStdout: true,
+                      AttachStderr: true
+                    });
+                    
+                    const deleteStream = await deleteExec.start({ hijack: true, stdin: false });
+                    await new Promise((resolve) => {
+                      deleteStream.on('end', resolve);
+                    });
+                    
+                    await deleteContainer.stop();
+                    await deleteContainer.remove();
+                    
+                    // 更新缓存
+                    const volumeCacheKey = `volume_session_${newUserId}`;
+                    sessionFileCache.set(volumeCacheKey, { exists: false, timestamp: Date.now() });
+                    loginStatusCache.set(`login_status_${newUserId}`, {
+                      result: {
+                        logged_in: false,
+                        message: '未登录（无效凭证已自动删除）'
+                      },
+                      timestamp: Date.now()
+                    });
+                    
+                    console.log(`✅ [切换用户] 已自动删除无效的 session 文件`);
+                  } catch (deleteError) {
+                    console.warn(`⚠️  [切换用户] 自动删除无效 session 文件失败: ${deleteError.message}`);
+                  }
+                }
+              }
+            } catch (verifyError) {
+              // 验证失败（超时或错误），不自动删除，让用户手动处理
+              console.warn(`⚠️  [切换用户] 验证 session 文件时出错: ${verifyError.message}`);
+            }
+          }
+        }
+      } catch (error) {
+        console.warn(`⚠️  [切换用户] 检查 session 文件时出错: ${error.message}`);
+      }
+    }, 1000); // 延迟1秒，确保切换用户响应已返回
+    
     // 检查是否启用多开登录（使用主账号的配置）
     const accountConfig = await loadUserConfig(currentAccountId.toString());
     const multiLoginEnabled = accountConfig.multi_login_enabled || false;
@@ -6483,20 +6599,62 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
       return res.json(result);
     }
     
-    // session 文件存在，快速返回已登录状态（不等待容器验证，提高速度）
-    const quickResult = {
-      logged_in: true,
-      message: '已登录（session 文件存在）',
-      uncertain: false
-    };
+    // session 文件存在，需要验证文件是否有效
+    // 尝试从缓存获取配置（避免 MongoDB 查询）
+    let config = null;
+    const configCacheKey = `user_config_${userId}`;
+    const cachedConfig = userConfigCache.get(configCacheKey);
     
-    // 缓存成功结果
-    loginStatusCache.set(`login_status_${userId}`, {
-      result: quickResult,
-      timestamp: Date.now()
-    });
+    if (cachedConfig && (Date.now() - cachedConfig.timestamp) < CONFIG_CACHE_TTL) {
+      config = cachedConfig.config;
+    } else {
+      // 缓存未命中，查询 MongoDB
+      try {
+        const userConfig = await loadUserConfig(userId);
+        config = userConfig.toObject ? userConfig.toObject() : userConfig;
+        // 更新配置缓存
+        userConfigCache.set(configCacheKey, {
+          config,
+          timestamp: Date.now()
+        });
+      } catch (configError) {
+        // 如果无法加载配置，直接返回已登录（因为文件存在）
+        const quickResult = {
+          logged_in: true,
+          message: '已登录（session 文件存在）',
+          uncertain: false
+        };
+        loginStatusCache.set(cacheKey, {
+          result: quickResult,
+          timestamp: Date.now()
+        });
+        return res.json(quickResult);
+      }
+    }
     
-    // 如果强制刷新，才加载配置并进行容器验证
+    const apiId = config.telegram?.api_id || 0;
+    const apiHash = config.telegram?.api_hash || '';
+    
+    if (!apiId || !apiHash) {
+      // 如果没有配置，直接返回已登录（因为文件存在）
+      const quickResult = {
+        logged_in: true,
+        message: '已登录（session 文件存在）',
+        uncertain: false
+      };
+      loginStatusCache.set(cacheKey, {
+        result: quickResult,
+        timestamp: Date.now()
+      });
+      return res.json(quickResult);
+    }
+    
+    // 验证输入
+    const validatedApiId = validateInput(apiId, 'number');
+    const validatedApiHash = validateInput(apiHash);
+    
+    // 如果强制刷新，才进行容器验证（但使用较短的超时）
+    // 如果没有强制刷新，也在后台异步验证并自动删除无效的 session 文件
     if (forceRefresh) {
       // 尝试从缓存获取配置（避免 MongoDB 查询）
       let config = null;
@@ -6656,6 +6814,133 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
         });
         return res.json(invalidResult);
       }
+    } else {
+      // 如果没有强制刷新，在后台异步验证并自动删除无效的 session 文件
+      // 先快速返回已登录状态，然后在后台验证
+      const quickResult = {
+        logged_in: true,
+        message: '已登录（session 文件存在）',
+        uncertain: false
+      };
+      
+      // 缓存成功结果
+      loginStatusCache.set(cacheKey, {
+        result: quickResult,
+        timestamp: Date.now()
+      });
+      
+      // 在后台异步验证并自动删除无效的 session 文件
+      setTimeout(async () => {
+        try {
+          // 使用之前已经加载的配置
+          const apiId = config.telegram?.api_id || 0;
+          const apiHash = config.telegram?.api_hash || '';
+          
+          if (apiId && apiHash) {
+            // 验证输入
+            const validatedApiId = validateInput(apiId, 'number');
+            const validatedApiHash = validateInput(apiHash);
+            
+            // 在后台异步验证（使用较短的超时）
+            try {
+              const checkResult = await Promise.race([
+                execTelethonLoginScript('check', [
+                  sessionPath,
+                  validatedApiId.toString(),
+                  validatedApiHash
+                ], 0, true),
+                new Promise((_, reject) => 
+                  setTimeout(() => reject(new Error('验证超时')), 3000)
+                )
+              ]);
+              
+              // 如果验证失败（文件存在但无效），自动删除
+              if (checkResult && !checkResult.logged_in) {
+                console.warn(`⚠️  [登录状态] 后台验证发现无效的 session 文件，自动删除: ${sessionPath}`);
+                // 调用删除凭证逻辑（只删除 volume 中的文件）
+                const Docker = require('dockerode');
+                const dockerSocketPaths = [
+                  '/var/run/docker.sock',
+                  process.env.DOCKER_HOST?.replace('unix://', '') || null
+                ].filter(Boolean);
+                
+                let docker = null;
+                for (const socketPath of dockerSocketPaths) {
+                  if (fs.existsSync(socketPath)) {
+                    try {
+                      docker = new Docker({ socketPath });
+                      await docker.ping();
+                      break;
+                    } catch (e) {
+                      // 继续尝试下一个路径
+                    }
+                  }
+                }
+                
+                if (docker) {
+                  const volumeName = 'tg_session';
+                  const volumeSessionFileName = `user_${userId}.session`;
+                  const volumeJournalFileName = `user_${userId}.session-journal`;
+                  
+                  try {
+                    const volume = docker.getVolume(volumeName);
+                    await volume.inspect();
+                    
+                    const tempImage = await getTempContainerImage(docker);
+                    const deleteContainerName = `tg_session_auto_delete_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                    
+                    const deleteContainer = await docker.createContainer({
+                      Image: tempImage,
+                      name: deleteContainerName,
+                      Cmd: ['sh', '-c', 'sleep 1'],
+                      HostConfig: {
+                        Binds: [`${volumeName}:/tmp/session_volume`]
+                      }
+                    });
+                    
+                    await deleteContainer.start();
+                    
+                    // 删除 session 文件
+                    const deleteExec = await deleteContainer.exec({
+                      Cmd: ['sh', '-c', `rm -rf /tmp/session_volume/${volumeSessionFileName} /tmp/session_volume/${volumeJournalFileName} && echo "deleted"`],
+                      AttachStdout: true,
+                      AttachStderr: true
+                    });
+                    
+                    const deleteStream = await deleteExec.start({ hijack: true, stdin: false });
+                    await new Promise((resolve) => {
+                      deleteStream.on('end', resolve);
+                    });
+                    
+                    await deleteContainer.stop();
+                    await deleteContainer.remove();
+                    
+                    // 更新缓存
+                    const volumeCacheKey = `volume_session_${userId}`;
+                    sessionFileCache.set(volumeCacheKey, { exists: false, timestamp: Date.now() });
+                    loginStatusCache.set(cacheKey, {
+                      result: {
+                        logged_in: false,
+                        message: '未登录（无效凭证已自动删除）'
+                      },
+                      timestamp: Date.now()
+                    });
+                    
+                    console.log(`✅ [登录状态] 后台验证已自动删除无效的 session 文件`);
+                  } catch (deleteError) {
+                    console.warn(`⚠️  [登录状态] 后台验证自动删除无效 session 文件失败: ${deleteError.message}`);
+                  }
+                }
+              }
+            } catch (verifyError) {
+              // 验证失败（超时或错误），不自动删除，让用户手动处理
+              // 静默失败，不影响主流程
+            }
+          }
+        } catch (error) {
+          // 静默失败，不影响主流程
+        }
+      }, 100); // 延迟100ms，确保响应已返回
     }
     
     // 默认返回快速结果（基于文件存在）
@@ -6948,14 +7233,19 @@ app.post('/api/telegram/credentials/delete', authMiddleware, async (req, res) =>
               
               // 检查容器是否在运行
               const inspect = await container.inspect();
-              if (inspect.State.Running) {
+              if (inspect.State.Running || inspect.State.Restarting) {
                 console.log(`🛑 [删除凭证] 停止容器: ${containerName}`);
                 await container.stop({ t: 10 }); // 10秒超时
+                // 等待容器完全停止
+                await new Promise(resolve => setTimeout(resolve, 1000));
               }
             } catch (stopError) {
               console.warn(`⚠️  [删除凭证] 停止容器失败: ${stopError.message}`);
             }
           }
+          
+          // 等待一段时间，确保容器不会立即重启
+          await new Promise(resolve => setTimeout(resolve, 2000));
         } catch (e) {
           console.warn(`⚠️  [删除凭证] 停止容器时出错: ${e.message}`);
         }
