@@ -9,25 +9,11 @@ if [ -w "/app" ]; then
   mkdir -p /app/session
 fi
 
-# For multi-login containers: create symlink from /app/session_data to /tmp/session_volume
-# This avoids Docker overlay filesystem read-only issue
+# For multi-login containers: /tmp/session_volume is already mounted
+# monitor.py will use SESSION_PATH environment variable directly
+# No need to create symlink since we use /tmp/session_volume/user_${USER_ID} directly
 if [ -d "/tmp/session_volume" ]; then
-  # Volume is mounted, create symlink
-  # Only create symlink if /app is writable
-  if [ -w "/app" ] && [ ! -e "/app/session_data" ]; then
-    ln -s /tmp/session_volume /app/session_data
-    echo "✅ Created symlink: /app/session_data -> /tmp/session_volume"
-  elif [ ! -w "/app" ]; then
-    # /app is read-only, use /tmp/session_volume directly
-    # Set environment variable to tell monitor.py to use /tmp/session_volume
-    export SESSION_VOLUME_PATH=/tmp/session_volume
-    echo "✅ Using session volume directly: /tmp/session_volume (read-only /app)"
-  fi
-else
-  # No volume mounted (main container), create regular directory
-  if [ -w "/app" ]; then
-    mkdir -p /app/session_data
-  fi
+  echo "✅ Session volume mounted at /tmp/session_volume"
 fi
 
 # Execute the main command

@@ -2725,7 +2725,15 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
         
         // 创建临时容器来访问 volume 并复制文件
         const tempContainerName = `tg_session_backup_${Date.now()}`;
-        const containerImage = 'alpine:latest';
+        // 优先使用 alpine:latest，如果不存在则使用 python:3.11-slim
+        let containerImage = 'python:3.11-slim';
+        try {
+          const alpineImg = docker.getImage('alpine:latest');
+          await alpineImg.inspect();
+          containerImage = 'alpine:latest';
+        } catch (e) {
+          // alpine:latest 不存在，使用 python:3.11-slim
+        }
         
         try {
           const tempContainer = await docker.createContainer({
@@ -3580,7 +3588,15 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
               
               // 创建临时容器来恢复文件到 volume
               const tempContainerName = `tg_session_restore_${Date.now()}`;
-              const containerImage = 'alpine:latest';
+              // 优先使用 alpine:latest，如果不存在则使用 python:3.11-slim
+              let containerImage = 'python:3.11-slim';
+              try {
+                const alpineImg = docker.getImage('alpine:latest');
+                await alpineImg.inspect();
+                containerImage = 'alpine:latest';
+              } catch (e) {
+                // alpine:latest 不存在，使用 python:3.11-slim
+              }
               
               try {
                 const tempContainer = await docker.createContainer({
@@ -5942,8 +5958,26 @@ async function startMultiLoginContainer(userId) {
       
       // 检查容器的挂载配置是否正确
       // 如果使用的是 bind mount 而不是 volume，需要重新创建
+      // 检查是否错误地挂载了 /app 目录（会导致只读文件系统问题）
       if (containerInfo.Mounts && containerInfo.Mounts.length > 0) {
         for (const mount of containerInfo.Mounts) {
+          // 检查是否错误地挂载了整个 /app 目录（这会导致只读文件系统问题）
+          if (mount.Destination === '/app' && mount.Source && !mount.Source.includes('/var/lib/docker/volumes/')) {
+            console.warn(`⚠️  [多开登录] 检测到容器错误地挂载了 /app 目录: ${mount.Source} (会导致只读文件系统问题)`);
+            console.log(`🗑️  [多开登录] 将删除旧容器并重新创建...`);
+            try {
+              if (containerInfo.State.Running) {
+                await container.stop();
+              }
+              await container.remove();
+              needRecreate = true;
+              container = null;
+            } catch (removeError) {
+              console.warn(`⚠️  [多开登录] 删除旧容器失败: ${removeError.message}`);
+            }
+            break;
+          }
+          
           if (mount.Destination === '/app/session' || mount.Destination === '/app/session_data' || mount.Destination === '/tmp/session_volume') {
             // 检查挂载目标路径是否正确（应该是 /tmp/session_volume，然后通过符号链接到 /app/session_data）
             if (mount.Destination !== '/tmp/session_volume' && mount.Destination !== '/app/session_data') {
@@ -6214,10 +6248,9 @@ async function startMultiLoginContainer(userId) {
       console.log(`📂 [多开登录] 挂载路径: config=${hostConfigPath}, session=volume:${sessionVolumeName}, logs=${hostLogsPath}`);
       
       // 创建容器
-      // 注意：需要挂载 telethon 代码目录，因为代码不在镜像中（或者镜像构建时没有包含）
-      // 挂载配置文件、代码目录、session volume 和 logs 目录
-      const hostTelethonPath = path.join(projectRoot, 'telethon');
-      
+      // 注意：代码在镜像中（通过 Dockerfile COPY），不需要挂载代码目录
+      // 只挂载配置文件、session volume 和 logs 目录
+      // 配置文件挂载到 /app/config_${userId}.json，通过 CONFIG_PATH 环境变量指定
       container = await docker.createContainer({
         Image: containerImage,
         name: containerName,
@@ -6225,7 +6258,6 @@ async function startMultiLoginContainer(userId) {
         HostConfig: {
           Binds: [
             `${hostConfigPath}:/app/config_${userId}.json:ro`,
-            `${hostTelethonPath}:/app:ro`, // 挂载代码目录（只读）
             `${sessionVolumeName}:/tmp/session_volume`,
             `${hostLogsPath}:/app/logs:rw`
           ],
@@ -6271,7 +6303,6 @@ async function startMultiLoginContainer(userId) {
             // 重新创建容器（使用 volume）
             const projectRoot = '/opt/telegram-monitor';
             const hostConfigPath = path.join(projectRoot, 'backend', `config_${userId}.json`);
-            const hostTelethonPath = path.join(projectRoot, 'telethon');
             const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
             
             container = await docker.createContainer({
@@ -6281,7 +6312,6 @@ async function startMultiLoginContainer(userId) {
               HostConfig: {
                 Binds: [
                   `${hostConfigPath}:/app/config_${userId}.json:ro`,
-                  `${hostTelethonPath}:/app:ro`, // 挂载代码目录（只读）
                   `${sessionVolumeName}:/tmp/session_volume`,
                   `${hostLogsPath}:/app/logs:rw`
                 ],
