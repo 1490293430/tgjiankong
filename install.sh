@@ -127,12 +127,13 @@ fi
 cd "$APP_DIR"
 
 # Configure ENV
-echo "[5/7] Configuring environment..."
+echo "[5/8] Configuring environment..."
 
 # Create .env if not exists
 if [ ! -f .env ]; then
   if [ -f .env.example ]; then
     cp .env.example .env
+    echo "✅ Created .env from .env.example"
   else
     # Create default .env if no example exists
     cat > .env << 'ENVEOF'
@@ -144,9 +145,17 @@ PORT=3000
 MONGO_URL=mongodb://mongo:27017/tglogs
 ALLOWED_ORIGINS=http://localhost,http://localhost:3000
 WEB_PORT=5555
-PROJECT_ROOT=${APP_DIR}
+PROJECT_ROOT=/opt/telegram-monitor
 ENVEOF
+    echo "✅ Created default .env file"
   fi
+fi
+
+# Update PROJECT_ROOT in .env if it's different
+if grep -q "^PROJECT_ROOT=" .env; then
+  sed -i "s|^PROJECT_ROOT=.*|PROJECT_ROOT=${APP_DIR}|" .env
+else
+  echo "PROJECT_ROOT=${APP_DIR}" >> .env
 fi
 
 # Update JWT_SECRET if it's the default value
@@ -166,17 +175,102 @@ mkdir -p data/mongo data/session logs/api logs/telethon backups
 
 # Create default config.json if not exists (prevent Docker from creating it as directory)
 if [ ! -f backend/config.json ]; then
-  cp backend/config.json.example backend/config.json
+  if [ -f backend/config.json.example ]; then
+    cp backend/config.json.example backend/config.json
+    echo "✅ Created backend/config.json from example"
+  else
+    # Create minimal config.json if example doesn't exist
+    cat > backend/config.json << 'CONFIGEOF'
+{
+  "keywords": [],
+  "channels": [],
+  "alert_keywords": [],
+  "alert_regex": [],
+  "alert_target": "",
+  "log_all_messages": false,
+  "telegram": {
+    "api_id": 0,
+    "api_hash": ""
+  },
+  "alert_actions": {
+    "telegram": true,
+    "email": {
+      "enable": false,
+      "smtp_host": "",
+      "smtp_port": 465,
+      "username": "",
+      "password": "",
+      "to": ""
+    },
+    "webhook": {
+      "enable": false,
+      "url": ""
+    }
+  },
+  "ai_analysis": {
+    "enabled": false,
+    "openai_api_key": "",
+    "openai_model": "gpt-3.5-turbo",
+    "openai_base_url": "https://api.openai.com/v1",
+    "analysis_trigger_type": "time",
+    "time_interval_minutes": 30,
+    "message_count_threshold": 50,
+    "max_messages_per_analysis": 500,
+    "analysis_prompt": "请分析以下 Telegram 消息，提供：1) 整体情感倾向（积极/中性/消极）；2) 主要内容分类；3) 关键主题和摘要；4) 重要关键词",
+    "ai_send_telegram": true,
+    "ai_send_email": false,
+    "ai_send_webhook": false,
+    "ai_trigger_enabled": false,
+    "ai_trigger_users": [],
+    "ai_trigger_prompt": ""
+  }
+}
+CONFIGEOF
+    echo "✅ Created minimal backend/config.json"
+  fi
+fi
+
+# Create Docker network if not exists (for npm-net, optional for NPM reverse proxy)
+echo "[6/8] Creating Docker networks..."
+if ! docker network ls | grep -q "npm-net"; then
+  if docker network create npm-net 2>/dev/null; then
+    echo "✅ Created npm-net network (optional, for NPM reverse proxy)"
+  else
+    echo "⚠️  npm-net network creation failed (will be created by docker-compose if needed)"
+  fi
+else
+  echo "✅ npm-net network already exists"
+fi
+
+# Create Docker volume if not exists
+if ! docker volume ls | grep -q "tg_session"; then
+  docker volume create tg_session
+  echo "✅ Created tg_session volume"
+else
+  echo "✅ tg_session volume already exists"
 fi
 
 # Build & Up containers
-echo "[6/7] Building containers..."
+echo "[7/8] Building containers..."
 cd "$APP_DIR"
 docker compose build --pull
 
-echo "[7/7] Starting services..."
+echo "[8/8] Starting services..."
 docker compose down 2>/dev/null || true  # 确保干净启动
-docker compose up -d
+
+# 尝试启动服务，如果 npm-net 网络不存在导致失败，创建它后重试
+if ! docker compose up -d 2>&1 | tee /tmp/docker-compose-up.log; then
+  if grep -q "network.*npm-net.*not found" /tmp/docker-compose-up.log || grep -q "network.*npm-net.*does not exist" /tmp/docker-compose-up.log; then
+    echo "⚠️  npm-net network not found, creating it..."
+    docker network create npm-net 2>/dev/null || true
+    echo "🔄 Retrying docker compose up..."
+    docker compose up -d
+  else
+    echo "❌ Failed to start services. Check logs above."
+    exit 1
+  fi
+fi
+rm -f /tmp/docker-compose-up.log
 
 echo ""
 echo "等待服务启动（30秒）..."
@@ -249,9 +343,17 @@ cat <<SUCCESS
 - API：http://${SERVER_IP}:3000
 - 默认登录：admin / admin123（⚠️  请立即修改密码！）
 
-📝 首次 Telegram 登录（如需要）：
+📝 首次 Telegram 登录（推荐通过 Web 界面）：
+  1. 访问 http://${SERVER_IP}:${WEB_PORT}
+  2. 登录后台（admin / admin123）
+  3. 进入"设置"标签
+  4. 配置 API_ID 和 API_HASH
+  5. 点击"Telegram 首次登录"按钮
+  6. 按照提示完成登录
+
+  或者使用命令行（需要先配置 API_ID 和 API_HASH）：
   cd ${APP_DIR}
-  docker compose exec telethon python -c "from telethon import TelegramClient; import os; c=TelegramClient('/app/session/telegram', int(os.getenv('API_ID')), os.getenv('API_HASH')); c.start(); print('Login done'); c.disconnect()"
+  docker compose exec telethon python3 /app/login_helper.py check /tmp/session_volume/user_$(docker compose exec -T api node -e "const mongoose=require('mongoose'); mongoose.connect(process.env.MONGO_URL||'mongodb://mongo:27017/tglogs'); const User=require('./userModel'); User.findOne({username:'admin'}).then(u=>{if(u)console.log(u._id.toString()); process.exit(0);})" 2>/dev/null | head -1) $(grep API_ID .env | cut -d'=' -f2) $(grep API_HASH .env | cut -d'=' -f2) || echo "请先通过 Web 界面配置 API_ID 和 API_HASH"
 
 🔧 常用命令：
   查看状态：docker compose ps

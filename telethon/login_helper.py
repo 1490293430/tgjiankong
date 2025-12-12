@@ -214,25 +214,67 @@ async def sign_in(phone, code, phone_code_hash, password, session_path, api_id, 
         # 再等待一小段时间确保文件完全同步
         await asyncio.sleep(1.0)
         
-        # 验证 session 文件是否可以被正确读取
+        # 验证 session 文件是否可以被正确读取（使用更严格的验证）
         log_debug(f"=== 验证 Session 文件可读性 ===")
+        log_debug(f"验证使用的 Session 路径: {session_path}")
+        log_debug(f"验证使用的 API_ID: {api_id}")
+        log_debug(f"验证使用的 API_HASH: {'已设置' if api_hash else '未设置'}")
+        
+        # 检查 session 文件是否存在
+        session_file_verify = f"{session_path}.session"
+        log_debug(f"验证 Session 文件路径: {session_file_verify}")
+        log_debug(f"Session 文件存在: {os.path.exists(session_file_verify)}")
+        if os.path.exists(session_file_verify):
+            file_stat = os.stat(session_file_verify)
+            log_debug(f"Session 文件大小: {file_stat.st_size} 字节")
+        
+        verify_success = False
         try:
             verify_client = TelegramClient(session_path, api_id, api_hash)
             await verify_client.connect()
+            
+            # 先检查授权状态
             is_authorized = await verify_client.is_user_authorized()
             log_debug(f"验证结果 - 授权状态: {is_authorized}")
+            
             if is_authorized:
-                verify_me = await verify_client.get_me()
-                log_debug(f"验证结果 - 用户: {verify_me.first_name} (ID: {verify_me.id})")
-                if str(verify_me.id) != str(me.id):
-                    log_debug(f"⚠️  警告：验证用户 ID 不匹配！")
+                # 如果授权状态为 True，尝试获取用户信息确认
+                try:
+                    verify_me = await verify_client.get_me()
+                    log_debug(f"验证结果 - 用户: {verify_me.first_name} (ID: {verify_me.id})")
+                    if str(verify_me.id) != str(me.id):
+                        log_debug(f"⚠️  警告：验证用户 ID 不匹配！")
+                    else:
+                        verify_success = True
+                        log_debug(f"✅ Session 文件验证成功")
+                except Exception as get_me_error:
+                    log_debug(f"⚠️  获取用户信息失败: {get_me_error}")
             else:
-                log_debug(f"⚠️  警告：Session 文件无法被正确读取！")
+                # 如果授权状态为 False，尝试启动客户端验证（因为 is_user_authorized() 可能不准确）
+                log_debug(f"⚠️  授权状态为 False，尝试启动客户端验证...")
+                try:
+                    await verify_client.start()
+                    verify_me = await verify_client.get_me()
+                    log_debug(f"✅ 客户端启动成功，Session 文件有效（is_user_authorized() 可能不准确）")
+                    log_debug(f"验证结果 - 用户: {verify_me.first_name} (ID: {verify_me.id})")
+                    if str(verify_me.id) == str(me.id):
+                        verify_success = True
+                        log_debug(f"✅ Session 文件验证成功")
+                    else:
+                        log_debug(f"⚠️  警告：验证用户 ID 不匹配！")
+                except EOFError as eof_err:
+                    log_debug(f"❌ EOFError: Session 文件无效，无法启动客户端: {eof_err}")
+                except Exception as start_error:
+                    log_debug(f"⚠️  启动客户端失败: {start_error}")
+            
             await verify_client.disconnect()
         except Exception as verify_error:
             log_debug(f"⚠️  验证 Session 文件时出错: {verify_error}")
             import traceback
             log_debug(f"验证错误堆栈: {traceback.format_exc()}")
+        
+        if not verify_success:
+            log_debug(f"⚠️  警告：Session 文件验证失败，但继续返回成功（可能需要在 Telethon 服务中重试）")
         
         # 检查登录后的文件状态
         log_debug(f"=== 登录后文件检查 ===")

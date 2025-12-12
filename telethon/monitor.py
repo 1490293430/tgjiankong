@@ -899,6 +899,17 @@ async def main():
         logger.info("🔍 [授权检查] 使用的 API_HASH: %s", "已设置" if cfg_api_hash else "未设置")
         logger.info("🔍 [授权检查] Session 文件路径: %s", session_file if session_file else "StringSession")
         
+        # 详细记录 session 文件信息
+        if session_file and not SESSION_STRING:
+            session_path_with_ext = f"{session_file}.session"
+            logger.info("🔍 [授权检查] Session 文件完整路径: %s", session_path_with_ext)
+            if os.path.exists(session_path_with_ext):
+                file_stat = os.stat(session_path_with_ext)
+                logger.info("🔍 [授权检查] Session 文件大小: %d 字节", file_stat.st_size)
+                logger.info("🔍 [授权检查] Session 文件修改时间: %s", datetime.fromtimestamp(file_stat.st_mtime))
+            else:
+                logger.warning("⚠️  [授权检查] Session 文件不存在: %s", session_path_with_ext)
+        
         # 先尝试检查授权状态
         is_authorized = False
         try:
@@ -911,41 +922,100 @@ async def main():
         # 如果授权检查返回 False，尝试启动客户端验证（因为 is_user_authorized() 可能不准确）
         if not is_authorized:
             logger.info("🔍 [授权检查] 授权状态为 False，尝试启动客户端验证 session 是否有效...")
-            try:
-                # 尝试启动客户端，如果成功说明 session 有效
-                await client.start()
-                logger.info("✅ [授权检查] 客户端启动成功，session 有效（is_user_authorized() 可能不准确）")
-                is_authorized = True
-            except EOFError as eof_error:
-                # EOFError 表示尝试了交互式输入，说明 session 无效
-                logger.error("🔍 [授权检查] EOFError 详情: %s", str(eof_error))
-                await client.disconnect()
-                logger.error("")
-                logger.error("=" * 60)
-                logger.error("❌ Telegram 客户端未授权，Session 文件无效或不存在")
-                logger.error("")
-                logger.error("📱 请先登录 Telegram 才能开始监控消息：")
-                logger.error("   1. 访问 Web 界面")
-                logger.error("   2. 进入 '设置' 标签")
-                logger.error("   3. 点击 'Telegram 首次登录' 按钮")
-                logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
-                logger.error("   5. 登录成功后，重启 Telethon 服务：")
-                logger.error("      docker compose restart telethon")
-                logger.error("")
-                logger.error("⚠️  服务将退出，请完成登录后重启服务")
-                logger.error("=" * 60)
-                logger.error("")
-                import sys
-                sys.exit(1)
-            except Exception as start_error:
-                # 其他错误，可能是网络问题或其他错误
-                logger.warning("⚠️  [授权检查] 启动客户端失败: %s，但继续尝试检查授权状态", str(start_error))
-                # 再次检查授权状态
+            
+            # 在启动前，检查 session 文件的完整性
+            if session_file and not SESSION_STRING:
+                session_path_with_ext = f"{session_file}.session"
+                if os.path.exists(session_path_with_ext):
+                    try:
+                        file_stat = os.stat(session_path_with_ext)
+                        logger.info("🔍 [授权检查] Session 文件大小: %d 字节", file_stat.st_size)
+                        if file_stat.st_size < 1000:
+                            logger.warning("⚠️  [授权检查] Session 文件过小（%d 字节），可能不完整", file_stat.st_size)
+                        # 尝试读取文件头验证文件格式
+                        with open(session_path_with_ext, 'rb') as f:
+                            header = f.read(16)
+                            if header.startswith(b'SQLite format 3'):
+                                logger.info("🔍 [授权检查] Session 文件格式正确（SQLite）")
+                            else:
+                                logger.warning("⚠️  [授权检查] Session 文件格式异常，文件头: %s", header.hex()[:32])
+                    except Exception as file_check_error:
+                        logger.warning("⚠️  [授权检查] 检查 session 文件时出错: %s", str(file_check_error))
+            
+            # 尝试启动客户端，最多重试 2 次
+            max_retries = 2
+            retry_count = 0
+            start_success = False
+            
+            while retry_count < max_retries and not start_success:
                 try:
-                    is_authorized = await client.is_user_authorized()
-                    logger.info("🔍 [授权检查] 重新检查授权状态: %s", is_authorized)
-                except Exception:
-                    pass
+                    if retry_count > 0:
+                        logger.info("🔍 [授权检查] 重试启动客户端（第 %d 次）...", retry_count + 1)
+                        # 重新连接
+                        if client.is_connected():
+                            await client.disconnect()
+                        await asyncio.sleep(1)  # 等待 1 秒后重试
+                        await client.connect()
+                    
+                    # 尝试启动客户端，如果成功说明 session 有效
+                    await client.start()
+                    logger.info("✅ [授权检查] 客户端启动成功，session 有效（is_user_authorized() 可能不准确）")
+                    is_authorized = True
+                    start_success = True
+                except EOFError as eof_error:
+                    # EOFError 表示尝试了交互式输入，说明 session 无效
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        logger.error("🔍 [授权检查] EOFError 详情: %s", str(eof_error))
+                        logger.error("🔍 [授权检查] Session 文件路径: %s", session_file if session_file else "StringSession")
+                        logger.error("🔍 [授权检查] API_ID: %s", cfg_api_id)
+                        logger.error("🔍 [授权检查] API_HASH: %s", "已设置" if cfg_api_hash else "未设置")
+                        
+                        # 检查 session 文件是否存在且可读
+                        if session_file and not SESSION_STRING:
+                            session_path_with_ext = f"{session_file}.session"
+                            if os.path.exists(session_path_with_ext):
+                                logger.error("🔍 [授权检查] Session 文件存在但无法使用，可能原因：")
+                                logger.error("   1. Session 文件是用不同的 API_ID/API_HASH 创建的")
+                                logger.error("   2. Session 文件内容损坏或不完整")
+                                logger.error("   3. Session 文件在写入时没有完全同步")
+                                logger.error("   建议：删除旧的 session 文件后重新登录")
+                            else:
+                                logger.error("🔍 [授权检查] Session 文件不存在: %s", session_path_with_ext)
+                        
+                        await client.disconnect()
+                        logger.error("")
+                        logger.error("=" * 60)
+                        logger.error("❌ Telegram 客户端未授权，Session 文件无效或不存在")
+                        logger.error("")
+                        logger.error("📱 请先登录 Telegram 才能开始监控消息：")
+                        logger.error("   1. 访问 Web 界面")
+                        logger.error("   2. 进入 '设置' 标签")
+                        logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+                        logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
+                        logger.error("   5. 登录成功后，重启 Telethon 服务：")
+                        logger.error("      docker compose restart telethon")
+                        logger.error("")
+                        logger.error("⚠️  服务将退出，请完成登录后重启服务")
+                        logger.error("=" * 60)
+                        logger.error("")
+                        import sys
+                        sys.exit(1)
+                    else:
+                        logger.warning("⚠️  [授权检查] EOFError（第 %d 次尝试），将重试...", retry_count)
+                except Exception as start_error:
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        # 其他错误，可能是网络问题或其他错误
+                        logger.warning("⚠️  [授权检查] 启动客户端失败: %s，但继续尝试检查授权状态", str(start_error))
+                        # 再次检查授权状态
+                        try:
+                            is_authorized = await client.is_user_authorized()
+                            logger.info("🔍 [授权检查] 重新检查授权状态: %s", is_authorized)
+                        except Exception:
+                            pass
+                    else:
+                        logger.warning("⚠️  [授权检查] 启动失败（第 %d 次尝试）: %s，将重试...", retry_count, str(start_error))
         
         if not is_authorized:
             await client.disconnect()

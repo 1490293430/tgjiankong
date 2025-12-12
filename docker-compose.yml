@@ -86,14 +86,15 @@ services:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - tg-network
-      - npm-net   # 新加入的网络
+      - npm-net   # 可选：如果使用 NPM 反向代理，需要此网络
 
 networks:
   tg-network:
     name: tg-network  # 固定网络名称，不使用项目前缀
     driver: bridge
   npm-net:
-    external: true   # 外部网络，需要先创建或已存在
+    external: true   # 外部网络，可选（如果使用 NPM 反向代理）
+    driver: bridge   # 如果外部网络不存在，Docker 会报错，但不会阻止其他服务启动
 
 volumes:
   mongo-data:
