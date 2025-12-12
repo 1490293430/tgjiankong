@@ -6458,6 +6458,15 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
     
     // 统一使用 volume 路径检查 session 文件
     const sessionPath = `/tmp/session_volume/user_${userId}`;
+    
+    // 先检查缓存中是否已经设置为未登录（删除凭证后立即设置的状态）
+    const cacheKey = `login_status_${userId}`;
+    const cachedStatus = loginStatusCache.get(cacheKey);
+    if (cachedStatus && cachedStatus.result && !cachedStatus.result.logged_in) {
+      // 如果缓存中明确标记为未登录，直接返回（避免重新检查文件）
+      return res.json(cachedStatus.result);
+    }
+    
     const sessionExists = await checkSessionFileInVolume(userId);
     
     // 如果 session 文件不存在，直接返回（不需要查询配置）
@@ -6467,7 +6476,7 @@ app.get('/api/telegram/login/status', authMiddleware, async (req, res) => {
         message: '未登录（session 文件不存在）'
       };
       // 缓存结果
-      loginStatusCache.set(`login_status_${userId}`, {
+      loginStatusCache.set(cacheKey, {
         result,
         timestamp: Date.now()
       });
@@ -6854,58 +6863,111 @@ app.post('/api/telegram/credentials/delete', authMiddleware, async (req, res) =>
             
             await deleteContainer.start();
             
-            // 删除 .session 文件
+            // 删除 .session 文件（先检查是否存在，再删除，最后验证）
             try {
-              const deleteExec = await deleteContainer.exec({
-                Cmd: ['sh', '-c', `rm -f /tmp/session_volume/${volumeSessionFileName} && echo "deleted" || echo "not_found"`],
+              // 先检查文件是否存在
+              const checkExec = await deleteContainer.exec({
+                Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && echo "exists" || echo "not_exists"`],
                 AttachStdout: true,
                 AttachStderr: true
               });
               
-              const deleteStream = await deleteExec.start({ hijack: true, stdin: false });
-              let output = '';
+              const checkStream = await checkExec.start({ hijack: true, stdin: false });
+              let checkOutput = '';
               await new Promise((resolve) => {
-                deleteStream.on('data', (chunk) => {
-                  output += chunk.toString();
+                checkStream.on('data', (chunk) => {
+                  checkOutput += chunk.toString();
                 });
-                deleteStream.on('end', resolve);
+                checkStream.on('end', resolve);
               });
               
-              if (output.trim().includes('deleted')) {
-                deletedFiles.push(`volume:${volumeSessionFileName}`);
-                console.log(`✅ [删除凭证] 已删除 volume 中的文件: ${volumeSessionFileName}`);
+              if (checkOutput.trim().includes('exists')) {
+                // 文件存在，执行删除
+                const deleteExec = await deleteContainer.exec({
+                  Cmd: ['sh', '-c', `rm -f /tmp/session_volume/${volumeSessionFileName} && test ! -f /tmp/session_volume/${volumeSessionFileName} && echo "deleted" || echo "delete_failed"`],
+                  AttachStdout: true,
+                  AttachStderr: true
+                });
+                
+                const deleteStream = await deleteExec.start({ hijack: true, stdin: false });
+                let output = '';
+                await new Promise((resolve) => {
+                  deleteStream.on('data', (chunk) => {
+                    output += chunk.toString();
+                  });
+                  deleteStream.on('end', resolve);
+                });
+                
+                if (output.trim().includes('deleted')) {
+                  deletedFiles.push(`volume:${volumeSessionFileName}`);
+                  console.log(`✅ [删除凭证] 已删除 volume 中的文件: ${volumeSessionFileName}`);
+                } else {
+                  console.warn(`⚠️  [删除凭证] 删除 volume 中的 .session 文件失败: ${output.trim()}`);
+                  errors.push(`删除 volume 文件失败: ${volumeSessionFileName}`);
+                }
+              } else {
+                console.log(`ℹ️  [删除凭证] volume 中的文件不存在，跳过: ${volumeSessionFileName}`);
               }
             } catch (e) {
               console.warn(`⚠️  [删除凭证] 删除 volume 中的 .session 文件失败: ${e.message}`);
+              errors.push(`删除 volume 文件失败: ${e.message}`);
             }
             
-            // 删除 .session-journal 文件
+            // 删除 .session-journal 文件（先检查是否存在，再删除，最后验证）
             try {
-              const deleteJournalExec = await deleteContainer.exec({
-                Cmd: ['sh', '-c', `rm -f /tmp/session_volume/${volumeJournalFileName} && echo "deleted" || echo "not_found"`],
+              // 先检查文件是否存在
+              const checkJournalExec = await deleteContainer.exec({
+                Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeJournalFileName} && echo "exists" || echo "not_exists"`],
                 AttachStdout: true,
                 AttachStderr: true
               });
               
-              const deleteJournalStream = await deleteJournalExec.start({ hijack: true, stdin: false });
-              let journalOutput = '';
+              const checkJournalStream = await checkJournalExec.start({ hijack: true, stdin: false });
+              let checkJournalOutput = '';
               await new Promise((resolve) => {
-                deleteJournalStream.on('data', (chunk) => {
-                  journalOutput += chunk.toString();
+                checkJournalStream.on('data', (chunk) => {
+                  checkJournalOutput += chunk.toString();
                 });
-                deleteJournalStream.on('end', resolve);
+                checkJournalStream.on('end', resolve);
               });
               
-              if (journalOutput.trim().includes('deleted')) {
-                deletedFiles.push(`volume:${volumeJournalFileName}`);
-                console.log(`✅ [删除凭证] 已删除 volume 中的文件: ${volumeJournalFileName}`);
+              if (checkJournalOutput.trim().includes('exists')) {
+                // 文件存在，执行删除
+                const deleteJournalExec = await deleteContainer.exec({
+                  Cmd: ['sh', '-c', `rm -f /tmp/session_volume/${volumeJournalFileName} && test ! -f /tmp/session_volume/${volumeJournalFileName} && echo "deleted" || echo "delete_failed"`],
+                  AttachStdout: true,
+                  AttachStderr: true
+                });
+                
+                const deleteJournalStream = await deleteJournalExec.start({ hijack: true, stdin: false });
+                let journalOutput = '';
+                await new Promise((resolve) => {
+                  deleteJournalStream.on('data', (chunk) => {
+                    journalOutput += chunk.toString();
+                  });
+                  deleteJournalStream.on('end', resolve);
+                });
+                
+                if (journalOutput.trim().includes('deleted')) {
+                  deletedFiles.push(`volume:${volumeJournalFileName}`);
+                  console.log(`✅ [删除凭证] 已删除 volume 中的文件: ${volumeJournalFileName}`);
+                } else {
+                  console.warn(`⚠️  [删除凭证] 删除 volume 中的 .session-journal 文件失败: ${journalOutput.trim()}`);
+                  errors.push(`删除 volume 文件失败: ${volumeJournalFileName}`);
+                }
+              } else {
+                console.log(`ℹ️  [删除凭证] volume 中的文件不存在，跳过: ${volumeJournalFileName}`);
               }
             } catch (e) {
               console.warn(`⚠️  [删除凭证] 删除 volume 中的 .session-journal 文件失败: ${e.message}`);
+              errors.push(`删除 volume 文件失败: ${e.message}`);
             }
             
             await deleteContainer.stop();
             await deleteContainer.remove();
+            
+            // 等待一小段时间，确保文件系统同步
+            await new Promise(resolve => setTimeout(resolve, 500));
           } catch (e) {
             console.warn(`⚠️  [删除凭证] 删除 volume 中的文件失败: ${e.message}`);
             errors.push(`删除 volume 文件失败: ${e.message}`);
@@ -7061,7 +7123,53 @@ app.post('/api/telegram/credentials/delete', authMiddleware, async (req, res) =>
             sessionFileCache.set(volumeCacheKey, { exists: stillExists, timestamp: Date.now() });
             
             if (stillExists) {
-              console.warn(`⚠️  [删除凭证] 验证发现文件仍然存在: ${volumeSessionFileName}`);
+              console.warn(`⚠️  [删除凭证] 验证发现文件仍然存在: ${volumeSessionFileName}，将再次尝试删除`);
+              // 如果文件仍然存在，再次尝试删除（最多重试1次）
+              try {
+                const retryImage = await getTempContainerImage(docker);
+                const retryContainerName = `tg_session_delete_retry_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                
+                const retryContainer = await docker.createContainer({
+                  Image: retryImage,
+                  name: retryContainerName,
+                  Cmd: ['sh', '-c', 'sleep 1'],
+                  HostConfig: {
+                    Binds: [
+                      `${volumeName}:/tmp/session_volume`
+                    ]
+                  }
+                });
+                
+                await retryContainer.start();
+                
+                // 强制删除（使用 rm -rf 确保删除）
+                const retryExec = await retryContainer.exec({
+                  Cmd: ['sh', '-c', `rm -rf /tmp/session_volume/${volumeSessionFileName} /tmp/session_volume/${volumeSessionFileName}-journal && test ! -f /tmp/session_volume/${volumeSessionFileName} && echo "deleted" || echo "still_exists"`],
+                  AttachStdout: true,
+                  AttachStderr: true
+                });
+                
+                const retryStream = await retryExec.start({ hijack: true, stdin: false });
+                let retryOutput = '';
+                await new Promise((resolve) => {
+                  retryStream.on('data', (chunk) => {
+                    retryOutput += chunk.toString();
+                  });
+                  retryStream.on('end', resolve);
+                });
+                
+                await retryContainer.stop();
+                await retryContainer.remove();
+                
+                if (retryOutput.trim().includes('deleted')) {
+                  console.log(`✅ [删除凭证] 重试删除成功: ${volumeSessionFileName}`);
+                  sessionFileCache.set(volumeCacheKey, { exists: false, timestamp: Date.now() });
+                } else {
+                  console.warn(`⚠️  [删除凭证] 重试删除后文件仍然存在: ${volumeSessionFileName}`);
+                }
+              } catch (retryError) {
+                console.warn(`⚠️  [删除凭证] 重试删除失败: ${retryError.message}`);
+              }
             } else {
               console.log(`✅ [删除凭证] 验证确认文件已删除: ${volumeSessionFileName}`);
             }
