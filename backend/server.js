@@ -6727,24 +6727,42 @@ async function execTelethonLoginScript(command, args = [], retryCount = 0, allow
   const timeout = 30000; // 30秒超时（减少超时时间，登录操作通常很快）
   
   try {
-    // 获取容器并等待就绪（如果正在重启）
-    // 对于登录操作（send_code, sign_in），允许创建临时容器
+    // 如果 reuseContainer=true，直接使用临时登录容器，不尝试主容器
+    if (userId && reuseContainer) {
+      const existing = tempLoginContainers.get(userId);
+      if (existing) {
+        // 直接使用临时登录容器执行脚本
+        console.log('♻️  使用临时登录容器执行脚本:', existing.containerName);
+        try {
+          return await execLoginScriptWithDockerRun(command, args, userId, reuseContainer, allowCreateTemp);
+        } catch (runError) {
+          throw new Error(`使用临时登录容器执行脚本失败: ${runError.message}`);
+        }
+      } else {
+        // 临时登录容器不存在
+        if (!allowCreateTemp) {
+          throw new Error(
+            `临时登录容器不存在。请先点击"Telegram 首次登录"按钮初始化登录容器。\n\n` +
+            `如果容器被意外删除，请重新点击"Telegram 首次登录"按钮。`
+          );
+        }
+        // 如果 allowCreateTemp=true，允许创建新容器
+        console.log('📦 临时登录容器不存在，使用 docker run 执行登录脚本...');
+        try {
+          return await execLoginScriptWithDockerRun(command, args, userId, reuseContainer, allowCreateTemp);
+        } catch (runError) {
+          throw new Error(`创建临时登录容器执行脚本失败: ${runError.message}`);
+        }
+      }
+    }
+    
+    // 如果没有 reuseContainer，尝试使用主容器
     let containerResult;
     try {
       containerResult = await getDockerAndContainer(true, allowCreateTemp);
     } catch (containerError) {
       // 如果 allowCreateTemp=false，不允许创建新容器，直接返回错误
       if (!allowCreateTemp) {
-        // 检查是否有临时登录容器
-        if (userId && reuseContainer) {
-          const existing = tempLoginContainers.get(userId);
-          if (!existing) {
-            throw new Error(
-              `临时登录容器不存在。请先点击"Telegram 首次登录"按钮初始化登录容器。\n\n` +
-              `如果容器被意外删除，请重新点击"Telegram 首次登录"按钮。`
-            );
-          }
-        }
         throw new Error(
           `无法找到登录容器。请先点击"Telegram 首次登录"按钮初始化登录容器。\n\n` +
           `原始错误: ${containerError.message}`
