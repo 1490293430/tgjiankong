@@ -800,6 +800,75 @@ app.post('/api/users', authMiddleware, async (req, res) => {
       // 配置创建失败不影响用户创建成功
     }
     
+    // 如果是多开模式，确保主账号也有多开容器（如果主账号已登录）
+    setTimeout(async () => {
+      try {
+        const accountConfig = await loadUserConfig(currentAccountId.toString());
+        const multiLoginEnabled = accountConfig.multi_login_enabled || false;
+        
+        if (multiLoginEnabled) {
+          console.log(`🔍 [子账号创建] 多开模式已启用，检查主账号是否需要创建多开容器...`);
+          
+          // 检查主账号是否有session文件
+          const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
+          const mainAccountSessionPath = path.join(PROJECT_ROOT, 'data', 'session', `user_${currentAccountId.toString()}.session`);
+          
+          if (fs.existsSync(mainAccountSessionPath)) {
+            const stats = fs.statSync(mainAccountSessionPath);
+            if (stats.isFile() && stats.size > 0) {
+              console.log(`✅ [子账号创建] 主账号已登录，检查主账号的多开容器...`);
+              
+              // 检查主账号的多开容器是否存在
+              const Docker = require('dockerode');
+              const dockerSocketPaths = [
+                '/var/run/docker.sock',
+                process.env.DOCKER_HOST?.replace('unix://', '') || null
+              ].filter(Boolean);
+              
+              let docker = null;
+              for (const socketPath of dockerSocketPaths) {
+                if (fs.existsSync(socketPath)) {
+                  try {
+                    docker = new Docker({ socketPath });
+                    await docker.ping();
+                    break;
+                  } catch (e) {
+                    // 继续尝试
+                  }
+                }
+              }
+              
+              if (docker) {
+                const mainContainerName = `tg_listener_${currentAccountId.toString()}`;
+                try {
+                  const mainContainer = docker.getContainer(mainContainerName);
+                  const mainContainerInfo = await mainContainer.inspect();
+                  if (mainContainerInfo.State.Running) {
+                    console.log(`✅ [子账号创建] 主账号的多开容器已在运行: ${mainContainerName}`);
+                  } else {
+                    console.log(`🔄 [子账号创建] 主账号的多开容器存在但未运行，启动中...`);
+                    await syncUserConfigAndStartMultiLoginContainer(currentAccountId.toString());
+                    console.log(`✅ [子账号创建] 主账号的多开容器已启动`);
+                  }
+                } catch (containerError) {
+                  // 容器不存在，需要创建
+                  console.log(`🔄 [子账号创建] 主账号的多开容器不存在，创建中...`);
+                  await syncUserConfigAndStartMultiLoginContainer(currentAccountId.toString());
+                  console.log(`✅ [子账号创建] 主账号的多开容器已创建并启动`);
+                }
+              }
+            } else {
+              console.log(`⏭️  [子账号创建] 主账号未登录，跳过创建多开容器`);
+            }
+          } else {
+            console.log(`⏭️  [子账号创建] 主账号未登录（无session文件），跳过创建多开容器`);
+          }
+        }
+      } catch (multiLoginCheckError) {
+        console.warn(`⚠️  [子账号创建] 检查多开模式失败（不影响子账号创建）: ${multiLoginCheckError.message}`);
+      }
+    }, 500); // 延迟500ms执行，不阻塞响应
+    
     res.json({ 
       status: 'ok', 
       message: '子账号创建成功',
@@ -1021,6 +1090,41 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
           
           // 启动目标用户的多开容器
           await syncUserConfigAndStartMultiLoginContainer(targetUser._id.toString());
+          
+          // 如果切换到的不是主账号，确保主账号的多开容器也在运行（如果主账号已登录）
+          if (targetUser._id.toString() !== currentAccountId.toString()) {
+            try {
+              const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
+              const mainAccountSessionPath = path.join(PROJECT_ROOT, 'data', 'session', `user_${currentAccountId.toString()}.session`);
+              
+              if (fs.existsSync(mainAccountSessionPath)) {
+                const stats = fs.statSync(mainAccountSessionPath);
+                if (stats.isFile() && stats.size > 0) {
+                  console.log(`🔍 [切换用户] 检查主账号的多开容器...`);
+                  
+                  const mainContainerName = `tg_listener_${currentAccountId.toString()}`;
+                  try {
+                    const mainContainer = docker.getContainer(mainContainerName);
+                    const mainContainerInfo = await mainContainer.inspect();
+                    if (mainContainerInfo.State.Running) {
+                      console.log(`✅ [切换用户] 主账号的多开容器已在运行: ${mainContainerName}`);
+                    } else {
+                      console.log(`🔄 [切换用户] 主账号的多开容器存在但未运行，启动中...`);
+                      await syncUserConfigAndStartMultiLoginContainer(currentAccountId.toString());
+                      console.log(`✅ [切换用户] 主账号的多开容器已启动`);
+                    }
+                  } catch (containerError) {
+                    // 容器不存在，需要创建
+                    console.log(`🔄 [切换用户] 主账号的多开容器不存在，创建中...`);
+                    await syncUserConfigAndStartMultiLoginContainer(currentAccountId.toString());
+                    console.log(`✅ [切换用户] 主账号的多开容器已创建并启动`);
+                  }
+                }
+              }
+            } catch (mainAccountError) {
+              console.warn(`⚠️  [切换用户] 检查主账号容器失败（不影响切换用户）: ${mainAccountError.message}`);
+            }
+          }
         } else {
           // 单开模式：更新全局配置并重启主容器
           // 如果之前是多开模式，先清理多开容器
@@ -1576,10 +1680,16 @@ app.post('/api/config', authMiddleware, async (req, res) => {
                   }
                 }
                 
+                // 等待多开容器完全停止和删除（确保清理完成）
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
                 // 重启主容器以应用单开模式
-                console.log(`🔄 [配置保存] 重启主容器以应用单开模式...`);
-                await syncUserConfigAndRestartTelethon(userId);
-                console.log(`✅ [配置保存] 多开登录已关闭，主容器已重启`);
+                // 使用主账号ID，确保主容器使用主账号的session文件
+                const mainAccountId = accountId.toString();
+                console.log(`🔄 [配置保存] 重启主容器以应用单开模式（使用主账号: ${mainAccountId}）...`);
+                // 强制重启主容器，忽略多开容器检查（因为正在关闭多开模式）
+                await forceRestartMainContainer(mainAccountId);
+                console.log(`✅ [配置保存] 多开登录已关闭，主容器已重启（使用主账号: ${mainAccountId}）`);
               } catch (cleanupError) {
                 console.error(`❌ [配置保存] 清理多开容器失败: ${cleanupError.message}`);
               }
@@ -5828,6 +5938,122 @@ async function syncUserConfigAndRestartTelethon(userId) {
   }
 }
 
+// 强制重启主容器（忽略多开模式检查，用于关闭多开模式时）
+async function forceRestartMainContainer(userId = null) {
+  try {
+    // 先同步配置
+    const globalConfig = loadConfig();
+    if (userId) {
+      globalConfig.user_id = userId.toString();
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
+      console.log(`✅ [强制重启] 已更新全局配置文件中的 user_id 为: ${userId}`);
+      
+      // 同步用户配置
+      const userConfig = await loadUserConfig(userId.toString());
+      if (userConfig) {
+        const configObj = userConfig.toObject ? userConfig.toObject() : userConfig;
+        
+        const configToSync = {
+          keywords: Array.isArray(configObj.keywords) ? configObj.keywords : (configObj.keywords || []),
+          channels: Array.isArray(configObj.channels) ? configObj.channels : (configObj.channels || []),
+          alert_keywords: Array.isArray(configObj.alert_keywords) ? configObj.alert_keywords : (configObj.alert_keywords || []),
+          alert_regex: Array.isArray(configObj.alert_regex) ? configObj.alert_regex : (configObj.alert_regex || []),
+          log_all_messages: configObj.log_all_messages !== undefined ? configObj.log_all_messages : true,
+          alert_target: configObj.alert_target || ''
+        };
+        
+        if (configObj.telegram && configObj.telegram.api_id && configObj.telegram.api_hash) {
+          configToSync.telegram = {
+            api_id: configObj.telegram.api_id,
+            api_hash: configObj.telegram.api_hash
+          };
+        }
+        
+        if (configObj.ai_analysis) {
+          configToSync.ai_analysis = {
+            enabled: configObj.ai_analysis.enabled || false,
+            ai_trigger_enabled: configObj.ai_analysis.ai_trigger_enabled || false,
+            ai_trigger_users: Array.isArray(configObj.ai_analysis.ai_trigger_users) 
+              ? configObj.ai_analysis.ai_trigger_users 
+              : [],
+            ai_trigger_prompt: configObj.ai_analysis.ai_trigger_prompt || ''
+          };
+        }
+        
+        Object.assign(globalConfig, configToSync);
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
+      }
+    }
+    
+    // 强制重启主容器
+    const Docker = require('dockerode');
+    const dockerSocketPaths = [
+      '/var/run/docker.sock',
+      process.env.DOCKER_HOST?.replace('unix://', '') || null
+    ].filter(Boolean);
+    
+    let docker = null;
+    for (const socketPath of dockerSocketPaths) {
+      if (fs.existsSync(socketPath)) {
+        try {
+          docker = new Docker({ socketPath });
+          await docker.ping();
+          break;
+        } catch (e) {
+          docker = null;
+        }
+      }
+    }
+    
+    if (!docker) {
+      throw new Error('无法连接到 Docker daemon');
+    }
+    
+    // 查找主容器
+    let container = null;
+    const containerNames = ['tg_listener', 'telethon'];
+    
+    for (const name of containerNames) {
+      try {
+        container = docker.getContainer(name);
+        await container.inspect();
+        break;
+      } catch (e) {
+        container = null;
+      }
+    }
+    
+    if (!container) {
+      console.warn('⚠️  [强制重启] Telethon 主容器不存在，无法重启');
+      return false;
+    }
+    
+    // 检查容器状态并启动/重启
+    const containerInfo = await container.inspect();
+    const state = containerInfo.State;
+    
+    if (state.Restarting) {
+      console.log('⚠️  [强制重启] 容器正在重启中，先停止容器...');
+      await container.stop({ t: 10 });
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    } else if (state.Running) {
+      console.log('🔄 [强制重启] 重启主容器...');
+      await container.restart({ t: 10 });
+      console.log('✅ [强制重启] 主容器已重启');
+      return true;
+    }
+    
+    // 启动容器
+    console.log('▶️  [强制重启] 启动主容器...');
+    await container.start();
+    console.log('✅ [强制重启] 主容器已启动');
+    return true;
+  } catch (error) {
+    console.error('❌ [强制重启] 重启主容器失败:', error.message);
+    return false;
+  }
+}
+
 // 重启 Telethon 服务
 async function restartTelethonService(userId = null) {
   try {
@@ -5871,23 +6097,28 @@ async function restartTelethonService(userId = null) {
     }
     
     // 检查是否有独立容器在运行（作为额外检查）
-    try {
-      // 只获取运行中的容器（all: false 只返回运行中的容器）
-      const runningContainers = await docker.listContainers({ all: false });
-      const hasMultiLoginContainer = runningContainers.some(c => {
-        if (!c.Names || c.Names.length === 0) return false;
-        return c.Names.some(containerName => {
-          const cleanName = containerName.replace(/^\//, '');
-          return cleanName.startsWith('tg_listener_');
+    // 注意：只有在 multiLoginEnabled 为 true 时才检查，如果为 false 则强制启动主容器
+    if (multiLoginEnabled) {
+      try {
+        // 只获取运行中的容器（all: false 只返回运行中的容器）
+        const runningContainers = await docker.listContainers({ all: false });
+        const hasMultiLoginContainer = runningContainers.some(c => {
+          if (!c.Names || c.Names.length === 0) return false;
+          return c.Names.some(containerName => {
+            const cleanName = containerName.replace(/^\//, '');
+            return cleanName.startsWith('tg_listener_');
+          });
         });
-      });
-      
-      if (hasMultiLoginContainer) {
-        console.log(`⏭️  [重启服务] 检测到独立容器正在运行，跳过重启主容器（多开模式）`);
-        return false; // 有独立容器运行时，不重启主容器
+        
+        if (hasMultiLoginContainer) {
+          console.log(`⏭️  [重启服务] 检测到独立容器正在运行，跳过重启主容器（多开模式）`);
+          return false; // 有独立容器运行时，不重启主容器
+        }
+      } catch (checkError) {
+        console.warn(`⚠️  [重启服务] 检查独立容器状态失败，继续重启主容器: ${checkError.message}`);
       }
-    } catch (checkError) {
-      console.warn(`⚠️  [重启服务] 检查独立容器状态失败，继续重启主容器: ${checkError.message}`);
+    } else {
+      console.log(`✅ [重启服务] 多开模式已关闭，强制启动主容器（单开模式）`);
     }
     
     // 尝试获取容器
