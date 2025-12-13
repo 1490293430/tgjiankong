@@ -7967,284 +7967,64 @@ app.post('/api/telegram/login/verify', authMiddleware, async (req, res) => {
         loginStatusCache.delete(cacheKey);
         sessionFileCache.delete(volumeCacheKey);
         
-        // 等待一小段时间确保 session 文件完全写入 volume（在清理容器之前）
-        console.log(`⏳ [登录验证] 等待 3 秒确保文件同步到 volume...`);
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        // 在清理容器之前，先检查文件是否已写入 volume
-        console.log(`🔍 [登录验证] 在清理容器前检查 volume 中的 session 文件...`);
-        try {
-          const Docker = require('dockerode');
-          const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-          const volumeName = 'tg_session';
-          const volumeSessionFileName = `user_${userId}.session`;
-          const volumeJournalFileName = `user_${userId}.session-journal`;
-          
-          // 创建临时容器检查文件（使用不同的容器，不依赖登录容器）
-          const tempImage = await getTempContainerImage(docker);
-          const checkContainerName = `tg_session_check_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-          
-          const checkContainer = await docker.createContainer({
-            Image: tempImage,
-            name: checkContainerName,
-            Cmd: ['sh', '-c', 'sleep 1'],
-            HostConfig: {
-              Binds: [`${volumeName}:/tmp/session_volume`]
-            }
-          });
-          
-          await checkContainer.start();
-          
-          // 列出 volume 中的所有文件
-          const listExec = await checkContainer.exec({
-            Cmd: ['sh', '-c', 'ls -la /tmp/session_volume/'],
-            AttachStdout: true,
-            AttachStderr: true
-          });
-          
-          const listStream = await listExec.start({ hijack: true, stdin: false });
-          let listOutput = '';
-          listStream.on('data', (chunk) => {
-            listOutput += chunk.toString();
-          });
-          await new Promise((resolve) => {
-            listStream.on('end', resolve);
-          });
-          
-          console.log(`📂 [登录验证] Volume 目录内容:\n${listOutput}`);
-          
-          // 检查 session 文件是否存在且大小大于 0
-          const checkExec = await checkContainer.exec({
-            Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeSessionFileName} && stat -c "%s %n" /tmp/session_volume/${volumeSessionFileName} || echo "文件不存在"`],
-            AttachStdout: true,
-            AttachStderr: true
-          });
-          
-          const checkStream = await checkExec.start({ hijack: true, stdin: false });
-          let checkOutput = '';
-          checkStream.on('data', (chunk) => {
-            checkOutput += chunk.toString();
-          });
-          await new Promise((resolve) => {
-            checkStream.on('end', resolve);
-          });
-          
-          console.log(`📄 [登录验证] Session 文件检查结果:\n${checkOutput}`);
-          
-          // 检查 journal 文件是否存在（如果存在，说明文件正在写入中）
-          const journalCheckExec = await checkContainer.exec({
-            Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeJournalFileName} && echo "journal_exists:$(stat -c "%s" /tmp/session_volume/${volumeJournalFileName})" || echo "journal_not_exists"`],
-            AttachStdout: true,
-            AttachStderr: true
-          });
-          
-          const journalCheckStream = await journalCheckExec.start({ hijack: true, stdin: false });
-          let journalCheckOutput = '';
-          journalCheckStream.on('data', (chunk) => {
-            journalCheckOutput += chunk.toString();
-          });
-          await new Promise((resolve) => {
-            journalCheckStream.on('end', resolve);
-          });
-          
-          console.log(`📄 [登录验证] Journal 文件检查结果: ${journalCheckOutput.trim()}`);
-          
-          // 如果 journal 文件存在，说明文件正在写入中，需要等待
-          if (journalCheckOutput.trim().includes('journal_exists')) {
-            console.log(`⏳ [登录验证] 检测到 journal 文件存在，文件正在写入中，等待完成...`);
-            
-            // 轮询检查 journal 文件，直到它被删除（说明写入完成）
-            let journalStillExists = true;
-            let waitCount = 0;
-            const maxWait = 10; // 最多等待 10 秒
-            
-            while (journalStillExists && waitCount < maxWait) {
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              waitCount++;
-              
-              const journalCheckExec2 = await checkContainer.exec({
-                Cmd: ['sh', '-c', `test -f /tmp/session_volume/${volumeJournalFileName} && echo "journal_still_exists" || echo "journal_removed"`],
-                AttachStdout: true,
-                AttachStderr: true
-              });
-              
-              const journalCheckStream2 = await journalCheckExec2.start({ hijack: true, stdin: false });
-              let journalCheckOutput2 = '';
-              journalCheckStream2.on('data', (chunk) => {
-                journalCheckOutput2 += chunk.toString();
-              });
-              await new Promise((resolve) => {
-                journalCheckStream2.on('end', resolve);
-              });
-              
-              journalStillExists = journalCheckOutput2.trim().includes('journal_still_exists');
-              console.log(`📄 [登录验证] Journal 文件检查 (${waitCount}秒): ${journalCheckOutput2.trim()}`);
-            }
-            
-            if (journalStillExists) {
-              console.warn(`⚠️  [登录验证] Journal 文件在等待 ${maxWait} 秒后仍然存在，可能写入失败`);
-            } else {
-              console.log(`✅ [登录验证] Journal 文件已被删除，说明写入已完成`);
-            }
-          } else {
-            // Journal 文件不存在，可能是：
-            // 1. SQLite 没有使用 journal 模式（使用了 WAL 模式或其他）
-            // 2. 写入已完成，journal 文件已被删除
-            // 3. 写入失败，journal 文件从未创建
-            console.log(`ℹ️  [登录验证] Journal 文件不存在（可能已删除或未使用 journal 模式）`);
-          }
-          
-          // 验证 session 文件大小（应该大于 0）
-          // 处理可能的输出格式：@28672 /path/to/file 或 28672 /path/to/file
-          const fileSizeMatch = checkOutput.match(/(?:@)?(\d+)\s+/);
-          let sessionFileValid = false;
-          if (fileSizeMatch) {
-            const fileSize = parseInt(fileSizeMatch[1]);
-            if (fileSize > 0) {
-              console.log(`✅ [登录验证] Session 文件已保存，大小: ${fileSize} 字节`);
-              sessionFileValid = true;
-            } else {
-              console.warn(`⚠️  [登录验证] Session 文件大小为 0，可能未完全写入`);
-            }
-          } else {
-            console.warn(`⚠️  [登录验证] 无法获取 Session 文件大小，输出: ${checkOutput.trim()}`);
-          }
-          
-          // 如果 journal 文件不存在且 session 文件存在，验证 session 文件是否可以被 Telethon 正确读取
-          if (!journalCheckOutput.trim().includes('journal_exists') && sessionFileValid) {
-            console.log(`🔍 [登录验证] 验证 Session 文件是否可以被 Telethon 正确读取...`);
-            try {
-              // 使用临时容器验证 session 文件
-              const sessionPathWithoutExt = volumeSessionFileName.replace('.session', '');
-              const verifyExec = await checkContainer.exec({
-                Cmd: ['sh', '-c', `python3 -c "
-import asyncio
-from telethon import TelegramClient
-import sys
-
-async def verify():
-    session_path = '/tmp/session_volume/${sessionPathWithoutExt}'
-    api_id = ${validatedApiId}
-    api_hash = '${validatedApiHash}'
-    
-    try:
-        client = TelegramClient(session_path, api_id, api_hash)
-        await client.connect()
-        is_authorized = await client.is_user_authorized()
-        await client.disconnect()
-        
-        if is_authorized:
-            print('SUCCESS: Session file is valid and authorized')
-        else:
-            print('ERROR: Session file exists but not authorized')
-            sys.exit(1)
-    except Exception as e:
-        print(f'ERROR: {str(e)}')
-        sys.exit(1)
-
-asyncio.run(verify())
-"`],
-                AttachStdout: true,
-                AttachStderr: true
-              });
-              
-              const verifyStream = await verifyExec.start({ hijack: true, stdin: false });
-              let verifyOutput = '';
-              verifyStream.on('data', (chunk) => {
-                verifyOutput += chunk.toString();
-              });
-              await new Promise((resolve) => {
-                verifyStream.on('end', resolve);
-              });
-              
-              console.log(`📄 [登录验证] Session 文件验证结果: ${verifyOutput.trim()}`);
-              
-              if (verifyOutput.includes('SUCCESS')) {
-                console.log(`✅ [登录验证] Session 文件验证成功，可以被 Telethon 正确读取`);
-              } else if (verifyOutput.includes('ERROR')) {
-                console.warn(`⚠️  [登录验证] Session 文件验证失败: ${verifyOutput.trim()}`);
-              }
-            } catch (verifyError) {
-              console.warn(`⚠️  [登录验证] 验证 Session 文件时出错: ${verifyError.message}`);
-            }
-          }
-          
-          await checkContainer.stop();
-          await checkContainer.remove();
-        } catch (checkError) {
-          console.error(`❌ [登录验证] 检查 volume 文件失败: ${checkError.message}`);
-        }
-        
-        // 现在才清理临时登录容器（确保文件已同步）
-        console.log(`🧹 [登录验证] 清理临时登录容器...`);
-        await cleanupTempLoginContainer(userId);
-        
-        // 验证 session 文件是否已生成（统一使用 volume 路径）
-        // 先清除缓存，强制重新检查
-        sessionFileCache.delete(volumeCacheKey);
-        console.log(`🔍 [登录验证] 再次检查 session 文件是否存在...`);
-        const sessionExists = await checkSessionFileInVolume(userId);
-        
-        if (sessionExists) {
-          console.log(`✅ [登录验证] Session 文件已确认存在: ${sessionPath}`);
-          
-          // 立即更新缓存为已登录状态
-          loginStatusCache.set(cacheKey, {
-            result: {
-              logged_in: true,
-              message: '已登录',
-              user: result.user || null
-            },
-            timestamp: Date.now()
-          });
-          
-          // 更新 session 文件缓存
-          sessionFileCache.set(volumeCacheKey, {
-            exists: true,
-            timestamp: Date.now()
-          });
-          
-          console.log(`✅ [登录验证] 已更新登录状态缓存为已登录`);
-        } else {
-          console.error(`❌ [登录验证] Session 文件不存在！路径: ${sessionPath}`);
-          console.error(`❌ [登录验证] 这可能表示文件保存失败，请检查日志`);
-          
-          // 即使文件检查失败，也先更新缓存为已登录（因为登录脚本已返回成功）
-          // 这样前端能立即显示已登录，后续检查会自动修正
-          loginStatusCache.set(cacheKey, {
-            result: {
-              logged_in: true,
-              message: '已登录（登录成功，session 文件可能正在写入）',
-              user: result.user || null,
-              uncertain: true
-            },
-            timestamp: Date.now()
-          });
-          
-          console.warn(`⚠️  [登录验证] Session 文件可能还未完全写入，但已更新缓存为已登录状态`);
-        }
-        
-        // Telegram 登录成功后，同步用户配置并重启 Telethon 服务
-        // 异步执行，不阻塞响应
-        // 增加等待时间（5秒），确保 session 文件完全同步到 volume 后再重启服务
-        setTimeout(async () => {
-          try {
-            console.log(`🔄 Telegram 登录成功，等待 5 秒确保 session 文件完全同步...`);
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            
-            console.log(`🔄 开始同步用户 ${userId} 的配置并重启 Telethon 服务...`);
-            
-            await syncUserConfigAndRestartTelethon(userId);
-          } catch (error) {
-            console.error('⚠️  Telegram 登录后同步配置失败（不影响登录）:', error);
-          }
-        }, 100);
-        
+        // 立即返回成功响应（不等待文件检查）
+        // 文件检查和容器清理在后台异步执行
         res.json({
           success: true,
-          message: result.message || '登录成功！',
-          user: result.user
+          message: `登录成功！已登录为: ${result.user?.first_name || result.user?.username || '未知用户'}`,
+          user: result.user || null
         });
+        
+        // 后台异步处理：文件检查和容器清理（不阻塞响应）
+        setTimeout(async () => {
+          try {
+            console.log(`🔍 [登录验证] 后台验证 session 文件...`);
+            
+            // 等待文件同步完成（后台执行，减少等待时间）
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // 检查本地文件系统（如果使用目录挂载）
+            const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
+            const localSessionPath = path.join(PROJECT_ROOT, 'data', 'session', `user_${userId}.session`);
+            const sessionExists = fs.existsSync(localSessionPath);
+            
+            if (sessionExists) {
+              console.log(`✅ [登录验证] Session 文件已存在于本地文件系统`);
+              // 更新缓存
+              sessionFileCache.set(volumeCacheKey, {
+                exists: true,
+                timestamp: Date.now()
+              });
+            }
+            
+            // 清理临时登录容器
+            console.log(`🧹 [登录验证] 清理临时登录容器...`);
+            await cleanupTempLoginContainer(userId);
+            
+            // 更新登录状态缓存
+            loginStatusCache.set(cacheKey, {
+              result: {
+                logged_in: true,
+                message: '已登录',
+                user: result.user || null
+              },
+              timestamp: Date.now()
+            });
+            
+            // Telegram 登录成功后，同步用户配置并重启 Telethon 服务（后台异步）
+            setTimeout(async () => {
+              try {
+                console.log(`🔄 [登录验证] 后台同步配置并重启 Telethon 服务...`);
+                await syncUserConfigAndRestartTelethon(userId);
+              } catch (error) {
+                console.error('⚠️  [登录验证] 后台同步配置失败（不影响登录）:', error);
+              }
+            }, 2000);
+            
+          } catch (checkError) {
+            console.error(`❌ [登录验证] 后台处理失败: ${checkError.message}`);
+          }
+        }, 100);
       } else {
         if (result.password_required) {
           // 需要密码，不清理容器（用户可能还要输入密码）
