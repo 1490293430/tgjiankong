@@ -113,30 +113,34 @@ else
   exit 1
 fi
 
-# 先停止并清理（如果有旧的安装）
+# 先停止并清理所有相关容器
 echo "清理旧环境..."
-$COMPOSE_CMD down 2>/dev/null || true
-
-# 处理网络（在 down 之后清理，避免标签冲突）
-echo "配置 Docker 网络..."
-if docker network inspect tg-network >/dev/null 2>&1; then
-  # 检查网络是否有容器在使用
-  CONTAINERS_IN_NETWORK=$(docker network inspect tg-network --format '{{len .Containers}}' 2>/dev/null || echo "0")
-  if [ "$CONTAINERS_IN_NETWORK" = "0" ]; then
-    echo "  删除旧的 tg-network 网络（解决标签冲突）..."
-    docker network rm tg-network 2>/dev/null || true
-  else
-    echo "  网络 tg-network 正在使用中，保留"
-  fi
+if [ -f docker-compose.yml ]; then
+  $COMPOSE_CMD down -v 2>/dev/null || true
 fi
 
-# 创建网络（如果不存在）
-docker network create tg-network 2>/dev/null || true
+# 手动停止并删除所有使用 tg-network 的容器
+CONTAINERS_IN_NETWORK=$(docker network inspect tg-network --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || echo "")
+if [ -n "$CONTAINERS_IN_NETWORK" ]; then
+  echo "  停止使用 tg-network 的容器..."
+  echo "$CONTAINERS_IN_NETWORK" | tr ' ' '\n' | grep -v '^$' | while read -r container; do
+    docker stop "$container" 2>/dev/null || true
+    docker rm "$container" 2>/dev/null || true
+  done
+  sleep 1
+fi
+
+# 删除旧网络（解决标签冲突）
+if docker network inspect tg-network >/dev/null 2>&1; then
+  echo "  删除旧的 tg-network 网络..."
+  docker network rm tg-network 2>/dev/null || true
+  sleep 1
+fi
 
 # npm-net 是外部网络，如果不存在则创建（可选）
 docker network create npm-net 2>/dev/null || true
 
-# 启动服务
+# 启动服务（compose 会自动创建 tg-network）
 echo "构建容器..."
 $COMPOSE_CMD build --pull --quiet
 echo "启动服务..."
