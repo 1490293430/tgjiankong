@@ -46,6 +46,10 @@
 
 ```bash
 sudo bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
+
+
+一键卸载：
+sudo bash uninstall.sh
 ```
 
 **使用环境变量（推荐）：**

@@ -103,10 +103,6 @@ if [ ! -f backend/config.json ]; then
 EOF
 fi
 
-# 创建网络（如果不存在）
-docker network create tg-network 2>/dev/null || true
-docker network create npm-net 2>/dev/null || true
-
 # 确保 docker compose 可用（兼容新旧版本）
 if docker compose version >/dev/null 2>&1; then
   COMPOSE_CMD="docker compose"
@@ -117,10 +113,32 @@ else
   exit 1
 fi
 
+# 先停止并清理（如果有旧的安装）
+echo "清理旧环境..."
+$COMPOSE_CMD down 2>/dev/null || true
+
+# 处理网络（在 down 之后清理，避免标签冲突）
+echo "配置 Docker 网络..."
+if docker network inspect tg-network >/dev/null 2>&1; then
+  # 检查网络是否有容器在使用
+  CONTAINERS_IN_NETWORK=$(docker network inspect tg-network --format '{{len .Containers}}' 2>/dev/null || echo "0")
+  if [ "$CONTAINERS_IN_NETWORK" = "0" ]; then
+    echo "  删除旧的 tg-network 网络（解决标签冲突）..."
+    docker network rm tg-network 2>/dev/null || true
+  else
+    echo "  网络 tg-network 正在使用中，保留"
+  fi
+fi
+
+# 创建网络（如果不存在）
+docker network create tg-network 2>/dev/null || true
+
+# npm-net 是外部网络，如果不存在则创建（可选）
+docker network create npm-net 2>/dev/null || true
+
 # 启动服务
 echo "构建容器..."
 $COMPOSE_CMD build --pull --quiet
-$COMPOSE_CMD down 2>/dev/null || true
 echo "启动服务..."
 $COMPOSE_CMD up -d
 
