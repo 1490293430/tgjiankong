@@ -47,6 +47,16 @@
 ```bash
 sudo bash <(curl -fsSL https://raw.githubusercontent.com/1490293430/tgjiankong/main/install.sh)
 
+手动：
+
+docker compose down
+rm -rf /opt/telegram-monitor
+cd /opt
+git clone https://github.com/1490293430/tgjiankong.git telegram-monitor
+cd telegram-monitor
+docker compose up -d --build
+
+
 
 一键卸载：
 sudo bash uninstall.sh

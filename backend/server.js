@@ -6683,12 +6683,56 @@ async function startMultiLoginContainer(userId) {
       // 固定使用项目根目录路径
       const projectRoot = '/opt/telegram-monitor';
       
-      // 构建宿主机路径
-      const hostConfigPath = path.join(projectRoot, 'backend', `config_${userId}.json`);
+      // 构建宿主机路径（使用 __dirname 确保路径正确）
+      const hostConfigPath = path.join(__dirname, `config_${userId}.json`);
       const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
       
+      // 确保配置文件存在（如果不存在，重新创建）
+      if (!fs.existsSync(hostConfigPath)) {
+        console.warn(`⚠️  [多开登录] 配置文件不存在: ${hostConfigPath}，重新创建...`);
+        const userConfig = await loadUserConfig(userId.toString());
+        const configObj = userConfig.toObject ? userConfig.toObject() : userConfig;
+        
+        const userConfigData = {
+          user_id: userId.toString(),
+          keywords: Array.isArray(configObj.keywords) ? configObj.keywords : [],
+          channels: Array.isArray(configObj.channels) ? configObj.channels : [],
+          alert_keywords: Array.isArray(configObj.alert_keywords) ? configObj.alert_keywords : [],
+          alert_regex: Array.isArray(configObj.alert_regex) ? configObj.alert_regex : [],
+          log_all_messages: configObj.log_all_messages || false,
+          alert_target: configObj.alert_target || ''
+        };
+        
+        if (configObj.telegram && configObj.telegram.api_id && configObj.telegram.api_hash) {
+          userConfigData.telegram = {
+            api_id: configObj.telegram.api_id,
+            api_hash: configObj.telegram.api_hash
+          };
+        }
+        
+        if (configObj.ai_analysis) {
+          userConfigData.ai_analysis = {
+            enabled: configObj.ai_analysis.enabled || false,
+            ai_trigger_enabled: configObj.ai_analysis.ai_trigger_enabled || false,
+            ai_trigger_users: Array.isArray(configObj.ai_analysis.ai_trigger_users) 
+              ? configObj.ai_analysis.ai_trigger_users 
+              : [],
+            ai_trigger_prompt: configObj.ai_analysis.ai_trigger_prompt || ''
+          };
+        }
+        
+        fs.writeFileSync(hostConfigPath, JSON.stringify(userConfigData, null, 2));
+        console.log(`✅ [多开登录] 已重新创建配置文件: ${hostConfigPath}`);
+      }
+      
+      // 验证配置文件是文件而不是目录
+      const configStats = fs.statSync(hostConfigPath);
+      if (!configStats.isFile()) {
+        throw new Error(`配置文件 ${hostConfigPath} 是目录而非文件，请删除该目录后重试`);
+      }
+      
       console.log(`📂 [多开登录] 使用项目根目录: ${projectRoot}`);
-      console.log(`📂 [多开登录] 挂载路径: config=${hostConfigPath}, session=${sessionHostPath}:${sessionContainerPath}:rw, logs=${hostLogsPath}`);
+      console.log(`📂 [多开登录] 挂载路径: config=${hostConfigPath}:/app/config_${userId}.json:ro, session=${sessionHostPath}:${sessionContainerPath}:rw, logs=${hostLogsPath}`);
       
       // 创建容器
       // 注意：代码在镜像中（通过 Dockerfile COPY），不需要挂载代码目录
