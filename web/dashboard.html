@@ -504,6 +504,21 @@
             padding: 40px;
             color: #999;
         }
+
+        /* 仪表盘 - 最近日志滚动框：提高长度（高度）以适配手机 */
+        #recentLogs {
+            max-height: 1200px; /* 原 600px，提高一倍 */
+            overflow-y: auto;
+            position: relative;
+        }
+
+        /* 手机端：按屏幕高度自适应，减少页面底部空白 */
+        @media (max-width: 768px) {
+            #recentLogs {
+                height: 75vh;
+                max-height: 75vh;
+            }
+        }
         
         /* 模态弹窗样式 */
         .modal-overlay {
@@ -686,7 +701,7 @@
             
             <div class="card">
                 <h2>最近日志</h2>
-                <div id="recentLogs" class="loading" style="max-height: 600px; overflow-y: auto; position: relative;">加载中...</div>
+                <div id="recentLogs" class="loading">加载中...</div>
             </div>
         </div>
         
