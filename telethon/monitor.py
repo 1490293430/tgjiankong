@@ -1375,12 +1375,44 @@ async def main():
         
         # 检查客户端是否已经启动（如果之前已经启动过，就不需要再次启动）
         client_started = False
-        try:
-            # 尝试获取用户信息，如果成功说明已经启动
-            me = await client.get_me()
-            logger.info("✅ [授权检查] 客户端已启动，已登录为: %s (ID: %s)", getattr(me, "username", None) or getattr(me, "first_name", None), me.id)
-            client_started = True
-        except Exception:
+        
+        # 尝试获取用户信息，如果成功说明已经启动
+        # 添加重试逻辑处理 session 文件锁定问题
+        max_get_me_retries = 5
+        get_me_retry_delay = 2.0
+        get_me_success = False
+        
+        for get_me_retry in range(max_get_me_retries):
+            try:
+                me = await client.get_me()
+                logger.info("✅ [授权检查] 客户端已启动，已登录为: %s (ID: %s)", getattr(me, "username", None) or getattr(me, "first_name", None), me.id)
+                client_started = True
+                get_me_success = True
+                break
+            except Exception as get_me_error:
+                error_msg = str(get_me_error)
+                # 检查是否是数据库锁定错误
+                if 'database is locked' in error_msg.lower() or 'OperationalError' in str(type(get_me_error)):
+                    if get_me_retry < max_get_me_retries - 1:
+                        wait_time = get_me_retry_delay * (get_me_retry + 1)  # 递增等待时间
+                        logger.warning("⚠️  [授权检查] Session 文件被锁定（get_me），等待 %.1f 秒后重试 (%d/%d)...", 
+                                     wait_time, get_me_retry + 1, max_get_me_retries)
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error("❌ [授权检查] Session 文件持续被锁定（get_me），已重试 %d 次仍失败", max_get_me_retries)
+                        logger.error("   可能原因：")
+                        logger.error("   1. 有其他容器或进程正在使用同一个 session 文件")
+                        logger.error("   2. 之前的容器进程未完全关闭")
+                        logger.error("   建议：等待几秒后重启容器，或检查是否有其他容器在使用该 session 文件")
+                        # 继续尝试启动客户端
+                        break
+                else:
+                    # 其他错误，可能是客户端未启动
+                    logger.info("🔍 [授权检查] get_me 失败（非锁定错误）: %s，将尝试启动客户端", str(get_me_error))
+                    break
+        
+        if not get_me_success:
             # 如果获取用户信息失败，说明需要启动客户端
             logger.info("🔍 [授权检查] 客户端已连接但未启动，尝试启动客户端...")
             try:
@@ -1505,8 +1537,35 @@ async def main():
     client.add_event_handler(lambda e: message_handler(e, client), events.NewMessage())
     logger.info("✅ [事件注册] 已注册 NewMessage 事件处理器")
     
-    me = await client.get_me()
-    logger.info("已登录为: %s (ID: %s)", getattr(me, "username", None) or getattr(me, "first_name", None), me.id)
+    # 获取用户信息（添加重试逻辑处理 session 文件锁定）
+    max_get_me_retries = 5
+    get_me_retry_delay = 2.0
+    me = None
+    
+    for get_me_retry in range(max_get_me_retries):
+        try:
+            me = await client.get_me()
+            logger.info("已登录为: %s (ID: %s)", getattr(me, "username", None) or getattr(me, "first_name", None), me.id)
+            break
+        except Exception as get_me_error:
+            error_msg = str(get_me_error)
+            # 检查是否是数据库锁定错误
+            if 'database is locked' in error_msg.lower() or 'OperationalError' in str(type(get_me_error)):
+                if get_me_retry < max_get_me_retries - 1:
+                    wait_time = get_me_retry_delay * (get_me_retry + 1)
+                    logger.warning("⚠️  [启动] Session 文件被锁定（get_me），等待 %.1f 秒后重试 (%d/%d)...", 
+                                 wait_time, get_me_retry + 1, max_get_me_retries)
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    logger.error("❌ [启动] Session 文件持续被锁定（get_me），已重试 %d 次仍失败", max_get_me_retries)
+                    raise
+            else:
+                # 其他错误直接抛出
+                raise
+    
+    if not me:
+        raise Exception("无法获取用户信息：Session 文件被锁定")
     
     # 诊断：列出当前加入的对话（用于调试）
     try:

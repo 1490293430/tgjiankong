@@ -7427,6 +7427,9 @@ async function startMultiLoginContainer(userId) {
         console.log(`🔄 [多开登录] 容器 ${containerName} 正在运行，重启以应用新配置...`);
         try {
           await container.restart({ t: 10 });
+          // 等待容器完全重启，确保旧进程完全关闭，session 文件解锁
+          console.log(`⏳ [多开登录] 等待容器完全重启（确保 session 文件解锁）...`);
+          await new Promise(resolve => setTimeout(resolve, 3000)); // 等待3秒
         } catch (restartError) {
           // 如果重启失败，可能是挂载配置有问题，删除容器并重新创建
           console.warn(`⚠️  [多开登录] 重启容器失败: ${restartError.message}`);
