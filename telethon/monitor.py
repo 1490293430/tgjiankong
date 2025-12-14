@@ -190,6 +190,9 @@ def load_config_sync():
     """
     global CONFIG_CACHE, CONFIG_MTIME, COMPILED_ALERT_REGEX, CONFIG_PATH
     try:
+        # 记录正在加载的配置文件路径
+        logger.info("🔍 [配置加载] 开始加载配置文件: %s", CONFIG_PATH)
+        
         if not os.path.exists(CONFIG_PATH):
             # 仅当未显式指定 CONFIG_PATH 时才尝试备用路径
             if not CONFIG_PATH_ENV:
@@ -217,6 +220,7 @@ def load_config_sync():
 
         mtime = os.path.getmtime(CONFIG_PATH)
         if CONFIG_CACHE and mtime == CONFIG_MTIME:
+            logger.debug("🔍 [配置加载] 配置文件未变化，跳过重新加载: %s (mtime: %s)", CONFIG_PATH, mtime)
             return  # no change
 
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -244,7 +248,7 @@ def load_config_sync():
             except re.error:
                 logger.warning("无效的正则，跳过: %s", p)
 
-        logger.info("配置已加载/更新：keywords=%d alert_keywords=%d regex=%d channels=%d",
+        logger.info("✅ [配置加载] 配置已加载/更新：keywords=%d alert_keywords=%d regex=%d channels=%d",
                     len(CONFIG_CACHE.get("keywords", [])),
                     len(CONFIG_CACHE.get("alert_keywords", [])),
                     len(COMPILED_ALERT_REGEX),
@@ -253,8 +257,12 @@ def load_config_sync():
         # 详细日志：显示关键词内容（仅在有关键词时）
         if CONFIG_CACHE.get("keywords"):
             logger.info("📋 [配置加载] 监控关键词: %s", CONFIG_CACHE.get("keywords"))
+        else:
+            logger.info("📋 [配置加载] 监控关键词: 无")
         if CONFIG_CACHE.get("alert_keywords"):
             logger.info("🔔 [配置加载] 告警关键词: %s", CONFIG_CACHE.get("alert_keywords"))
+        else:
+            logger.info("🔔 [配置加载] 告警关键词: 无")
     except Exception as e:
         logger.exception("加载配置失败: %s", e)
         CONFIG_CACHE = default_config()
@@ -1065,8 +1073,41 @@ async def main():
         
         # 先连接（不触发交互式输入）
         logger.info("🔍 [客户端启动] 正在连接到 Telegram 服务器...")
-        await client.connect()
-        logger.info("✅ [客户端启动] 已连接到 Telegram 服务器")
+        
+        # 处理 Session 文件锁定问题（多个进程同时访问时可能发生）
+        max_connect_retries = 5
+        connect_retry_delay = 2.0  # 初始重试延迟（秒）
+        connect_success = False
+        
+        for connect_retry in range(max_connect_retries):
+            try:
+                await client.connect()
+                logger.info("✅ [客户端启动] 已连接到 Telegram 服务器")
+                connect_success = True
+                break
+            except Exception as connect_error:
+                error_msg = str(connect_error)
+                # 检查是否是数据库锁定错误
+                if 'database is locked' in error_msg.lower() or 'OperationalError' in str(type(connect_error)):
+                    if connect_retry < max_connect_retries - 1:
+                        wait_time = connect_retry_delay * (connect_retry + 1)  # 递增等待时间
+                        logger.warning("⚠️  [客户端启动] Session 文件被锁定（可能是其他进程正在使用），等待 %.1f 秒后重试 (%d/%d)...", 
+                                     wait_time, connect_retry + 1, max_connect_retries)
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error("❌ [客户端启动] Session 文件持续被锁定，已重试 %d 次仍失败", max_connect_retries)
+                        logger.error("   可能原因：")
+                        logger.error("   1. 有其他容器或进程正在使用同一个 session 文件")
+                        logger.error("   2. 之前的容器进程未完全关闭")
+                        logger.error("   建议：等待几秒后重启容器，或检查是否有其他容器在使用该 session 文件")
+                        raise
+                else:
+                    # 其他错误直接抛出
+                    raise
+        
+        if not connect_success:
+            raise Exception("连接 Telegram 服务器失败：Session 文件被锁定")
         
         # 在启动前，先尝试检查 session 文件是否可以读取
         if session_file and not SESSION_STRING:

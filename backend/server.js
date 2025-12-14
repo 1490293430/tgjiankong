@@ -7368,18 +7368,19 @@ async function startMultiLoginContainer(userId) {
         console.log(`🔄 [多开登录] 容器 ${containerName} 正在运行，重启以应用新配置...`);
         try {
           await container.restart({ t: 10 });
-      } catch (restartError) {
-        // 如果重启失败，可能是挂载配置有问题，删除容器并重新创建
-        console.warn(`⚠️  [多开登录] 重启容器失败: ${restartError.message}`);
-        console.log(`🗑️  [多开登录] 删除旧容器并重新创建...`);
-        try {
-          await container.stop();
-          await container.remove();
-          // 重新创建容器（上面的代码已经创建过了，这里需要重新执行创建逻辑）
-          // 但由于 container 变量已经指向了被删除的容器，我们需要重新获取
-          throw new Error('需要重新创建容器');
-        } catch (removeError) {
-          throw new Error(`无法删除旧容器: ${removeError.message}`);
+        } catch (restartError) {
+          // 如果重启失败，可能是挂载配置有问题，删除容器并重新创建
+          console.warn(`⚠️  [多开登录] 重启容器失败: ${restartError.message}`);
+          console.log(`🗑️  [多开登录] 删除旧容器并重新创建...`);
+          try {
+            await container.stop();
+            await container.remove();
+            // 重新创建容器（上面的代码已经创建过了，这里需要重新执行创建逻辑）
+            // 但由于 container 变量已经指向了被删除的容器，我们需要重新获取
+            throw new Error('需要重新创建容器');
+          } catch (removeError) {
+            throw new Error(`无法删除旧容器: ${removeError.message}`);
+          }
         }
       }
     } else {
@@ -7423,43 +7424,44 @@ async function startMultiLoginContainer(userId) {
       }
     }
     
-      console.log(`✅ [多开登录] 容器 ${containerName} 已启动`);
-      
-      // 等待容器启动并检查状态
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      try {
-        const finalInfo = await container.inspect();
-        if (finalInfo.State.Running) {
-          console.log(`✅ [多开登录] 容器 ${containerName} 运行正常`);
-          
-          // 验证网络连接
-          if (finalInfo.NetworkSettings && finalInfo.NetworkSettings.Networks) {
-            const connectedNetworks = Object.keys(finalInfo.NetworkSettings.Networks);
-            console.log(`🔗 [多开登录] 容器已连接到网络: ${connectedNetworks.join(', ')}`);
-            if (!connectedNetworks.includes(networkName) && connectedNetworks.length > 0) {
-              console.warn(`⚠️  [多开登录] 容器未连接到预期网络 ${networkName}，实际网络: ${connectedNetworks[0]}`);
-            }
-          } else {
-            console.warn(`⚠️  [多开登录] 容器网络配置异常，无法验证网络连接`);
-          }
-          
-          // 检查容器日志，确认是否成功加载 session
-          const logs = await container.logs({
-            stdout: true,
-            stderr: true,
-            tail: 20
-          });
-          const logText = logs.toString();
-          if (logText.includes('已登录为') || logText.includes('Session 文件不存在')) {
-            console.log(`📋 [多开登录] 容器 ${containerName} 日志摘要: ${logText.split('\n').filter(l => l.includes('已登录') || l.includes('Session')).join('; ')}`);
+    console.log(`✅ [多开登录] 容器 ${containerName} 已启动`);
+    
+    // 等待容器启动并检查状态
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    try {
+      const finalInfo = await container.inspect();
+      if (finalInfo.State.Running) {
+        console.log(`✅ [多开登录] 容器 ${containerName} 运行正常`);
+        
+        // 验证网络连接
+        if (finalInfo.NetworkSettings && finalInfo.NetworkSettings.Networks) {
+          const connectedNetworks = Object.keys(finalInfo.NetworkSettings.Networks);
+          console.log(`🔗 [多开登录] 容器已连接到网络: ${connectedNetworks.join(', ')}`);
+          if (!connectedNetworks.includes(networkName) && connectedNetworks.length > 0) {
+            console.warn(`⚠️  [多开登录] 容器未连接到预期网络 ${networkName}，实际网络: ${connectedNetworks[0]}`);
           }
         } else {
-          console.warn(`⚠️  [多开登录] 容器 ${containerName} 未运行，状态: ${finalInfo.State.Status}`);
+          console.warn(`⚠️  [多开登录] 容器网络配置异常，无法验证网络连接`);
         }
-      } catch (checkError) {
-        console.warn(`⚠️  [多开登录] 检查容器状态失败: ${checkError.message}`);
+        
+        // 检查容器日志，确认是否成功加载 session
+        const logs = await container.logs({
+          stdout: true,
+          stderr: true,
+          tail: 20
+        });
+        const logText = logs.toString();
+        if (logText.includes('已登录为') || logText.includes('Session 文件不存在')) {
+          console.log(`📋 [多开登录] 容器 ${containerName} 日志摘要: ${logText.split('\n').filter(l => l.includes('已登录') || l.includes('Session')).join('; ')}`);
+        }
+      } else {
+        console.warn(`⚠️  [多开登录] 容器 ${containerName} 未运行，状态: ${finalInfo.State.Status}`);
       }
+    } catch (checkError) {
+      console.warn(`⚠️  [多开登录] 检查容器状态失败: ${checkError.message}`);
+    }
+    
     return true;
   } catch (error) {
     console.error(`❌ [多开登录] 启动容器失败:`, error);
