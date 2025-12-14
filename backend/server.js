@@ -2182,32 +2182,9 @@ app.delete('/api/logs', authMiddleware, async (req, res) => {
 app.get('/api/events', authMiddleware, (req, res) => {
   const userId = req.user.userId;
   
-  // 清理同一用户之前的旧连接（避免多个连接）
-  const disconnectedClients = [];
-  sseClients.forEach(clientInfo => {
-    if (clientInfo.userId === userId) {
-      // 发现同一用户的旧连接，断开它
-      try {
-        if (clientInfo.heartbeatInterval) {
-          clearInterval(clientInfo.heartbeatInterval);
-        }
-        clientInfo.closed = true;
-        if (clientInfo.res && !clientInfo.res.destroyed && clientInfo.res.writable) {
-          clientInfo.res.end();
-        }
-      } catch (e) {
-        // 忽略清理错误
-      }
-      disconnectedClients.push(clientInfo);
-    }
-  });
-  disconnectedClients.forEach(clientInfo => {
-    sseClients.delete(clientInfo);
-  });
-  
-  if (disconnectedClients.length > 0) {
-    console.log(`🧹 清理了 ${disconnectedClients.length} 个用户 ${userId} 的旧 SSE 连接`);
-  }
+  // 多开登录模式支持：允许同一用户有多个SSE连接（不同标签页/窗口）
+  // 不再清理同一用户的旧连接，以支持多开模式下的实时推送
+  // 前端会在建立新连接前主动断开旧连接，避免重复连接
   
   // 设置 SSE 响应头（必须严格按照 SSE 规范）
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -2278,7 +2255,15 @@ app.get('/api/events', authMiddleware, (req, res) => {
 
   // 将客户端添加到连接池（使用对象而不是直接存储 res）
   sseClients.add(clientInfo);
-  console.log(`✅ 用户 ${userId} 的 SSE 连接已建立（当前连接数: ${sseClients.size}）`);
+  
+  // 统计该用户的连接数（支持多开模式）
+  let userConnectionCount = 0;
+  sseClients.forEach(client => {
+    if (client.userId === userId) {
+      userConnectionCount++;
+    }
+  });
+  console.log(`✅ 用户 ${userId} 的 SSE 连接已建立（该用户连接数: ${userConnectionCount}, 总连接数: ${sseClients.size}）`);
 
   // 定期发送心跳，保持连接活跃（减少到15秒，确保连接不会超时）
   const heartbeatInterval = setInterval(() => {
