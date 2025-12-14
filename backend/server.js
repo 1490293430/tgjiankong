@@ -9745,6 +9745,9 @@ async function initializeMultiLoginContainers() {
   try {
     console.log('🔄 [启动初始化] 开始检查多开登录模式...');
     
+    // 等待数据库连接稳定
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
     const Docker = require('dockerode');
     const dockerSocketPaths = [
       '/var/run/docker.sock',
@@ -9769,11 +9772,20 @@ async function initializeMultiLoginContainers() {
       return;
     }
     
+    console.log('✅ [启动初始化] Docker 连接成功');
+    
     // 获取所有主账号
     const mainAccounts = await User.find({ 
       is_active: true, 
       parent_account_id: null 
     });
+    
+    console.log(`📋 [启动初始化] 找到 ${mainAccounts.length} 个主账号`);
+    
+    if (mainAccounts.length === 0) {
+      console.log('ℹ️  [启动初始化] 没有主账号，跳过多开登录初始化');
+      return;
+    }
     
     for (const account of mainAccounts) {
       try {
@@ -9830,7 +9842,9 @@ async function initializeMultiLoginContainers() {
             { _id: accountIdObj },
             { parent_account_id: accountIdObj }
           ]
-        }).select('_id username').lean();
+        }).select('_id username is_active').lean();
+        
+        console.log(`📋 [启动初始化] 账号 ${account.username} 下共有 ${accountUsers.length} 个用户（包括主账号和子账号）`);
         
         // 为每个已登录的用户启动独立容器
         for (const user of accountUsers) {
@@ -9850,12 +9864,16 @@ async function initializeMultiLoginContainers() {
                 
                 // 等待一小段时间，避免同时启动太多容器
                 await new Promise(resolve => setTimeout(resolve, 1000));
+              } else {
+                console.log(`⏭️  [启动初始化] 用户 ${user.username} (${userId}) session 文件无效（大小为 0），跳过`);
               }
             } else {
-              console.log(`⏭️  [启动初始化] 用户 ${user.username} (${userId}) 未登录，跳过`);
+              console.log(`⏭️  [启动初始化] 用户 ${user.username} (${userId}) 未登录（session 文件不存在），跳过`);
             }
           } catch (userError) {
             console.error(`❌ [启动初始化] 启动用户 ${user.username} 的容器失败: ${userError.message}`);
+            console.error(`   错误堆栈: ${userError.stack}`);
+            // 继续处理下一个用户，不中断整个流程
           }
         }
       } catch (accountError) {
@@ -9864,8 +9882,30 @@ async function initializeMultiLoginContainers() {
     }
     
     console.log('✅ [启动初始化] 多开登录容器初始化完成');
+    
+    // 验证所有容器是否已启动
+    try {
+      const containers = await docker.listContainers({ all: true });
+      const listenerContainers = containers.filter(c => {
+        if (!c.Names || c.Names.length === 0) return false;
+        return c.Names.some(name => {
+          const cleanName = name.replace(/^\//, '');
+          return cleanName.startsWith('tg_listener_');
+        });
+      });
+      
+      console.log(`📊 [启动初始化] 当前运行的多开容器数量: ${listenerContainers.length}`);
+      for (const container of listenerContainers) {
+        const containerName = container.Names[0].replace(/^\//, '');
+        const status = container.State === 'running' ? '✅ 运行中' : `⚠️  ${container.State}`;
+        console.log(`   - ${containerName}: ${status}`);
+      }
+    } catch (verifyError) {
+      console.warn(`⚠️  [启动初始化] 验证容器状态失败: ${verifyError.message}`);
+    }
   } catch (error) {
     console.error('❌ [启动初始化] 初始化多开登录容器失败:', error.message);
+    console.error('   错误堆栈:', error.stack);
     // 不抛出错误，让服务继续启动
   }
 }
@@ -9880,8 +9920,9 @@ app.listen(PORT, '0.0.0.0', () => {
   
   // 启动时初始化多开登录容器（延迟执行，等待数据库连接）
   setTimeout(async () => {
+    console.log('⏳ [启动] 等待数据库连接稳定后初始化多开登录容器...');
     await initializeMultiLoginContainers();
-  }, 5000); // 延迟5秒，确保数据库连接和用户数据已加载
+  }, 8000); // 延迟8秒，确保数据库连接和用户数据已完全加载
   
   // 启动 AI 分析
   setTimeout(async () => {
