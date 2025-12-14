@@ -769,6 +769,18 @@ async def message_handler(event, client):
             except Exception:
                 pass
 
+        # 如果依然缺少姓名，最后尝试一次 GetFullUserRequest 获取联系人显示名
+        if sender_id and not first_name and not last_name:
+            try:
+                from telethon.tl.functions.users import GetFullUserRequest
+                full = await client(GetFullUserRequest(sender_id))
+                if full and full.user:
+                    first_name = getattr(full.user, "first_name", None) or first_name
+                    last_name = getattr(full.user, "last_name", None) or last_name
+                    username = username or getattr(full.user, "username", None)
+            except Exception:
+                pass
+
         full_name = " ".join([n for n in [first_name, last_name] if n]) if (first_name or last_name) else None
 
         if full_name:
