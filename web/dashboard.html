@@ -359,6 +359,7 @@
         .log-table {
             width: 100%;
             border-collapse: collapse;
+            table-layout: fixed; /* 关键：避免超长内容把整张表撑到超出容器宽度 */
         }
         
         .log-table th,
@@ -366,6 +367,34 @@
             padding: 12px;
             text-align: left;
             border-bottom: 1px solid #f0f0f0;
+            overflow: hidden;          /* 配合 table-layout: fixed 防止撑宽 */
+            word-break: break-word;    /* 兼容旧浏览器 */
+            overflow-wrap: anywhere;   /* 关键：无空格超长字符串也能断行 */
+        }
+
+        /* 仪表盘/日志表：给各列一个合理的基础宽度，剩余空间给“消息”列 */
+        .log-table th:nth-child(1),
+        .log-table td:nth-child(1) { width: 170px; }
+        .log-table th:nth-child(2),
+        .log-table td:nth-child(2) { width: 140px; }
+        .log-table th:nth-child(3),
+        .log-table td:nth-child(3) { width: 140px; }
+        .log-table th:nth-child(4),
+        .log-table td:nth-child(4) { width: 180px; }
+        .log-table th:nth-child(5),
+        .log-table td:nth-child(5) {
+            white-space: normal; /* 消息列允许多行显示 */
+        }
+
+        @media (max-width: 768px) {
+            .log-table th:nth-child(1),
+            .log-table td:nth-child(1) { width: 140px; }
+            .log-table th:nth-child(2),
+            .log-table td:nth-child(2) { width: 110px; }
+            .log-table th:nth-child(3),
+            .log-table td:nth-child(3) { width: 120px; }
+            .log-table th:nth-child(4),
+            .log-table td:nth-child(4) { width: 140px; }
         }
         
         .log-table th {
@@ -513,6 +542,9 @@
             width: 100%;
             max-width: 100%;
             position: relative;
+            -webkit-overflow-scrolling: touch; /* iOS/部分移动端：让容器内滚动更顺滑并稳定触发scroll */
+            overscroll-behavior: contain;      /* 防止滚动链把手势传给页面，导致无限滚动不触发 */
+            touch-action: pan-y;               /* 明确主要是竖向滚动，减少横向拖拽干扰 */
         }
 
         /* 手机端：按屏幕高度自适应，减少页面底部空白 */
