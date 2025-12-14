@@ -2418,11 +2418,13 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
 async function getTelethonServiceUrl(userId = null) {
   // 如果设置了环境变量，直接使用
   if (process.env.TELETHON_URL) {
+    console.log(`🔗 [Telethon URL] 使用环境变量 TELETHON_URL: ${process.env.TELETHON_URL}`);
     return process.env.TELETHON_URL;
   }
   
   // 如果没有 userId，使用默认服务名
   if (!userId) {
+    console.log(`🔗 [Telethon URL] 未提供 userId，使用默认服务: http://telethon:8888`);
     return 'http://telethon:8888';
   }
   
@@ -2432,18 +2434,24 @@ async function getTelethonServiceUrl(userId = null) {
     const accountConfig = await loadUserConfig(accountId.toString());
     const multiLoginEnabled = accountConfig.multi_login_enabled || false;
     
+    console.log(`🔍 [Telethon URL] 检查多开模式 - userId: ${userId}, accountId: ${accountId}, multiLoginEnabled: ${multiLoginEnabled}`);
+    
     if (multiLoginEnabled) {
       // 多开模式：使用独立容器名称
       // 容器名称格式：tg_listener_${userId}
       // 在 Docker 网络中，可以通过容器名称访问
-      return `http://tg_listener_${userId}:8888`;
+      const containerUrl = `http://tg_listener_${userId}:8888`;
+      console.log(`✅ [Telethon URL] 多开模式，使用容器 URL: ${containerUrl}`);
+      return containerUrl;
     } else {
       // 单开模式：使用默认服务名
+      console.log(`✅ [Telethon URL] 单开模式，使用默认服务: http://telethon:8888`);
       return 'http://telethon:8888';
     }
   } catch (error) {
     // 如果检查失败，使用默认服务名
     console.warn(`⚠️  [Telethon URL] 无法检查多开模式，使用默认服务: ${error.message}`);
+    console.warn(`⚠️  [Telethon URL] 错误堆栈: ${error.stack}`);
     return 'http://telethon:8888';
   }
 }
@@ -2546,11 +2554,18 @@ ${messageId ? `👉 跳转链接：t.me/c/${channelId}/${messageId}` : ''}`;
           try {
             console.log(`📱 [告警处理] 准备发送Telegram告警到: ${config.alert_target}`);
             // 调用Telethon服务的HTTP接口发送消息
-            const telethonUrl = await getTelethonServiceUrl(userId);
-            console.log(`🔗 [告警处理] 使用 Telethon 服务 URL: ${telethonUrl}`);
+            // 使用触发告警的用户的容器来发送消息（userId 是字符串格式）
+            const triggerUserId = userIdObj.toString();
+            console.log(`🔍 [告警处理] 触发告警的用户ID: ${triggerUserId}`);
+            const telethonUrl = await getTelethonServiceUrl(triggerUserId);
+            console.log(`🔗 [告警处理] 使用 Telethon 服务 URL: ${telethonUrl} (userId: ${triggerUserId})`);
+            console.log(`📤 [告警处理] 发送请求到: ${telethonUrl}/api/internal/telegram/send`);
+            console.log(`📤 [告警处理] 请求参数: target=${config.alert_target}, message长度=${alertMessage.length}`);
+            
             const response = await axios.post(`${telethonUrl}/api/internal/telegram/send`, {
               target: config.alert_target,
-              message: alertMessage
+              message: alertMessage,
+              userId: triggerUserId  // 传递 userId 以便 Telethon 服务记录日志
             }, {
               timeout: 10000,
               headers: {
@@ -2560,11 +2575,16 @@ ${messageId ? `👉 跳转链接：t.me/c/${channelId}/${messageId}` : ''}`;
             console.log(`✅ [告警处理] Telegram 告警已发送到: ${config.alert_target}, 响应:`, response.data);
           } catch (error) {
             console.error('❌ [告警处理] Telegram 发送失败:', error.message);
+            console.error(`❌ [告警处理] 错误代码: ${error.code || 'N/A'}`);
             if (error.response) {
-              console.error('响应状态:', error.response.status, '响应数据:', error.response.data);
+              console.error('❌ [告警处理] 响应状态:', error.response.status, '响应数据:', error.response.data);
             }
             if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-              console.error(`❌ 无法连接到Telethon服务，请检查服务是否运行: ${telethonUrl}`);
+              console.error(`❌ [告警处理] 无法连接到Telethon服务: ${telethonUrl}`);
+              console.error(`❌ [告警处理] 请检查容器 ${triggerUserId ? `tg_listener_${triggerUserId}` : 'telethon'} 是否正在运行`);
+            }
+            if (error.code === 'ETIMEDOUT') {
+              console.error(`❌ [告警处理] 连接超时: ${telethonUrl}`);
             }
           }
         } else {
@@ -2694,11 +2714,13 @@ ${messageId ? `👉 跳转链接：t.me/c/${channelId}/${messageId}` : ''}`;
       try {
         console.log(`📱 准备发送Telegram告警到: ${config.alert_target}`);
         // 调用Telethon服务的HTTP接口发送消息
+        // 使用触发告警的用户的容器来发送消息
         const telethonUrl = await getTelethonServiceUrl(userIdObj.toString());
-        console.log(`🔗 [告警处理] 使用 Telethon 服务 URL: ${telethonUrl}`);
+        console.log(`🔗 [告警处理] 使用 Telethon 服务 URL: ${telethonUrl} (userId: ${userIdObj.toString()})`);
         await axios.post(`${telethonUrl}/api/internal/telegram/send`, {
           target: config.alert_target,
-          message: alertMessage
+          message: alertMessage,
+          userId: userIdObj.toString()  // 传递 userId 以便 Telethon 服务记录日志
         }, {
           timeout: 10000,
           headers: {
