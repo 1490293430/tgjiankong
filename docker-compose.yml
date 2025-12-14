@@ -34,6 +34,10 @@ services:
       - NODE_ENV=production
       - TELETHON_URL=http://telethon:8888
       - PROJECT_ROOT=${PROJECT_ROOT:-/opt/telegram-monitor}
+      # 多开容器自动跟随 telethon 镜像更新（让 git pull + build + up -d 就能生效）
+      - TELETHON_IMAGE=${TELETHON_IMAGE:-telegram-monitor-telethon:latest}
+      - MULTI_LOGIN_AUTO_UPDATE_IMAGE=${MULTI_LOGIN_AUTO_UPDATE_IMAGE:-true}
+      - MULTI_LOGIN_AUTO_UPDATE_INTERVAL_SECONDS=${MULTI_LOGIN_AUTO_UPDATE_INTERVAL_SECONDS:-20}
     volumes:
       - ./backend:/app
       - /app/node_modules

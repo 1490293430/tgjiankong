@@ -709,14 +709,14 @@ async def message_handler(event, client):
 
         # 统一对话显示名：
         # - 频道/群：优先 title
-        # - 私聊用户：优先 first_name/last_name（可附带 @username）
+        # - 私聊用户：优先 first_name/last_name（不附带 @username）
         # - 兜底：username / Unknown
         if chat_title:
             channel_name = chat_title
         else:
             chat_full_name = " ".join([n for n in [chat_first_name, chat_last_name] if n]) if (chat_first_name or chat_last_name) else None
             if chat_full_name:
-                channel_name = f"{chat_full_name} (@{chat_username})" if chat_username else chat_full_name
+                channel_name = chat_full_name
             elif chat_username:
                 channel_name = chat_username
             else:
@@ -815,8 +815,9 @@ async def message_handler(event, client):
 
         full_name = " ".join([n for n in [first_name, last_name] if n]) if (first_name or last_name) else None
 
+        # 显示规则：有姓名就只显示姓名；没有姓名才显示 @username（不加括号附带）
         if full_name:
-            sender = f"{full_name} (@{username})" if username else full_name
+            sender = full_name
         elif username:
             sender = f"@{username}"
         elif sender_id:

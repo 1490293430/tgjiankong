@@ -2462,6 +2462,32 @@ async function getTelethonServiceUrl(userId = null) {
   }
 }
 
+function parseBoolEnv(v, defaultValue = false) {
+  if (v === undefined || v === null || v === '') return defaultValue;
+  const s = String(v).toLowerCase().trim();
+  if (['1', 'true', 'yes', 'y', 'on'].includes(s)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(s)) return false;
+  return defaultValue;
+}
+
+function getDesiredTelethonImageName() {
+  return process.env.TELETHON_IMAGE || 'telegram-monitor-telethon:latest';
+}
+
+async function waitForContainerRunning(container, timeoutMs = 20000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const info = await container.inspect();
+    if (info?.State?.Running) return { running: true, status: info.State.Status, info };
+    if (info?.State?.Status && ['exited', 'dead'].includes(info.State.Status)) {
+      return { running: false, status: info.State.Status, info };
+    }
+    await new Promise(r => setTimeout(r, 800));
+  }
+  const info = await container.inspect().catch(() => null);
+  return { running: Boolean(info?.State?.Running), status: info?.State?.Status || 'unknown', info };
+}
+
 // 内部 API：Telethon 服务调用的告警推送接口（不需要认证）
 app.post('/api/internal/alert/push', async (req, res) => {
   try {
@@ -6607,41 +6633,39 @@ async function startMultiLoginContainer(userId) {
     const networkName = 'tg-network';
     console.log(`🔗 [多开登录] 使用网络: ${networkName}`);
     
-    // 查找Telethon镜像（提升到函数作用域，以便在错误处理中使用）
-    let containerImage = null;
-    const images = await docker.listImages();
-    for (const img of images) {
-      const tags = img.RepoTags || [];
-      for (const tag of tags) {
-        if ((tag.includes('tg_listener') || tag.includes('telethon')) && !tag.includes('<none>')) {
-          containerImage = tag;
-          break;
-        }
-      }
-      if (containerImage) break;
+    // 使用固定 tag（与 docker compose build 输出一致），避免误选到旧镜像
+    let containerImage = getDesiredTelethonImageName();
+    let desiredImageId = null;
+    try {
+      const desiredImgInfo = await docker.getImage(containerImage).inspect();
+      desiredImageId = desiredImgInfo?.Id || null;
+      console.log(`🔍 [多开登录] 目标 Telethon 镜像: ${containerImage} (${desiredImageId || 'unknown'})`);
+    } catch (e) {
+      console.warn(`⚠️  [多开登录] 无法 inspect Telethon 镜像 ${containerImage}: ${e.message}，将回退到自动搜索`);
+      containerImage = null;
     }
-    
+
+    // 回退：自动搜索一个可用的 telethon 镜像 tag
     if (!containerImage) {
-      // 尝试从docker-compose获取镜像名
-      const possibleNames = [
-        'tgjiankong-tg_listener',
-        'telethon',
-        'tg_listener'
-      ];
-      for (const name of possibleNames) {
-        try {
-          const img = docker.getImage(name);
-          await img.inspect();
-          containerImage = name;
-          break;
-        } catch (e) {
-          // 继续尝试下一个
+      const images = await docker.listImages();
+      for (const img of images) {
+        const tags = img.RepoTags || [];
+        for (const tag of tags) {
+          if ((tag.includes('tg_listener') || tag.includes('telethon')) && !tag.includes('<none>')) {
+            containerImage = tag;
+            break;
+          }
         }
+        if (containerImage) break;
       }
-    }
-    
-    if (!containerImage) {
-      throw new Error('无法找到 Telethon 镜像');
+      if (!containerImage) throw new Error('无法找到 Telethon 镜像');
+      try {
+        const desiredImgInfo = await docker.getImage(containerImage).inspect();
+        desiredImageId = desiredImgInfo?.Id || null;
+        console.log(`🔍 [多开登录] 回退选中 Telethon 镜像: ${containerImage} (${desiredImageId || 'unknown'})`);
+      } catch (e) {
+        desiredImageId = null;
+      }
     }
     
     // 准备环境变量（提升到函数作用域，以便在错误处理中使用）
@@ -6851,6 +6875,25 @@ async function startMultiLoginContainer(userId) {
       container = docker.getContainer(containerName);
       const containerInfo = await container.inspect();
       console.log(`📦 [多开登录] 容器 ${containerName} 已存在`);
+
+      // 如果镜像已更新（同 tag 新 build），必须删除重建，否则容器仍使用旧 imageId
+      if (desiredImageId && containerInfo?.Image && containerInfo.Image !== desiredImageId) {
+        console.log(`🔄 [多开登录] 检测到镜像更新，需要重建容器 ${containerName}`);
+        console.log(`   - 旧: ${containerInfo.Image}`);
+        console.log(`   - 新: ${desiredImageId}`);
+        try {
+          if (containerInfo.State && (containerInfo.State.Running || containerInfo.State.Restarting)) {
+            await container.stop({ t: 10 });
+          }
+          await container.remove();
+          console.log(`✅ [多开登录] 已删除旧镜像容器 ${containerName}，准备重建`);
+          needRecreate = true;
+          container = null;
+        } catch (removeError) {
+          console.error(`❌ [多开登录] 删除旧镜像容器失败: ${removeError.message}`);
+          // 不抛出，后续仍会尝试继续
+        }
+      }
       
       // 如果配置文件从目录修复为文件，需要删除容器并重新创建
       if (needDeleteContainerForConfig) {
@@ -7530,49 +7573,16 @@ async function startMultiLoginContainer(userId) {
       }
     }
     
-    console.log(`✅ [多开登录] 容器 ${containerName} 已启动`);
-    
-    // 等待容器启动并检查状态
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    let isRunningOk = false;
-    try {
-      const finalInfo = await container.inspect();
-      if (finalInfo.State.Running) {
-        isRunningOk = true;
-        console.log(`✅ [多开登录] 容器 ${containerName} 运行正常`);
-        
-        // 验证网络连接
-        if (finalInfo.NetworkSettings && finalInfo.NetworkSettings.Networks) {
-          const connectedNetworks = Object.keys(finalInfo.NetworkSettings.Networks);
-          console.log(`🔗 [多开登录] 容器已连接到网络: ${connectedNetworks.join(', ')}`);
-          if (!connectedNetworks.includes(networkName) && connectedNetworks.length > 0) {
-            console.warn(`⚠️  [多开登录] 容器未连接到预期网络 ${networkName}，实际网络: ${connectedNetworks[0]}`);
-          }
-        } else {
-          console.warn(`⚠️  [多开登录] 容器网络配置异常，无法验证网络连接`);
-        }
-        
-        // 检查容器日志，确认是否成功加载 session
-        const logs = await container.logs({
-          stdout: true,
-          stderr: true,
-          tail: 20
-        });
-        const logText = logs.toString();
-        if (logText.includes('已登录为') || logText.includes('Session 文件不存在')) {
-          console.log(`📋 [多开登录] 容器 ${containerName} 日志摘要: ${logText.split('\n').filter(l => l.includes('已登录') || l.includes('Session')).join('; ')}`);
-        }
-      } else {
-        console.warn(`⚠️  [多开登录] 容器 ${containerName} 未运行，状态: ${finalInfo.State.Status}`);
-      }
-    } catch (checkError) {
-      console.warn(`⚠️  [多开登录] 检查容器状态失败: ${checkError.message}`);
-      isRunningOk = false;
+    console.log(`✅ [多开登录] 容器 ${containerName} 已请求启动`);
+
+    const waited = await waitForContainerRunning(container, 20000);
+    if (!waited.running) {
+      console.warn(`⚠️  [多开登录] 容器 ${containerName} 未运行，状态: ${waited.status}`);
+      return false;
     }
-    
-    // 关键：必须以 Running 为准，否则上层会误判导致把主监听停掉
-    return isRunningOk;
+
+    console.log(`✅ [多开登录] 容器 ${containerName} 运行正常`);
+    return true;
   } catch (error) {
     console.error(`❌ [多开登录] 启动容器失败:`, error);
     return false;
@@ -10005,6 +10015,39 @@ async function initializeMultiLoginContainers() {
   }
 }
 
+// 自动检测 telethon 镜像更新，并触发多开容器重建（无需手动删容器）
+function startTelethonImageAutoUpdater() {
+  const enabled = parseBoolEnv(process.env.MULTI_LOGIN_AUTO_UPDATE_IMAGE, true);
+  if (!enabled) return;
+  const intervalSec = Number(process.env.MULTI_LOGIN_AUTO_UPDATE_INTERVAL_SECONDS || 20);
+  const intervalMs = Math.max(10, isNaN(intervalSec) ? 20 : intervalSec) * 1000;
+
+  let lastImageId = null;
+  setInterval(async () => {
+    try {
+      const Docker = require('dockerode');
+      const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+      const imageName = getDesiredTelethonImageName();
+      const imgInfo = await docker.getImage(imageName).inspect();
+      const currentId = imgInfo?.Id || null;
+      if (!currentId) return;
+      if (!lastImageId) {
+        lastImageId = currentId;
+        return;
+      }
+      if (currentId !== lastImageId) {
+        console.log(`🔄 [多开登录] 检测到 Telethon 镜像更新：${imageName}`);
+        console.log(`   - 旧: ${lastImageId}`);
+        console.log(`   - 新: ${currentId}`);
+        lastImageId = currentId;
+        await initializeMultiLoginContainers();
+      }
+    } catch (e) {
+      // 不影响主流程
+    }
+  }, intervalMs);
+}
+
 // 启动服务器
 // 在 Docker 容器中必须监听 0.0.0.0，否则其他容器无法访问
 app.listen(PORT, '0.0.0.0', () => {
@@ -10012,6 +10055,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📝 默认用户名: admin`);
   console.log(`📝 默认密码: admin123`);
   console.log(`⚠️  请及时修改默认密码！`);
+  // 后台自动检测 telethon 镜像更新，并自动重建多开监听容器
+  startTelethonImageAutoUpdater();
   
   // 启动时初始化多开登录容器（延迟执行，等待数据库连接）
   setTimeout(async () => {
