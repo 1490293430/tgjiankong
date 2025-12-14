@@ -6677,9 +6677,13 @@ async function startMultiLoginContainer(userId) {
     }
     
     // 在检查容器之前，先确保宿主机上的配置文件是文件而不是目录
-    // 注意：后端服务在容器内运行，需要使用 PROJECT_ROOT 环境变量获取宿主机路径
+    // 注意：后端容器挂载 ./backend:/app，所以 __dirname 在容器内是 /app
+    // 写入文件时使用 __dirname（会写入到挂载的目录，即宿主机 ./backend）
+    // 但挂载容器时需要宿主机的绝对路径
     const projectRoot = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
-    const hostConfigPath = path.join(projectRoot, 'backend', `config_${userId}.json`);
+    const hostConfigPath = path.join(__dirname, `config_${userId}.json`);
+    // 计算宿主机的绝对路径用于挂载
+    const hostConfigPathForMount = path.join(projectRoot, 'backend', `config_${userId}.json`);
     
     // 强制检查并修复配置文件
     if (fs.existsSync(hostConfigPath)) {
@@ -7036,10 +7040,12 @@ async function startMultiLoginContainer(userId) {
       // 固定使用项目根目录路径
       const projectRoot = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
       
-      // 构建宿主机路径
-      // 注意：后端服务在容器内运行，__dirname 是容器内的路径
-      // 但挂载时需要宿主机的路径，所以使用 PROJECT_ROOT 环境变量
-      const hostConfigPath = path.join(projectRoot, 'backend', `config_${userId}.json`);
+      // 构建配置文件路径
+      // 注意：后端容器挂载 ./backend:/app，所以 __dirname 在容器内是 /app
+      // 写入文件时使用 __dirname（会写入到挂载的目录，即宿主机 ./backend）
+      // 但挂载容器时需要宿主机的绝对路径
+      const hostConfigPath = path.join(__dirname, `config_${userId}.json`);
+      const hostConfigPathForMount = path.join(projectRoot, 'backend', `config_${userId}.json`);
       const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
       
       // 确保配置文件存在（如果不存在，重新创建）
@@ -7089,6 +7095,13 @@ async function startMultiLoginContainer(userId) {
           };
         }
         
+        // 确保目录存在
+        const hostConfigDir = path.dirname(hostConfigPath);
+        if (!fs.existsSync(hostConfigDir)) {
+          fs.mkdirSync(hostConfigDir, { recursive: true });
+          console.log(`✅ [多开登录] 已创建配置目录: ${hostConfigDir}`);
+        }
+        
         fs.writeFileSync(hostConfigPath, JSON.stringify(userConfigData, null, 2));
         console.log(`✅ [多开登录] 已重新创建配置文件: ${hostConfigPath}`);
       }
@@ -7100,7 +7113,7 @@ async function startMultiLoginContainer(userId) {
       }
       
       console.log(`📂 [多开登录] 使用项目根目录: ${projectRoot}`);
-      console.log(`📂 [多开登录] 挂载路径: config=${hostConfigPath}:/app/config_${userId}.json:ro, session=${sessionHostPath}:${sessionContainerPath}:rw, logs=${hostLogsPath}`);
+      console.log(`📂 [多开登录] 挂载路径: config=${hostConfigPathForMount}:/app/config_${userId}.json:ro, session=${sessionHostPath}:${sessionContainerPath}:rw, logs=${hostLogsPath}`);
       
       // 创建容器
       // 注意：代码在镜像中（通过 Dockerfile COPY），不需要挂载代码目录
@@ -7122,7 +7135,7 @@ async function startMultiLoginContainer(userId) {
         Env: envArray,
         HostConfig: {
           Binds: [
-            `${hostConfigPath}:/app/config_${userId}.json:ro`,
+            `${hostConfigPathForMount}:/app/config_${userId}.json:ro`,
             `${sessionHostPath}:${sessionContainerPath}:rw`,
             `${hostLogsPath}:/app/logs:rw`
           ],
@@ -7158,7 +7171,7 @@ async function startMultiLoginContainer(userId) {
                     Env: envArray,
                     HostConfig: {
                       Binds: [
-                        `${hostConfigPath}:/app/config_${userId}.json:ro`,
+                        `${hostConfigPathForMount}:/app/config_${userId}.json:ro`,
                         `${sessionHostPath}:${sessionContainerPath}:rw`,
                         `${hostLogsPath}:/app/logs:rw`
                       ],
