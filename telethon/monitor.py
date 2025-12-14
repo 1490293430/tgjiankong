@@ -632,6 +632,9 @@ async def handle_config_reload(request):
 # 消息处理器（非阻塞 / 轻量）
 # -----------------------
 async def message_handler(event, client):
+    # 立即记录消息处理开始（确保能看到任何调用）
+    logger.info("🔔 [消息处理] 收到事件，开始处理...")
+    
     # 移除频繁的CPU监控调用，避免每条消息都触发CPU检查导致峰值
     # log_cpu_usage("消息处理开始")
     try:
@@ -645,7 +648,7 @@ async def message_handler(event, client):
 
         text = event.raw_text or ""
         if not text:
-            logger.debug("⏭️  [消息处理] 消息为空，跳过")
+            logger.info("⏭️  [消息处理] 消息为空（可能是媒体消息），跳过文本处理")
             return
         
         # 记录收到消息（INFO级别，便于调试）
@@ -1419,9 +1422,25 @@ async def main():
         import sys
         sys.exit(1)
     
+    # 注册消息处理器
     client.add_event_handler(lambda e: message_handler(e, client), events.NewMessage())
+    logger.info("✅ [事件注册] 已注册 NewMessage 事件处理器")
+    
     me = await client.get_me()
     logger.info("已登录为: %s (ID: %s)", getattr(me, "username", None) or getattr(me, "first_name", None), me.id)
+    
+    # 诊断：列出当前加入的对话（用于调试）
+    try:
+        dialogs = await client.get_dialogs(limit=10)
+        logger.info("📋 [诊断] 当前账号已加入的对话数量: %d (显示前10个)", len(await client.get_dialogs()))
+        for i, dialog in enumerate(dialogs[:5], 1):
+            dialog_name = dialog.name or "Unknown"
+            dialog_id = dialog.id
+            logger.info("📋 [诊断] 对话 %d: %s (ID: %s)", i, dialog_name, dialog_id)
+    except Exception as diag_error:
+        logger.warning("⚠️  [诊断] 获取对话列表失败: %s", str(diag_error))
+    
+    logger.info("📡 [事件监听] 开始监听所有新消息（包括私聊、群组、频道）...")
 
     # 保存Telegram客户端实例用于发送消息
     global telegram_client
