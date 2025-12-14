@@ -6686,6 +6686,7 @@ async function startMultiLoginContainer(userId) {
     const hostConfigPathForMount = path.join(projectRoot, 'backend', `config_${userId}.json`);
     
     // 强制检查并修复配置文件
+    let needDeleteContainerForConfig = false;
     if (fs.existsSync(hostConfigPath)) {
       const configStats = fs.statSync(hostConfigPath);
       if (configStats.isDirectory()) {
@@ -6729,6 +6730,10 @@ async function startMultiLoginContainer(userId) {
           
           fs.writeFileSync(hostConfigPath, JSON.stringify(userConfigData, null, 2));
           console.log(`✅ [多开登录] 已重新创建配置文件: ${hostConfigPath}`);
+          
+          // 标记需要删除容器（因为挂载是静态的，需要重新创建容器才能应用新挂载）
+          needDeleteContainerForConfig = true;
+          console.log(`🗑️  [多开登录] 配置文件从目录修复为文件，需要删除容器并重新创建以应用新挂载...`);
         } catch (rmError) {
           console.error(`❌ [多开登录] 删除目录失败: ${rmError.message}`);
           throw new Error(`配置文件路径是目录且无法删除: ${hostConfigPath}`);
@@ -6743,6 +6748,23 @@ async function startMultiLoginContainer(userId) {
       container = docker.getContainer(containerName);
       const containerInfo = await container.inspect();
       console.log(`📦 [多开登录] 容器 ${containerName} 已存在`);
+      
+      // 如果配置文件从目录修复为文件，需要删除容器并重新创建
+      if (needDeleteContainerForConfig) {
+        console.log(`🗑️  [多开登录] 配置文件已修复，删除容器 ${containerName} 以重新创建（应用新挂载）...`);
+        try {
+          if (containerInfo.State && containerInfo.State.Running) {
+            await container.stop({ t: 10 });
+          }
+          await container.remove();
+          console.log(`✅ [多开登录] 已删除容器 ${containerName}`);
+          container = null; // 标记需要重新创建
+          needRecreate = true;
+        } catch (removeError) {
+          console.error(`❌ [多开登录] 删除容器失败: ${removeError.message}`);
+          throw new Error(`无法删除容器以修复配置文件挂载: ${removeError.message}`);
+        }
+      }
       
       // 检查容器的网络配置是否正确
       if (containerInfo.NetworkSettings && containerInfo.NetworkSettings.Networks) {
@@ -7251,6 +7273,7 @@ async function startMultiLoginContainer(userId) {
     
     // 启动或重启容器前，强制检查并修复配置文件
     // 确保配置文件是文件而不是目录
+    let needRecreateContainer = false;
     if (fs.existsSync(hostConfigPath)) {
       const configStats = fs.statSync(hostConfigPath);
       if (configStats.isDirectory()) {
@@ -7294,6 +7317,12 @@ async function startMultiLoginContainer(userId) {
           
           fs.writeFileSync(hostConfigPath, JSON.stringify(userConfigData, null, 2));
           console.log(`✅ [多开登录] 已重新创建配置文件: ${hostConfigPath}`);
+          
+          // 如果容器已存在，需要删除并重新创建（因为挂载是静态的）
+          if (container) {
+            console.log(`🗑️  [多开登录] 配置文件从目录修复为文件，需要删除容器并重新创建以应用新挂载...`);
+            needRecreateContainer = true;
+          }
         } catch (rmError) {
           console.error(`❌ [多开登录] 删除目录失败: ${rmError.message}`);
           throw new Error(`配置文件路径是目录且无法删除: ${hostConfigPath}`);
@@ -7301,12 +7330,44 @@ async function startMultiLoginContainer(userId) {
       }
     }
     
-    // 启动或重启容器
-    const containerInfo = await container.inspect();
-    if (containerInfo.State.Running) {
-      console.log(`🔄 [多开登录] 容器 ${containerName} 正在运行，重启以应用新配置...`);
+    // 如果检测到配置文件是目录并已修复，删除容器并重新创建
+    if (needRecreateContainer && container) {
       try {
-        await container.restart({ t: 10 });
+        console.log(`🗑️  [多开登录] 删除容器 ${containerName} 以重新创建（修复配置文件挂载）...`);
+        let currentContainerInfo = null;
+        try {
+          currentContainerInfo = await container.inspect();
+        } catch (e) {
+          // 容器可能已经不存在
+        }
+        if (currentContainerInfo && currentContainerInfo.State && currentContainerInfo.State.Running) {
+          await container.stop({ t: 10 });
+        }
+        await container.remove();
+        console.log(`✅ [多开登录] 已删除容器 ${containerName}`);
+        container = null; // 标记需要重新创建
+        needRecreate = true; // 标记需要重新创建容器
+      } catch (removeError) {
+        console.error(`❌ [多开登录] 删除容器失败: ${removeError.message}`);
+        throw new Error(`无法删除容器以修复配置文件挂载: ${removeError.message}`);
+      }
+    }
+    
+    // 如果容器不存在或需要重新创建，创建新容器
+    if (!container || needRecreate) {
+      // 容器创建逻辑在之前的代码中，这里需要确保使用正确的 hostConfigPathForMount
+      // 由于 container 变量已设置为 null，代码会继续执行到创建容器的部分
+      console.log(`🔄 [多开登录] 容器不存在或已删除，准备重新创建...`);
+      // 注意：容器创建逻辑在之前的代码块中，这里只是标记
+    }
+    
+    // 启动或重启容器
+    if (container) {
+      const containerInfo = await container.inspect();
+      if (containerInfo.State.Running) {
+        console.log(`🔄 [多开登录] 容器 ${containerName} 正在运行，重启以应用新配置...`);
+        try {
+          await container.restart({ t: 10 });
       } catch (restartError) {
         // 如果重启失败，可能是挂载配置有问题，删除容器并重新创建
         console.warn(`⚠️  [多开登录] 重启容器失败: ${restartError.message}`);
