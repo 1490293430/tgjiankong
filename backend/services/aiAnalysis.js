@@ -10,6 +10,9 @@ class AIAnalysisService {
     this.model = config.openai_model || 'gpt-3.5-turbo';
     this.baseUrl = config.openai_base_url || 'https://api.openai.com/v1';
     this.prompt = config.analysis_prompt || '请分析以下消息';
+    // 调试日志开关：默认关闭，避免高吞吐时 CPU 花在字符串处理/打印上
+    // 可通过环境变量 AI_ANALYSIS_DEBUG_LOGS=true 打开
+    this.debugLogs = String(process.env.AI_ANALYSIS_DEBUG_LOGS || '').toLowerCase() === 'true';
   }
 
   /**
@@ -126,7 +129,9 @@ class AIAnalysisService {
       // 检查内容是否为空
       if (!content || content.trim().length === 0) {
         console.error(`❌ [AI解析] API返回内容为空`);
-        console.error(`❌ [AI解析] 完整响应:`, JSON.stringify(response.data, null, 2));
+        if (this.debugLogs) {
+          console.error(`❌ [AI解析] 完整响应:`, JSON.stringify(response.data, null, 2));
+        }
         
         // 检查是否有 finish_reason
         const finishReason = response.data.choices?.[0]?.finish_reason;
@@ -147,7 +152,9 @@ class AIAnalysisService {
         throw new Error('AI API 返回内容为空，可能是 API 配置问题或模型响应异常');
       }
       
-      console.log(`✅ [AI解析] 收到内容，长度: ${content.length} 字符`);
+      if (this.debugLogs) {
+        console.log(`✅ [AI解析] 收到内容，长度: ${content.length} 字符`);
+      }
       
       // 尝试解析 JSON
       let analysisResult;
@@ -185,8 +192,10 @@ class AIAnalysisService {
         // 3. 尝试修复单引号（只在键名和字符串值中使用，但要小心处理）
         // 先尝试直接解析，如果失败再尝试修复单引号
         
-        console.log(`🔍 [AI解析] 原始内容长度: ${content.length}, 清理后长度: ${cleanContent.length}`);
-        console.log(`🔍 [AI解析] 清理后的内容前500字符: ${cleanContent.substring(0, 500)}`);
+        if (this.debugLogs) {
+          console.log(`🔍 [AI解析] 原始内容长度: ${content.length}, 清理后长度: ${cleanContent.length}`);
+          console.log(`🔍 [AI解析] 清理后的内容前500字符: ${cleanContent.substring(0, 500)}`);
+        }
         
         // 尝试解析JSON
         try {
@@ -225,7 +234,9 @@ class AIAnalysisService {
             
             try {
               analysisResult = JSON.parse(extractedJson);
-              console.log(`✅ [AI解析] 修复后JSON解析成功`);
+              if (this.debugLogs) {
+                console.log(`✅ [AI解析] 修复后JSON解析成功`);
+              }
             } catch (secondParseError) {
               // 如果还是失败，尝试最后一个方法：提取所有可能的字段
               console.warn(`⚠️  [AI解析] 修复后仍然失败: ${secondParseError.message}`);
@@ -236,7 +247,9 @@ class AIAnalysisService {
           }
         }
         
-        console.log(`✅ [AI解析] JSON解析成功，字段: ${Object.keys(analysisResult).join(', ')}`);
+        if (this.debugLogs) {
+          console.log(`✅ [AI解析] JSON解析成功，字段: ${Object.keys(analysisResult).join(', ')}`);
+        }
         
         // 标准化 sentiment 值（支持中英文）
         if (analysisResult.sentiment) {
@@ -348,11 +361,15 @@ class AIAnalysisService {
         // 保存原始响应
         analysisResult.raw_response = content;
         
-        console.log(`✅ [AI解析] 解析结果 - sentiment: ${analysisResult.sentiment}, risk_level: ${analysisResult.risk_level}, summary长度: ${analysisResult.summary?.length || 0}`);
+        if (this.debugLogs) {
+          console.log(`✅ [AI解析] 解析结果 - sentiment: ${analysisResult.sentiment}, risk_level: ${analysisResult.risk_level}, summary长度: ${analysisResult.summary?.length || 0}`);
+        }
       } catch (parseError) {
         // 如果 JSON 解析失败，尝试从原始文本中提取摘要
         console.error(`❌ [AI解析] JSON解析失败: ${parseError.message}`);
-        console.error(`❌ [AI解析] 原始内容前1000字符: ${content.substring(0, 1000)}`);
+        if (this.debugLogs) {
+          console.error(`❌ [AI解析] 原始内容前1000字符: ${content.substring(0, 1000)}`);
+        }
         
         // 尝试从文本中提取结构化信息
         let extractedSummary = '';

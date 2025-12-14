@@ -104,6 +104,9 @@ http_session: Optional[aiohttp.ClientSession] = None
 CONFIG_CACHE: Dict[str, Any] = {}
 CONFIG_MTIME = 0.0
 COMPILED_ALERT_REGEX: List[re.Pattern] = []
+KEYWORDS_LC: List[str] = []
+ALERT_KEYWORDS_LC: List[str] = []
+MONITORED_CHANNELS_SET: set = set()
 
 # async semaphores to limit concurrency for heavy tasks
 ai_semaphore = asyncio.Semaphore(AI_CONCURRENCY)
@@ -111,6 +114,10 @@ alert_semaphore = asyncio.Semaphore(ALERT_CONCURRENCY)
 
 # shutdown event
 SHUTDOWN = asyncio.Event()
+
+# sender 显示名缓存（减少高频消息下重复 get_entity / GetFullUserRequest 的 CPU/网络开销）
+SENDER_CACHE_TTL_SEC = float(os.getenv("SENDER_CACHE_TTL_SEC", "3600"))  # 1小时
+_SENDER_DISPLAY_CACHE: Dict[str, Any] = {}  # sender_id(str) -> {"sender": str, "ts": float}
 
 
 # CPU监控 - 使用缓存减少开销，避免频繁调用导致CPU峰值
@@ -175,6 +182,8 @@ def default_config():
         "alert_regex": [],
         "alert_target": "me",
         "log_all_messages": True,
+        # 控制每条消息的详细调试日志（默认关闭，避免高吞吐时 CPU 被日志打满）
+        "debug_verbose_message_logs": False,
         "ai_analysis": {
             "ai_trigger_enabled": False,
             "ai_trigger_users": []
@@ -190,6 +199,7 @@ def load_config_sync():
        We cache result in CONFIG_CACHE for message handler to use without IO.
     """
     global CONFIG_CACHE, CONFIG_MTIME, COMPILED_ALERT_REGEX, CONFIG_PATH
+    global KEYWORDS_LC, ALERT_KEYWORDS_LC, MONITORED_CHANNELS_SET
     try:
         # 记录正在加载的配置文件路径
         logger.info("🔍 [配置加载] 开始加载配置文件: %s", CONFIG_PATH)
@@ -254,6 +264,11 @@ def load_config_sync():
                     len(CONFIG_CACHE.get("alert_keywords", [])),
                     len(COMPILED_ALERT_REGEX),
                     len(CONFIG_CACHE.get("channels", [])))
+
+        # 预计算：lowercase 关键词 + 频道集合（避免每条消息重复 lower/遍历/转换）
+        KEYWORDS_LC = [k.lower() for k in (CONFIG_CACHE.get("keywords") or []) if k and str(k).strip()]
+        ALERT_KEYWORDS_LC = [k.lower() for k in (CONFIG_CACHE.get("alert_keywords") or []) if k and str(k).strip()]
+        MONITORED_CHANNELS_SET = set((CONFIG_CACHE.get("channels") or []))
         
         # 详细日志：显示关键词内容（仅在有关键词时）
         if CONFIG_CACHE.get("keywords"):
@@ -512,8 +527,18 @@ async def trigger_ai_analysis_async(sender_id, client, log_id=None):
 async def notify_new_message_async(log_id, channel, channel_id, sender, message, keywords, alerted):
     """通知后端有新消息，触发SSE推送（非阻塞，不等待结果）"""
     try:
+        # 尽量把 userId 一并传给后端，避免后端每条消息都 Log.findById 查 userId（高 CPU/IO）
+        user_id_str = None
+        if USER_ID:
+            user_id_str = USER_ID
+        else:
+            cfg = CONFIG_CACHE or default_config()
+            if cfg.get("user_id"):
+                user_id_str = str(cfg.get("user_id"))
+
         payload = {
             "log_id": log_id,
+            "userId": user_id_str,
             "channel": channel,
             "channelId": str(channel_id),
             "sender": sender,
@@ -678,8 +703,8 @@ async def handle_config_reload(request):
 # 消息处理器（非阻塞 / 轻量）
 # -----------------------
 async def message_handler(event, client):
-    # 立即记录消息处理开始（确保能看到任何调用）
-    logger.info("🔔 [消息处理] 收到事件，开始处理...")
+    # 默认不在 INFO 打每条消息日志（高吞吐时非常吃 CPU），仅在 debug_verbose_message_logs 开启时输出
+    # logger.info("🔔 [消息处理] 收到事件，开始处理...")
     
     # 移除频繁的CPU监控调用，避免每条消息都触发CPU检查导致峰值
     # log_cpu_usage("消息处理开始")
@@ -691,14 +716,19 @@ async def message_handler(event, client):
         # use cached config only (no IO here)
         config = CONFIG_CACHE or default_config()
         log_all = bool(config.get("log_all_messages", True))
+        verbose_logs = bool(config.get("debug_verbose_message_logs", False))
 
         text = event.raw_text or ""
         if not text:
-            logger.info("⏭️  [消息处理] 消息为空（可能是媒体消息），跳过文本处理")
+            if verbose_logs:
+                logger.info("⏭️  [消息处理] 消息为空（可能是媒体消息），跳过文本处理")
             return
-        
-        # 记录收到消息（INFO级别，便于调试）
-        logger.info("📨 [消息接收] 收到新消息，长度: %d 字符", len(text))
+
+        # 降 CPU：只做一次 lower，后续关键词匹配复用
+        text_lc = text.lower()
+
+        if verbose_logs:
+            logger.info("📨 [消息接收] 收到新消息，长度: %d 字符", len(text))
 
         chat = await event.get_chat()
         channel_id = str(chat.id)
@@ -736,26 +766,18 @@ async def message_handler(event, client):
         except Exception:
             pass
 
-        # check channel filter
-        monitored_channels = config.get("channels", []) or []
-        channel_id_int = chat.id
-        channel_id_str = str(channel_id_int)
-        
-        if monitored_channels:
-            logger.info("🔍 [频道过滤] 配置了频道过滤，监控列表: %s", monitored_channels)
-            logger.info("🔍 [频道过滤] 当前频道: %s (ID: %s, 类型: %s)", channel_name, channel_id_str, type(channel_id_int).__name__)
-            # 同时检查字符串和整数格式的 channel_id（因为配置中可能是整数或字符串）
-            if channel_id_str not in monitored_channels and channel_id_int not in monitored_channels:
-                # 也检查字符串格式的 channel_id（处理负数频道ID，如 -1001234567890）
-                if str(channel_id_int) not in [str(c) for c in monitored_channels]:
+        # check channel filter（channels 在 load_config_sync 已 normalize 为字符串）
+        channel_id_str = str(chat.id)
+        if MONITORED_CHANNELS_SET:
+            if channel_id_str not in MONITORED_CHANNELS_SET:
+                if verbose_logs:
                     logger.info("⏭️  [频道过滤] 频道 %s (ID: %s) 不在监控列表中，跳过消息", channel_name, channel_id_str)
-                    return
-            logger.info("✅ [频道过滤] 频道 %s (ID: %s) 在监控列表中，继续处理", channel_name, channel_id_str)
-        else:
-            logger.info("🔍 [频道过滤] 未配置频道过滤，监控所有频道")
+                return
+            if verbose_logs:
+                logger.info("✅ [频道过滤] 频道 %s (ID: %s) 在监控列表中，继续处理", channel_name, channel_id_str)
 
-        # sender info
-        # 先获取 sender 基本信息
+        # sender info（带缓存）
+        # 先获取 sender 基本信息（用于后续 AI 触发用户匹配：可能需要 username/姓名）
         sender_entity = None
         try:
             sender_entity = await event.get_sender()
@@ -767,8 +789,21 @@ async def message_handler(event, client):
         if not sender_id:
             sender_id = getattr(event, "sender_id", None)
 
-        # 如果缺少姓名信息且有 sender_id，再尝试拉取完整实体以补全 first_name/last_name
-        if sender_id and (not sender_entity or (not getattr(sender_entity, "first_name", None) and not getattr(sender_entity, "last_name", None))):
+        # 命中缓存则直接使用显示名，并跳过昂贵的补全请求（get_entity / GetFullUserRequest）
+        import time as _time
+        sender = None
+        cached_hit = False
+        if sender_id:
+            cache_key = str(sender_id)
+            cached = _SENDER_DISPLAY_CACHE.get(cache_key)
+            if cached and (_time.time() - float(cached.get("ts", 0))) < SENDER_CACHE_TTL_SEC:
+                sender = cached.get("sender") or str(sender_id)
+                cached_hit = True
+                if verbose_logs:
+                    logger.debug("♻️  [发件人缓存] 命中 sender_id=%s => %s", sender_id, sender)
+
+        # 如果缺少姓名信息且有 sender_id，再尝试拉取完整实体以补全 first_name/last_name（仅在未命中缓存时）
+        if (not cached_hit) and sender_id and (not sender_entity or (not getattr(sender_entity, "first_name", None) and not getattr(sender_entity, "last_name", None))):
             try:
                 detailed_entity = await client.get_entity(sender_id)
                 sender_entity = sender_entity or detailed_entity
@@ -801,8 +836,8 @@ async def message_handler(event, client):
             except Exception:
                 pass
 
-        # 如果依然缺少姓名，最后尝试一次 GetFullUserRequest 获取联系人显示名
-        if sender_id and not first_name and not last_name:
+        # 如果依然缺少姓名，最后尝试一次 GetFullUserRequest 获取联系人显示名（仅在未命中缓存时）
+        if (not cached_hit) and sender_id and not first_name and not last_name:
             try:
                 from telethon.tl.functions.users import GetFullUserRequest
                 full = await client(GetFullUserRequest(sender_id))
@@ -816,18 +851,28 @@ async def message_handler(event, client):
         full_name = " ".join([n for n in [first_name, last_name] if n]) if (first_name or last_name) else None
 
         # 显示规则：有姓名就只显示姓名；没有姓名才显示 @username（不加括号附带）
-        if full_name:
-            sender = full_name
-        elif username:
-            sender = f"@{username}"
-        elif sender_id:
-            sender = str(sender_id)
+        # 如果命中缓存，保留缓存的 sender 显示名（避免覆盖）
+        if not cached_hit:
+            if full_name:
+                sender = full_name
+            elif username:
+                sender = f"@{username}"
+            elif sender_id:
+                sender = str(sender_id)
+            else:
+                sender = channel_name
         else:
-            sender = channel_name
+            # 缓存兜底：确保 sender 不是空
+            sender = sender or (str(sender_id) if sender_id else channel_name)
 
-        # 记录发件人解析详情，便于排查显示问题
-        logger.info("🔍 [发件人解析] sender_id=%s username=%s first_name=%s last_name=%s => sender=%s",
-                    sender_id, username, first_name, last_name, sender)
+        # 写入缓存（只缓存有 sender_id 的情况）
+        if sender_id:
+            _SENDER_DISPLAY_CACHE[str(sender_id)] = {"sender": sender, "ts": _time.time()}
+
+        # 记录发件人解析详情（默认只在 verbose_logs 时输出）
+        if verbose_logs:
+            logger.info("🔍 [发件人解析] sender_id=%s username=%s first_name=%s last_name=%s => sender=%s",
+                        sender_id, username, first_name, last_name, sender)
 
         # ai trigger users normalize
         ai_analysis_config = config.get("ai_analysis", {})
@@ -871,55 +916,51 @@ async def message_handler(event, client):
                 if is_trigger_user:
                     break
 
-        # keyword checks (cheap)
+        # keyword checks
         keywords_list = config.get("keywords") or []
         alert_keywords_list = config.get("alert_keywords") or []
-        
-        # 记录每条消息的关键词检查过程（INFO级别，便于调试）
-        logger.info("🔍 [消息处理] 频道: %s, 发送者: %s, 消息长度: %d", channel_name, sender, len(text))
-        logger.info("🔍 [关键词检查] 监控关键词: %s, 告警关键词: %s", keywords_list, alert_keywords_list)
+        if verbose_logs:
+            logger.info("🔍 [消息处理] 频道: %s, 发送者: %s, 消息长度: %d", channel_name, sender, len(text))
         
         matched_keywords = []
         # 检查监控关键词
-        for k in keywords_list:
-            if k and k.strip() and k.lower() in text.lower():
-                matched_keywords.append(k)
-                logger.info("✅ [关键词匹配] 匹配到监控关键词: %s", k)
+        # 使用预计算的 KEYWORDS_LC，避免每条消息重复 lower + 遍历转换
+        if KEYWORDS_LC:
+            for idx, k_lc in enumerate(KEYWORDS_LC):
+                if k_lc and k_lc in text_lc:
+                    # 尽量返回原始关键词（同下标），兜底返回 lower 版本
+                    try:
+                        matched_keywords.append((keywords_list[idx] if idx < len(keywords_list) else k_lc))
+                    except Exception:
+                        matched_keywords.append(k_lc)
 
         # alert keywords (first-match)
         alert_keyword = None
-        if alert_keywords_list:
-            logger.info("🔍 [关键词检查] 告警关键词列表: %s", alert_keywords_list)
-        for keyword in alert_keywords_list:
-            if keyword and keyword.strip() and keyword.lower() in text.lower():
-                alert_keyword = keyword
-                if keyword not in matched_keywords:
-                    matched_keywords.append(keyword)
-                logger.info("🔔 [告警关键词匹配] 匹配到告警关键词: %s (消息片段: %s)", keyword, text[:100])
-                break
+        if ALERT_KEYWORDS_LC:
+            for idx, kw_lc in enumerate(ALERT_KEYWORDS_LC):
+                if kw_lc and kw_lc in text_lc:
+                    alert_keyword = (alert_keywords_list[idx] if idx < len(alert_keywords_list) else kw_lc)
+                    if alert_keyword not in matched_keywords:
+                        matched_keywords.append(alert_keyword)
+                    break
 
         # compiled regex (precompiled at config load)
         if not alert_keyword and COMPILED_ALERT_REGEX:
-            logger.debug("🔍 [关键词检查] 检查告警正则表达式 (%d 个)", len(COMPILED_ALERT_REGEX))
             for pattern in COMPILED_ALERT_REGEX:
                 if pattern.search(text):
                     alert_keyword = pattern.pattern
                     matched_keywords.append(f"regex:{pattern.pattern}")
-                    logger.info("🔔 [告警正则匹配] 匹配到告警正则: %s", pattern.pattern)
                     break
 
         # save log if needed (async)
         if matched_keywords:
-            logger.info("✅ [关键词匹配] 匹配到关键词: %s", matched_keywords)
-        elif keywords_list or alert_keywords_list:
-            logger.info("⏭️  [关键词匹配] 未匹配到任何关键词（监控关键词: %d 个, 告警关键词: %d 个）", 
-                       len(keywords_list), len(alert_keywords_list))
+            logger.info("✅ [关键词匹配] 频道=%s 发送者=%s 命中=%s", channel_name, sender, matched_keywords)
         
         if matched_keywords or log_all:
             log_id = await save_log_async(channel_name, channel_id, sender, text, matched_keywords or [], event.id)
             if matched_keywords:
                 logger.info("监控触发 | %s | %s", channel_name, matched_keywords)
-            elif log_all:
+            elif log_all and verbose_logs:
                 logger.info("已记录消息（全量）| %s", channel_name)
 
             # 通知后端有新消息（触发SSE推送）
@@ -937,7 +978,7 @@ async def message_handler(event, client):
             # send alert (async)
             # 告警发送统一通过后端API处理，包括Telegram、邮件、Webhook等
             if alert_keyword:
-                logger.info("🔔 [告警触发] 检测到告警关键词: %s，准备发送告警 (频道: %s, 发送者: %s)", alert_keyword, channel_name, sender)
+                logger.info("🔔 [告警触发] 关键词: %s (频道: %s, 发送者: %s)", alert_keyword, channel_name, sender)
                 asyncio.create_task(send_alert_async(alert_keyword, text, sender, channel_name, channel_id, event.id))
     except Exception:
         logger.exception("处理消息失败")

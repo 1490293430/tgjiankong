@@ -66,5 +66,8 @@ logSchema.index({ time: -1 });
 logSchema.index({ channelId: 1 });
 logSchema.index({ keywords: 1 });
 logSchema.index({ ai_analyzed: 1 });
+// AI 分析/计数触发常用查询：按用户过滤未分析消息，并结合清除冷却窗口
+// 复合索引可显著减少 count/find 扫描带来的 CPU/IO
+logSchema.index({ userId: 1, ai_analyzed: 1, ai_cleared_at: 1, time: -1 });
 
 module.exports = mongoose.model('Log', logSchema);

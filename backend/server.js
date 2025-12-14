@@ -373,6 +373,10 @@ async function saveUserConfig(userId, configData) {
     
     // 清除缓存，确保下次读取时获取最新配置
     userConfigCache.delete(`user_config_${userIdStr}`);
+
+    // 事件驱动：配置变更后刷新 count 触发配置缓存（防抖），并对该用户做一次轻量对账
+    // 这样可以避免后台定时器周期性查库
+    scheduleCountTriggerConfigRefresh(userIdStr);
     
     console.log(`✅ 用户配置已保存到数据库 (userId: ${userId})`);
     return userConfig;
@@ -4673,11 +4677,11 @@ app.delete('/api/backup/:backupName', authMiddleware, async (req, res) => {
 // 用于在 Telethon 直接保存消息到 MongoDB 后，通知前端有新消息
 app.post('/api/internal/message-notify', async (req, res) => {
   try {
-    const { log_id, channel, channelId, sender, message, keywords, time, alerted } = req.body;
+    const { log_id, userId: bodyUserId, channel, channelId, sender, message, keywords, time, alerted } = req.body;
     
     // 从log_id获取userId
-    let userId = null;
-    if (log_id) {
+    let userId = bodyUserId || null;
+    if (!userId && log_id) {
       try {
         const log = await Log.findById(log_id);
         if (log && log.userId) {
@@ -4704,41 +4708,9 @@ app.post('/api/internal/message-notify', async (req, res) => {
     // 推送统计更新事件（只推送给该用户）
     broadcastEvent('stats_updated', { userId: userId }, userId);
     
-    // 如果启用了消息数量阈值触发，立即检查是否达到阈值
+    // 事件驱动计数触发：不再对每条消息执行 countDocuments（高 CPU/IO）
     if (userId) {
-      try {
-        const userConfig = await loadUserConfig(userId);
-        const config = userConfig.toObject ? userConfig.toObject() : userConfig;
-        
-        // 添加调试日志
-        console.log(`🔍 [消息通知] 检查AI分析触发 - userId: ${userId}, enabled: ${config.ai_analysis?.enabled}, trigger_type: ${config.ai_analysis?.analysis_trigger_type}`);
-        
-        if (config.ai_analysis?.enabled && config.ai_analysis.analysis_trigger_type === 'count') {
-          const threshold = Number(config.ai_analysis.message_count_threshold) || 50;
-          const userIdObj = new mongoose.Types.ObjectId(userId);
-          const unanalyzedCount = await Log.countDocuments({ 
-            userId: userIdObj,
-            ai_analyzed: false 
-          });
-          
-          console.log(`🔍 [消息通知] 消息计数检查 - userId: ${userId}, 阈值: ${threshold} (类型: ${typeof threshold}), 未分析数量: ${unanalyzedCount} (类型: ${typeof unanalyzedCount})`);
-          
-          // 确保阈值和数量都是数字类型进行比较
-          if (Number(unanalyzedCount) >= Number(threshold)) {
-            console.log(`📊 [消息通知触发] 用户 ${userId} 未分析消息达到阈值 ${threshold}（当前: ${unanalyzedCount}），立即触发 AI 分析`);
-            // 异步触发，不阻塞响应
-            performAIAnalysis('count', null, userId).catch(err => {
-              console.error(`❌ [消息通知触发] 触发 AI 分析失败:`, err.message);
-            });
-          } else {
-            console.log(`⏸️  [消息通知] 用户 ${userId} 未分析消息 ${unanalyzedCount} < 阈值 ${threshold}，未触发`);
-          }
-        }
-      } catch (err) {
-        // 详细错误日志
-        console.error('❌ 检查消息数量阈值失败:', err.message);
-        console.error('错误堆栈:', err.stack);
-      }
+      handleCountTriggerOnNewMessage(String(userId)).catch(() => {});
     }
     
     // 清除统计缓存（如果有userId，只清除该用户的缓存；否则清除所有）
@@ -9379,10 +9351,172 @@ app.get('/health', (req, res) => {
 });
 
 // ===== AI 分析功能 =====
-// AI分析定时器（保留以兼容性，但不再使用全局定时器，改为每个用户独立定时器）
-let aiAnalysisTimer = null; 
-const userAITimers = new Map(); // 存储每个用户的定时器
+// AI分析定时器：
+// - 旧实现：每个用户一个 setInterval（用户多时会形成定时器风暴，CPU 峰值明显）
+// - 新实现：单一调度器 tick 扫描“到期用户”，并为自动触发加全局并发上限，降低 CPU 峰值
+let aiAnalysisTimer = null;
+let aiTimeSchedulerTimer = null;
+const aiTimeSchedules = new Map(); // userId -> { intervalMs, nextAt, username }
 const analyzingLocks = new Map(); // 防止重复提交：存储正在分析的用户ID和触发类型
+
+// 自动触发（time/count）全局并发限制：避免同时跑太多 AI 分析把 CPU 顶满
+const AI_AUTO_CONCURRENCY = Math.max(1, Number(process.env.AI_AUTO_CONCURRENCY || 2));
+let aiAutoRunning = 0;
+const aiAutoWaiters = [];
+function acquireAIAutoSlot() {
+  return new Promise((resolve) => {
+    const grant = () => {
+      aiAutoRunning += 1;
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        aiAutoRunning = Math.max(0, aiAutoRunning - 1);
+        const next = aiAutoWaiters.shift();
+        if (next) next();
+      });
+    };
+    if (aiAutoRunning < AI_AUTO_CONCURRENCY) {
+      grant();
+    } else {
+      aiAutoWaiters.push(grant);
+    }
+  });
+}
+
+// 事件驱动的“计数触发”状态（避免每条消息 countDocuments / 每分钟扫库）
+const countTriggerConfigMap = new Map(); // userId -> { threshold, username }
+const countTriggerCounters = new Map(); // userId -> currentCount
+const countTriggerReconcileTimers = new Map(); // userId -> timeoutId
+let countTriggerConfigRefreshDebounceTimer = null;
+
+function scheduleCountTriggerConfigRefresh(userIdStr = null, delayMs = 800) {
+  // 防抖：短时间内多次保存配置只触发一次刷新
+  if (countTriggerConfigRefreshDebounceTimer) clearTimeout(countTriggerConfigRefreshDebounceTimer);
+  countTriggerConfigRefreshDebounceTimer = setTimeout(async () => {
+    countTriggerConfigRefreshDebounceTimer = null;
+    await refreshCountTriggerConfigs();
+    // 配置变更后对该用户做一次轻量对账（如果该用户仍启用 count 触发）
+    if (userIdStr) {
+      await reconcileCountTriggerUserOnce(String(userIdStr));
+    }
+  }, Math.max(200, delayMs));
+}
+
+async function refreshCountTriggerConfigs() {
+  try {
+    const configs = await UserConfig.find({
+      'ai_analysis.enabled': true,
+      'ai_analysis.analysis_trigger_type': 'count'
+    }).select('userId ai_analysis.message_count_threshold').lean();
+
+    if (!configs || configs.length === 0) {
+      countTriggerConfigMap.clear();
+      return;
+    }
+
+    const userIds = configs.map(c => c.userId).filter(Boolean);
+    const activeUsers = await User.find({ is_active: true, _id: { $in: userIds } })
+      .select('_id username')
+      .lean();
+    const activeUserMap = new Map(activeUsers.map(u => [u._id.toString(), u]));
+
+    countTriggerConfigMap.clear();
+    for (const cfg of configs) {
+      const userIdStr = (cfg.userId || '').toString();
+      const user = activeUserMap.get(userIdStr);
+      if (!user) continue;
+      const threshold = Math.max(1, Number(cfg?.ai_analysis?.message_count_threshold) || 50);
+      countTriggerConfigMap.set(userIdStr, { threshold, username: user.username });
+      if (!countTriggerCounters.has(userIdStr)) countTriggerCounters.set(userIdStr, 0);
+    }
+  } catch (e) {
+    // 刷新失败不影响主流程；沿用旧配置
+  }
+}
+
+async function recheckAndRetriggerIfBacklog(userIdStr, threshold) {
+  // 只在触发后做一次快速复查，避免 backlog 很大却只触发一次
+  try {
+    const userIdObj = new mongoose.Types.ObjectId(userIdStr);
+    const clearCooldownTime = new Date(Date.now() - 5 * 60 * 1000);
+    const docs = await Log.find({
+      userId: userIdObj,
+      ai_analyzed: false,
+      $or: [
+        { ai_cleared_at: null },
+        { ai_cleared_at: { $lt: clearCooldownTime } }
+      ]
+    }).limit(threshold).select('_id').lean();
+
+    if (docs.length >= threshold) {
+      let release = null;
+      try {
+        release = await acquireAIAutoSlot();
+        await performAIAnalysis('count', null, userIdStr);
+      } finally {
+        if (release) release();
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+async function reconcileCountTriggerUserOnce(userIdStr) {
+  const cfg = countTriggerConfigMap.get(userIdStr);
+  if (!cfg) return;
+  await recheckAndRetriggerIfBacklog(userIdStr, cfg.threshold);
+}
+
+async function reconcileAllCountTriggersOnce() {
+  for (const userIdStr of countTriggerConfigMap.keys()) {
+    // 串行对账：每个用户只是一个 limit(threshold) 轻量查询；串行更稳，不制造峰值
+    // 真正触发 AI 分析仍会走全局并发限制
+    await reconcileCountTriggerUserOnce(userIdStr);
+  }
+}
+
+function scheduleCountTriggerReconcileOnce(userIdStr, delayMs = 30000) {
+  // 防抖：同一用户只保留一个对账计时器
+  const prev = countTriggerReconcileTimers.get(userIdStr);
+  if (prev) clearTimeout(prev);
+  const t = setTimeout(() => {
+    countTriggerReconcileTimers.delete(userIdStr);
+    reconcileCountTriggerUserOnce(userIdStr).catch(() => {});
+  }, Math.max(1000, delayMs));
+  countTriggerReconcileTimers.set(userIdStr, t);
+}
+
+async function handleCountTriggerOnNewMessage(userIdStr) {
+  const cfg = countTriggerConfigMap.get(userIdStr);
+  if (!cfg) return;
+
+  const threshold = cfg.threshold;
+  const current = (countTriggerCounters.get(userIdStr) || 0) + 1;
+  if (current < threshold) {
+    countTriggerCounters.set(userIdStr, current);
+    return;
+  }
+
+  // 达到阈值：计数归零并异步触发分析（不阻塞请求）
+  countTriggerCounters.set(userIdStr, 0);
+  console.log(`📊 [事件计数触发] 用户 ${cfg.username || userIdStr} 达到阈值 ${threshold}，触发 AI 分析`);
+
+  (async () => {
+    let release = null;
+    try {
+      release = await acquireAIAutoSlot();
+      await performAIAnalysis('count', null, userIdStr);
+    } catch (e) {
+      // 触发失败：安排一次性延迟对账，避免漏触发（不做周期轮询）
+      scheduleCountTriggerReconcileOnce(userIdStr, 30000);
+    } finally {
+      if (release) release();
+    }
+    await recheckAndRetriggerIfBacklog(userIdStr, threshold);
+  })();
+}
 
 // 执行 AI 批量分析
 async function performAIAnalysis(triggerType = 'manual', logId = null, userId = null) {
@@ -9458,27 +9592,25 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
       // 这样可以避免多个触发源同时分析相同的消息
       const analysisCooldownTime = new Date(Date.now() - 30000); // 30秒前
       
-      const query = Log.find({ 
+      const baseFilter = { 
         userId: userIdObj, 
         ai_analyzed: false,
         $or: [
           { ai_cleared_at: null }, // 从未被清除过
           { ai_cleared_at: { $lt: clearCooldownTime } } // 或者清除时间已经超过5分钟
         ]
-      }).sort({ time: -1 }).limit(maxMessages);
-      unanalyzedMessages = await query;
-      
-      // 检查是否有更多未分析的消息（排除最近被清除的消息）
-      const totalUnanalyzed = await Log.countDocuments({ 
-        userId: userIdObj, 
-        ai_analyzed: false,
-        $or: [
-          { ai_cleared_at: null },
-          { ai_cleared_at: { $lt: clearCooldownTime } }
-        ]
-      });
-      if (totalUnanalyzed > maxMessages) {
-        console.log(`⚠️  未分析消息总数: ${totalUnanalyzed}，但只分析最近 ${maxMessages} 条（受最大消息数限制）`);
+      };
+
+      // CPU/IO 优化：不用 countDocuments 全量计数；改为 limit(max+1) 判断是否还有更多
+      const docs = await Log.find(baseFilter)
+        .sort({ time: -1 })
+        .limit(maxMessages + 1);
+
+      const hasMore = docs.length > maxMessages;
+      unanalyzedMessages = hasMore ? docs.slice(0, maxMessages) : docs;
+
+      if (hasMore) {
+        console.log(`⚠️  未分析消息超过 ${maxMessages}，仅分析最近 ${maxMessages} 条（受最大消息数限制）`);
         console.log(`💡 提示：可以调整"最大消息数"配置，或分批手动分析`);
       }
       
@@ -9648,59 +9780,78 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
 
 // 启动 AI 分析定时器（为所有启用了AI的用户执行）
 async function startAIAnalysisTimer() {
-  // 清除所有现有定时器（包括旧的全局定时器）
+  // 清除所有现有定时器/调度器
   if (aiAnalysisTimer) {
     clearInterval(aiAnalysisTimer);
     aiAnalysisTimer = null;
   }
-  userAITimers.forEach((timer) => clearInterval(timer));
-  userAITimers.clear();
+  if (aiTimeSchedulerTimer) {
+    clearInterval(aiTimeSchedulerTimer);
+    aiTimeSchedulerTimer = null;
+  }
+  aiTimeSchedules.clear();
   
   try {
-    const users = await User.find({ is_active: true });
-    
-    for (const user of users) {
-      try {
-        const userConfig = await loadUserConfig(user._id);
-        const config = userConfig.toObject ? userConfig.toObject() : userConfig;
-        
-        console.log(`🔍 [定时器启动] 用户: ${user.username}, enabled: ${config.ai_analysis?.enabled}, trigger_type: ${config.ai_analysis?.analysis_trigger_type}`);
-        
-        if (!config.ai_analysis?.enabled || config.ai_analysis.analysis_trigger_type !== 'time') {
-          console.log(`⏭️  [定时器启动] 用户 ${user.username} 未启用时间间隔触发的AI分析，跳过`);
-          continue;
+    // 只筛选启用了 time 触发的用户配置，避免对所有 active 用户逐个 loadUserConfig
+    const timeConfigs = await UserConfig.find({
+      'ai_analysis.enabled': true,
+      'ai_analysis.analysis_trigger_type': 'time'
+    }).select('userId ai_analysis.time_interval_minutes').lean();
+
+    if (!timeConfigs || timeConfigs.length === 0) {
+      console.log('ℹ️  没有用户启用时间间隔触发的AI分析');
+      return;
+    }
+
+    const userIds = timeConfigs.map(c => c.userId).filter(Boolean);
+    const activeUsers = await User.find({ is_active: true, _id: { $in: userIds } })
+      .select('_id username')
+      .lean();
+    const activeUserMap = new Map(activeUsers.map(u => [u._id.toString(), u]));
+
+    for (const cfg of timeConfigs) {
+      const userIdStr = (cfg.userId || '').toString();
+      const user = activeUserMap.get(userIdStr);
+      if (!user) continue; // 非活跃用户跳过
+
+      const intervalMinutes = Number(cfg?.ai_analysis?.time_interval_minutes) || 30;
+      const intervalMs = Math.max(1, intervalMinutes) * 60 * 1000;
+      // 初始 nextAt 加少量抖动，避免所有用户同一时刻触发造成 CPU 峰值
+      const jitterMs = Math.floor(Math.random() * Math.min(30000, intervalMs));
+      aiTimeSchedules.set(userIdStr, {
+        intervalMs,
+        nextAt: Date.now() + jitterMs,
+        username: user.username
+      });
+    }
+
+    // 单调度器：每 5 秒检查一次到期用户（轻量），到期则触发并更新 nextAt
+    const TICK_MS = 5000;
+    aiTimeSchedulerTimer = setInterval(async () => {
+      const now = Date.now();
+      for (const [userIdStr, sched] of aiTimeSchedules.entries()) {
+        if (!sched || !sched.nextAt || now < sched.nextAt) continue;
+
+        // 计算下一次触发时间：使用 now + interval 并叠加少量抖动，避免长期同相位
+        const jitter = Math.floor(Math.random() * Math.min(5000, sched.intervalMs));
+        sched.nextAt = now + sched.intervalMs + jitter;
+        aiTimeSchedules.set(userIdStr, sched);
+
+        // 全局并发限制：只对自动触发（time）生效
+        let release = null;
+        try {
+          release = await acquireAIAutoSlot();
+          console.log(`⏰ [定时触发] 用户 ${sched.username || userIdStr} 执行定时 AI 分析`);
+          await performAIAnalysis('time', null, userIdStr);
+        } catch (err) {
+          console.error(`❌ [定时触发] 用户 ${sched.username || userIdStr} AI分析失败:`, err.message);
+        } finally {
+          if (release) release();
         }
-        
-        // 使用用户配置的时间间隔（确保是数字类型）
-        const intervalMinutes = Number(config.ai_analysis.time_interval_minutes) || 30;
-        const intervalMs = intervalMinutes * 60 * 1000;
-        
-        console.log(`🔍 [定时器启动] 用户: ${user.username}, 间隔: ${intervalMinutes} 分钟 (${intervalMs}ms, 类型: ${typeof intervalMinutes})`);
-        
-        // 为每个用户创建独立的定时器
-        const timer = setInterval(async () => {
-          try {
-            console.log(`⏰ [定时触发] 为用户 ${user.username} 执行定时 AI 分析（间隔: ${intervalMinutes} 分钟）`);
-            await performAIAnalysis('time', null, user._id.toString());
-          } catch (err) {
-            console.error(`❌ [定时触发] 为用户 ${user.username} 执行AI分析失败:`, err.message);
-            console.error('错误堆栈:', err.stack);
-          }
-        }, intervalMs);
-        
-        userAITimers.set(user._id.toString(), timer);
-        console.log(`✅ [定时器启动] 为用户 ${user.username} 启动 AI 定时分析，间隔: ${intervalMinutes} 分钟`);
-      } catch (err) {
-        console.error(`❌ [定时器启动] 为用户 ${user.username} 启动AI分析定时器失败:`, err.message);
-        console.error('错误堆栈:', err.stack);
       }
-    }
-    
-    if (userAITimers.size > 0) {
-      console.log(`✅ AI 定时分析已启动，共 ${userAITimers.size} 个用户的定时器`);
-    } else {
-      console.log(`ℹ️  没有用户启用时间间隔触发的AI分析`);
-    }
+    }, TICK_MS);
+
+    console.log(`✅ AI 定时分析已启动，共 ${aiTimeSchedules.size} 个用户纳入调度（并发上限: ${AI_AUTO_CONCURRENCY}）`);
   } catch (err) {
     console.error('启动AI分析定时器失败:', err);
   }
@@ -9709,47 +9860,55 @@ async function startAIAnalysisTimer() {
 // 监听新消息（用于计数触发）
 async function checkMessageCountTrigger() {
   try {
-    const users = await User.find({ is_active: true });
-    
-    for (const user of users) {
-      try {
-        const userConfig = await loadUserConfig(user._id);
-        const config = userConfig.toObject ? userConfig.toObject() : userConfig;
-        
-        console.log(`🔍 [计数触发检查] 用户: ${user.username}, enabled: ${config.ai_analysis?.enabled}, trigger_type: ${config.ai_analysis?.analysis_trigger_type}`);
-        
-        if (!config.ai_analysis?.enabled || config.ai_analysis.analysis_trigger_type !== 'count') {
-          continue;
+    // 只筛选启用了 count 触发的用户配置，避免每分钟对所有 active 用户逐个 loadUserConfig
+    const countConfigs = await UserConfig.find({
+      'ai_analysis.enabled': true,
+      'ai_analysis.analysis_trigger_type': 'count'
+    }).select('userId ai_analysis.message_count_threshold').lean();
+
+    if (!countConfigs || countConfigs.length === 0) {
+      return;
+    }
+
+    const userIds = countConfigs.map(c => c.userId).filter(Boolean);
+    const activeUsers = await User.find({ is_active: true, _id: { $in: userIds } })
+      .select('_id username')
+      .lean();
+    const activeUserMap = new Map(activeUsers.map(u => [u._id.toString(), u]));
+
+    // 排除最近被清除的消息（清除后5分钟内不自动分析）
+    const clearCooldownMinutes = 5;
+    const clearCooldownTime = new Date(Date.now() - clearCooldownMinutes * 60 * 1000);
+
+    for (const cfg of countConfigs) {
+      const userIdStr = (cfg.userId || '').toString();
+      const user = activeUserMap.get(userIdStr);
+      if (!user) continue;
+
+      const threshold = Math.max(1, Number(cfg?.ai_analysis?.message_count_threshold) || 50);
+      const userIdObj = new mongoose.Types.ObjectId(userIdStr);
+
+      // CPU/IO 优化：不用 countDocuments 全量计数，而是 limit(threshold) 早停查询
+      // 达到阈值即可触发，避免在数据大时反复扫描。
+      const docs = await Log.find({
+        userId: userIdObj,
+        ai_analyzed: false,
+        $or: [
+          { ai_cleared_at: null },
+          { ai_cleared_at: { $lt: clearCooldownTime } }
+        ]
+      }).limit(threshold).select('_id').lean();
+
+      if (docs.length >= threshold) {
+        console.log(`📊 [计数触发] 用户 ${user.username} 未分析消息达到阈值 ${threshold}（>=），触发 AI 分析`);
+        // 全局并发限制：只对自动触发（count）生效
+        let release = null;
+        try {
+          release = await acquireAIAutoSlot();
+          await performAIAnalysis('count', null, userIdStr);
+        } finally {
+          if (release) release();
         }
-        
-        const threshold = Number(config.ai_analysis.message_count_threshold) || 50;
-        const userIdObj = new mongoose.Types.ObjectId(user._id);
-        
-        // 排除最近被清除的消息（清除后5分钟内不自动分析）
-        const clearCooldownMinutes = 5;
-        const clearCooldownTime = new Date(Date.now() - clearCooldownMinutes * 60 * 1000);
-        
-        const unanalyzedCount = await Log.countDocuments({ 
-          userId: userIdObj,
-          ai_analyzed: false,
-          $or: [
-            { ai_cleared_at: null }, // 从未被清除过
-            { ai_cleared_at: { $lt: clearCooldownTime } } // 或者清除时间已经超过5分钟
-          ]
-        });
-        
-        console.log(`🔍 [计数触发检查] 用户: ${user.username}, 阈值: ${threshold} (类型: ${typeof threshold}), 未分析数量: ${unanalyzedCount} (类型: ${typeof unanalyzedCount})`);
-        
-        // 确保阈值和数量都是数字类型进行比较
-        if (Number(unanalyzedCount) >= Number(threshold)) {
-          console.log(`📊 [计数触发] 用户 ${user.username} 未分析消息达到阈值 ${threshold}（当前: ${unanalyzedCount}），触发 AI 分析`);
-          await performAIAnalysis('count', null, user._id.toString());
-        } else {
-          console.log(`⏸️  [计数触发检查] 用户 ${user.username} 未分析消息 ${unanalyzedCount} < 阈值 ${threshold}，未触发`);
-        }
-      } catch (err) {
-        console.error(`❌ [计数触发检查] 检查用户 ${user.username} 消息计数触发失败:`, err.message);
-        console.error('错误堆栈:', err.stack);
       }
     }
   } catch (err) {
@@ -9758,8 +9917,10 @@ async function checkMessageCountTrigger() {
   }
 }
 
-// 定期检查消息计数（每分钟检查一次）
-setInterval(checkMessageCountTrigger, 60000);
+// 已取消兜底轮询：
+// - 事件驱动计数触发为主（/api/internal/message-notify）
+// - 启动时做一次性对账
+// - 触发失败时做一次性延迟对账
 
 // 全局错误处理，防止未捕获的异常导致服务崩溃
 process.on('uncaughtException', (error) => {
@@ -9985,8 +10146,9 @@ async function initializeMultiLoginContainers() {
 function startTelethonImageAutoUpdater() {
   const enabled = parseBoolEnv(process.env.MULTI_LOGIN_AUTO_UPDATE_IMAGE, true);
   if (!enabled) return;
-  const intervalSec = Number(process.env.MULTI_LOGIN_AUTO_UPDATE_INTERVAL_SECONDS || 20);
-  const intervalMs = Math.max(10, isNaN(intervalSec) ? 20 : intervalSec) * 1000;
+  // 默认 20 秒会导致频繁 docker inspect（高 CPU/IO），改为更合理的默认值：5 分钟
+  const intervalSec = Number(process.env.MULTI_LOGIN_AUTO_UPDATE_INTERVAL_SECONDS || 300);
+  const intervalMs = Math.max(30, isNaN(intervalSec) ? 300 : intervalSec) * 1000;
 
   let lastImageId = null;
   setInterval(async () => {
@@ -10032,4 +10194,11 @@ app.listen(PORT, '0.0.0.0', () => {
   setTimeout(async () => {
     await startAIAnalysisTimer();
   }, 3000);
+
+  // 启动计数触发配置刷新（事件驱动触发需要阈值配置缓存）
+  setTimeout(async () => {
+    await refreshCountTriggerConfigs();
+    // 启动时一次性对账：补触发可能的 backlog（不再做周期兜底轮询）
+    await reconcileAllCountTriggersOnce();
+  }, 3500);
 });
