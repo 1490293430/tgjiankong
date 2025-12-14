@@ -7178,6 +7178,58 @@ async function startMultiLoginContainer(userId) {
       }
     }
     
+    // 启动或重启容器前，强制检查并修复配置文件
+    // 确保配置文件是文件而不是目录
+    if (fs.existsSync(hostConfigPath)) {
+      const configStats = fs.statSync(hostConfigPath);
+      if (configStats.isDirectory()) {
+        console.error(`❌ [多开登录] 检测到配置文件路径是目录: ${hostConfigPath}`);
+        console.error(`   正在删除错误的目录并重新创建文件...`);
+        try {
+          fs.rmSync(hostConfigPath, { recursive: true, force: true });
+          console.log(`✅ [多开登录] 已删除错误的目录: ${hostConfigPath}`);
+          
+          // 重新创建配置文件
+          const userConfig = await loadUserConfig(userId.toString());
+          const configObj = userConfig.toObject ? userConfig.toObject() : userConfig;
+          
+          const userConfigData = {
+            user_id: userId.toString(),
+            keywords: Array.isArray(configObj.keywords) ? configObj.keywords : [],
+            channels: Array.isArray(configObj.channels) ? configObj.channels : [],
+            alert_keywords: Array.isArray(configObj.alert_keywords) ? configObj.alert_keywords : [],
+            alert_regex: Array.isArray(configObj.alert_regex) ? configObj.alert_regex : [],
+            log_all_messages: configObj.log_all_messages || false,
+            alert_target: configObj.alert_target || ''
+          };
+          
+          if (configObj.telegram && configObj.telegram.api_id && configObj.telegram.api_hash) {
+            userConfigData.telegram = {
+              api_id: configObj.telegram.api_id,
+              api_hash: configObj.telegram.api_hash
+            };
+          }
+          
+          if (configObj.ai_analysis) {
+            userConfigData.ai_analysis = {
+              enabled: configObj.ai_analysis.enabled || false,
+              ai_trigger_enabled: configObj.ai_analysis.ai_trigger_enabled || false,
+              ai_trigger_users: Array.isArray(configObj.ai_analysis.ai_trigger_users) 
+                ? configObj.ai_analysis.ai_trigger_users 
+                : [],
+              ai_trigger_prompt: configObj.ai_analysis.ai_trigger_prompt || ''
+            };
+          }
+          
+          fs.writeFileSync(hostConfigPath, JSON.stringify(userConfigData, null, 2));
+          console.log(`✅ [多开登录] 已重新创建配置文件: ${hostConfigPath}`);
+        } catch (rmError) {
+          console.error(`❌ [多开登录] 删除目录失败: ${rmError.message}`);
+          throw new Error(`配置文件路径是目录且无法删除: ${hostConfigPath}`);
+        }
+      }
+    }
+    
     // 启动或重启容器
     const containerInfo = await container.inspect();
     if (containerInfo.State.Running) {
