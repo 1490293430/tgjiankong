@@ -757,6 +757,18 @@ async def message_handler(event, client):
             last_name = last_name or getattr(detailed_entity, "last_name", None)
             username = username or getattr(detailed_entity, "username", None)
 
+        # 如果仍然缺少姓名，再尝试使用 message.from_id 拉取实体
+        if not first_name and not last_name:
+            try:
+                from_id = getattr(event.message, "from_id", None) if hasattr(event, "message") else None
+                if from_id:
+                    from_entity = await client.get_entity(from_id)
+                    first_name = getattr(from_entity, "first_name", None) or first_name
+                    last_name = getattr(from_entity, "last_name", None) or last_name
+                    username = username or getattr(from_entity, "username", None)
+            except Exception:
+                pass
+
         full_name = " ".join([n for n in [first_name, last_name] if n]) if (first_name or last_name) else None
 
         if full_name:
