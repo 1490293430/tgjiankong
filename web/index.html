@@ -176,7 +176,7 @@
         </div>
         
         <div class="footer">
-            <p>默认用户名: admin | 默认密码: admin123</p>
+            <p>首次使用请先注册账号（建议使用强密码）</p>
         </div>
     </div>
 
@@ -378,6 +378,13 @@
                 if (data.initialized) {
                     // 系统已初始化，有用户存在，显示登录表单
                     showLoginForm();
+                    // 若未开放公开注册，隐藏“立即注册”入口，避免用户误操作
+                    if (data.public_registration_allowed === false) {
+                        const showRegister = document.getElementById('showRegister');
+                        if (showRegister) showRegister.style.display = 'none';
+                        const registerForm = document.getElementById('registerForm');
+                        if (registerForm) registerForm.style.display = 'none';
+                    }
                 } else {
                     // 系统未初始化，没有用户，显示注册表单
                     document.getElementById('loginForm').style.display = 'none';

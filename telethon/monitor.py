@@ -19,6 +19,12 @@ import motor.motor_asyncio
 from mongo_index_init import ensure_indexes
 
 # -----------------------
+# 日志（必须在任何 logger.* 调用前初始化）
+# -----------------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("tg_monitor")
+
+# -----------------------
 # 配置（ENV 或默认）
 # -----------------------
 # 兼容多种运行方式（Docker 容器、本地开发）
@@ -49,6 +55,8 @@ CONFIG_PATH = resolve_config_path()
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017")
 MONGO_DBNAME = os.getenv("MONGO_DBNAME", "tglogs")
 API_URL = os.getenv("API_URL", "http://api:3000")
+# 保护 /api/internal/* 的内部访问令牌（与后端保持一致）
+INTERNAL_API_TOKEN = os.getenv("INTERNAL_API_TOKEN", "").strip()
 # 安全地解析 API_ID，如果为空字符串或无效值则使用 0
 api_id_str = os.getenv("API_ID", "0")
 try:
@@ -81,12 +89,6 @@ MESSAGE_NOTIFY_BATCH_MAX = int(os.getenv("MESSAGE_NOTIFY_BATCH_MAX", "50"))
 
 # config reload interval (秒) - 增加到5分钟作为兜底机制（配置变更主要通过HTTP通知立即生效）
 CONFIG_RELOAD_INTERVAL = float(os.getenv("CONFIG_RELOAD_INTERVAL", "300.0"))
-
-# -----------------------
-# 日志
-# -----------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("tg_monitor")
 
 # -----------------------
 # 全局资源（异步安全）
@@ -328,7 +330,10 @@ async def get_json(url: str, timeout: int = 10, silent: bool = False) -> Optiona
     if http_session is None:
         raise RuntimeError("HTTP session not initialized")
     try:
-        async with http_session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+        headers = {}
+        if INTERNAL_API_TOKEN:
+            headers["X-Internal-Token"] = INTERNAL_API_TOKEN
+        async with http_session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), headers=headers) as resp:
             text = await resp.text()
             if resp.status == 200:
                 try:
@@ -368,7 +373,10 @@ async def get_json(url: str, timeout: int = 10, silent: bool = False) -> Optiona
     if http_session is None:
         raise RuntimeError("HTTP session not initialized")
     try:
-        async with http_session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+        headers = {}
+        if INTERNAL_API_TOKEN:
+            headers["X-Internal-Token"] = INTERNAL_API_TOKEN
+        async with http_session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), headers=headers) as resp:
             text = await resp.text()
             if resp.status == 200:
                 try:
@@ -409,7 +417,10 @@ async def post_json(url: str, payload: dict, timeout: int = 10, silent: bool = F
     if http_session is None:
         raise RuntimeError("HTTP session not initialized")
     try:
-        async with http_session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+        headers = {}
+        if INTERNAL_API_TOKEN:
+            headers["X-Internal-Token"] = INTERNAL_API_TOKEN
+        async with http_session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout), headers=headers) as resp:
             text = await resp.text()
             if resp.status == 200:
                 try:
@@ -733,6 +744,12 @@ async def send_telegram_message_async(target: str, message: str) -> bool:
 async def handle_send_telegram(request):
     """处理发送Telegram消息的HTTP请求"""
     try:
+        # 🔒 仅允许内部调用
+        if INTERNAL_API_TOKEN:
+            token = (request.headers.get("X-Internal-Token") or "").strip()
+            if token != INTERNAL_API_TOKEN:
+                return web.json_response({"error": "forbidden"}, status=403)
+
         data = await request.json()
         target = data.get("target")
         message = data.get("message")
@@ -764,6 +781,12 @@ async def handle_send_telegram(request):
 async def handle_config_reload(request):
     """处理配置重载通知的HTTP请求"""
     try:
+        # 🔒 仅允许内部调用
+        if INTERNAL_API_TOKEN:
+            token = (request.headers.get("X-Internal-Token") or "").strip()
+            if token != INTERNAL_API_TOKEN:
+                return web.json_response({"error": "forbidden"}, status=403)
+
         # 立即重新加载配置
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, load_config_sync)

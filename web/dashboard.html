@@ -1319,6 +1319,24 @@
         let savedScrollPosition = 0; // 保存滚动位置，用于模态框显示时
         let lastHeartbeatTime = 0; // 最后一次收到心跳的时间
         let heartbeatCheckInterval = null; // 心跳检查定时器
+
+        // -----------------------
+        // 🔒 XSS 防护：对所有来自后端/Telegram/AI 的文本做 HTML 转义
+        // -----------------------
+        function escapeHtml(value) {
+            const s = value === null || value === undefined ? '' : String(value);
+            return s
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+                .replace(/`/g, '&#96;');
+        }
+
+        function escapeHtmlPreserveNewlines(value) {
+            return escapeHtml(value).replace(/\r\n|\r|\n/g, '<br>');
+        }
         
         // 立即隐藏所有模态框（在页面加载时）
         (function() {
@@ -2058,21 +2076,24 @@
                         let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>ID</th><th>关键词</th><th>消息</th></tr></thead><tbody>';
                         
                         data.logs.forEach(log => {
-                            const keywords = log.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('');
+                            const keywordsArr = Array.isArray(log.keywords) ? log.keywords : [];
+                            const keywords = keywordsArr.map(k => `<span class="keyword-badge">${escapeHtml(k)}</span>`).join('');
                             const info = parseChannelInfo(log.channel, log.channelId, log.sender);
                             
-                            const channelCell = info.displayName;
+                            const channelCell = escapeHtml(info.displayName);
                             const idCell = `<div style="line-height: 1.4;">
-                                <div style="font-size: 12px; color: #666;">${info.userName}</div>
-                                <div style="font-size: 11px; color: #999; margin-top: 2px;">${info.id}</div>
+                                <div style="font-size: 12px; color: #666;">${escapeHtml(info.userName)}</div>
+                                <div style="font-size: 11px; color: #999; margin-top: 2px;">${escapeHtml(info.id)}</div>
                             </div>`;
+                            const msg = String(log.message || '');
+                            const msgShort = msg.substring(0, 200) + (msg.length > 200 ? '...' : '');
                             
                             html += `<tr>
                                 <td style="white-space: nowrap;">${new Date(log.time).toLocaleString('zh-CN')}</td>
                                 <td>${channelCell}</td>
                                 <td>${idCell}</td>
                                 <td>${keywords}</td>
-                                <td>${log.message.substring(0, 200)}${log.message.length > 200 ? '...' : ''}</td>
+                                <td>${escapeHtml(msgShort)}</td>
                             </tr>`;
                         });
                         
@@ -2086,14 +2107,17 @@
                             const tbody = existingTable.querySelector('tbody');
                             if (tbody) {
                                 data.logs.forEach(log => {
-                                    const keywords = log.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('');
+                                    const keywordsArr = Array.isArray(log.keywords) ? log.keywords : [];
+                                    const keywords = keywordsArr.map(k => `<span class="keyword-badge">${escapeHtml(k)}</span>`).join('');
                                     const info = parseChannelInfo(log.channel, log.channelId, log.sender);
                                     
-                                    const channelCell = info.displayName;
+                                    const channelCell = escapeHtml(info.displayName);
                                     const idCell = `<div style="line-height: 1.4;">
-                                        <div style="font-size: 12px; color: #666;">${info.userName}</div>
-                                        <div style="font-size: 11px; color: #999; margin-top: 2px;">${info.id}</div>
+                                        <div style="font-size: 12px; color: #666;">${escapeHtml(info.userName)}</div>
+                                        <div style="font-size: 11px; color: #999; margin-top: 2px;">${escapeHtml(info.id)}</div>
                                     </div>`;
+                                    const msg = String(log.message || '');
+                                    const msgShort = msg.substring(0, 200) + (msg.length > 200 ? '...' : '');
                                     
                                     const row = document.createElement('tr');
                                     row.innerHTML = `
@@ -2101,7 +2125,7 @@
                                         <td>${channelCell}</td>
                                         <td>${idCell}</td>
                                         <td>${keywords}</td>
-                                        <td>${log.message.substring(0, 200)}${log.message.length > 200 ? '...' : ''}</td>
+                                        <td>${escapeHtml(msgShort)}</td>
                                     `;
                                     tbody.appendChild(row);
                                 });
@@ -2130,7 +2154,7 @@
             } catch (error) {
                 console.error('加载最近日志失败:', error);
                 if (recentLogsPage === 1) {
-                    container.innerHTML = '<p style="text-align: center; color: #e74c3c; padding: 40px;">加载失败：' + (error.message || '未知错误') + '</p>';
+                    container.innerHTML = `<p style="text-align: center; color: #e74c3c; padding: 40px;">加载失败：${escapeHtml(error.message || '未知错误')}</p>`;
                 }
             } finally {
                 recentLogsLoading = false;
@@ -2518,29 +2542,28 @@
                                 const date = new Date(backup.created).toLocaleString('zh-CN');
                                 const sizeMB = (backup.size / 1024 / 1024).toFixed(2);
                                 const backupPath = backup.path || '';
-                                // 转义 HTML 特殊字符
-                                const escapedPath = backupPath.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                                const escapedPath = escapeHtml(backupPath);
                                 return `
                                     <div style="border: 1px solid #e0e0e0; padding: 12px; margin-bottom: 10px; border-radius: 6px; background: #f9f9f9;">
                                         <div style="display: flex; justify-content: space-between; align-items: flex-start;">
                                             <div style="flex: 1;">
-                                                <div style="font-weight: 500; margin-bottom: 4px;">${backup.name}</div>
+                                                <div style="font-weight: 500; margin-bottom: 4px;">${escapeHtml(backup.name)}</div>
                                                 <div style="font-size: 12px; color: #666; margin-bottom: 4px;">
                                                     创建时间: ${date} | 大小: ${sizeMB} MB
                                                 </div>
                                                 <div style="font-size: 12px; color: #666; margin-bottom: 4px; padding: 8px; background: #f0f0f0; border-radius: 4px; font-family: 'Courier New', monospace; word-break: break-all; position: relative;">
                                                     <span style="color: #999; display: block; margin-bottom: 4px;">📁 文件位置:</span>
                                                     <span style="color: #333; font-weight: 500; display: inline-block; max-width: calc(100% - 80px);">${escapedPath}</span>
-                                                    <button data-backup-path="${backupPath.replace(/"/g, '&quot;')}" onclick="copyToClipboard(this.dataset.backupPath, this)" style="margin-left: 8px; padding: 4px 10px; font-size: 11px; background: #667eea; color: white; border: none; border-radius: 3px; cursor: pointer; vertical-align: top;" title="复制路径">
+                                                    <button data-backup-path="${escapeHtml(backupPath)}" onclick="copyToClipboard(this.dataset.backupPath, this)" style="margin-left: 8px; padding: 4px 10px; font-size: 11px; background: #667eea; color: white; border: none; border-radius: 3px; cursor: pointer; vertical-align: top;" title="复制路径">
                                                         📋 复制
                                                     </button>
                                                 </div>
                                             </div>
                                             <div style="display: flex; gap: 8px; margin-left: 10px;">
-                                                <button class="btn btn-danger" onclick="deleteBackup('${backup.name}')" style="padding: 6px 12px; font-size: 13px; background: #e74c3c; border-color: #e74c3c;">
+                                                <button class="btn btn-danger" onclick="deleteBackup(${JSON.stringify(String(backup.name || ''))})" style="padding: 6px 12px; font-size: 13px; background: #e74c3c; border-color: #e74c3c;">
                                                     🗑️ 删除
                                                 </button>
-                                                <button class="btn btn-primary" onclick="restoreBackup('${backup.name}')" style="padding: 6px 12px; font-size: 13px;">
+                                                <button class="btn btn-primary" onclick="restoreBackup(${JSON.stringify(String(backup.name || ''))})" style="padding: 6px 12px; font-size: 13px;">
                                                     🔄 恢复
                                                 </button>
                                             </div>
@@ -2556,7 +2579,7 @@
             } catch (error) {
                 console.error('加载备份列表失败:', error);
                 const backupList = document.getElementById('backupList');
-                backupList.innerHTML = '<p style="text-align: center; color: #e74c3c;">加载失败：' + (error.message || '未知错误') + '</p>';
+                backupList.innerHTML = `<p style="text-align: center; color: #e74c3c;">加载失败：${escapeHtml(error.message || '未知错误')}</p>`;
             }
         }
         
@@ -2715,22 +2738,25 @@
                 if (data && data.logs && data.logs.length > 0) {
                 let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>发送者</th><th>关键词</th><th>消息内容</th></tr></thead><tbody>';
                 data.logs.forEach(log => {
-                    const keywords = log.keywords.map(k => `<span class="keyword-badge">${k}</span>`).join('');
+                    const keywordsArr = Array.isArray(log.keywords) ? log.keywords : [];
+                    const keywords = keywordsArr.map(k => `<span class="keyword-badge">${escapeHtml(k)}</span>`).join('');
                     const info = parseChannelInfo(log.channel, log.channelId, log.sender);
                     
                     // 统一处理：频道栏显示名字，发送者栏显示用户名和ID（双排）
-                    const channelCell = info.displayName;
+                    const channelCell = escapeHtml(info.displayName);
                     const senderCell = `<div style="line-height: 1.4;">
-                        <div style="font-size: 13px; color: #666;">${info.userName}</div>
-                        <div style="font-size: 11px; color: #999; margin-top: 2px;">${info.id}</div>
+                        <div style="font-size: 13px; color: #666;">${escapeHtml(info.userName)}</div>
+                        <div style="font-size: 11px; color: #999; margin-top: 2px;">${escapeHtml(info.id)}</div>
                     </div>`;
+                    const msg = String(log.message || '');
+                    const msgShort = msg.substring(0, 150) + (msg.length > 150 ? '...' : '');
                     
                     html += `<tr>
                         <td>${new Date(log.time).toLocaleString('zh-CN')}</td>
                         <td>${channelCell}</td>
                         <td>${senderCell}</td>
                         <td>${keywords}</td>
-                        <td>${log.message.substring(0, 150)}${log.message.length > 150 ? '...' : ''}</td>
+                        <td>${escapeHtml(msgShort)}</td>
                     </tr>`;
                 });
                 html += '</tbody></table>';
@@ -2746,7 +2772,7 @@
             } catch (error) {
                 console.error('加载日志失败:', error);
                 if (container) {
-                    container.innerHTML = `<div class="loading" style="color: #e74c3c; padding: 40px; text-align: center;">⚠️ 加载失败：${error.message || '未知错误'}</div>`;
+                    container.innerHTML = `<div class="loading" style="color: #e74c3c; padding: 40px; text-align: center;">⚠️ 加载失败：${escapeHtml(error.message || '未知错误')}</div>`;
                 }
                 if (pagination) {
                     pagination.style.display = 'none';
@@ -2854,10 +2880,10 @@
                             <div style="padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" 
                                  onmouseover="this.style.background='#f5f5f5'" 
                                  onmouseout="this.style.background='white'"
-                                 onclick="switchUser('${user._id}', '${user.username}')">
+                                 onclick="switchUser(${JSON.stringify(String(user._id || ''))}, ${JSON.stringify(String(user.username || ''))})">
                                 <div>
-                                    <div style="font-weight: 500;">${user.username}</div>
-                                    <div style="font-size: 12px; color: #666;">${user.display_name || user.username}</div>
+                                    <div style="font-weight: 500;">${escapeHtml(user.username)}</div>
+                                    <div style="font-size: 12px; color: #666;">${escapeHtml(user.display_name || user.username)}</div>
                                 </div>
                                 ${user.username === username ? '<span style="color: #27ae60;">当前用户</span>' : ''}
                             </div>
@@ -3231,7 +3257,7 @@
                         const topChannels = (summary.channel_stats || []).slice(0, 3);
                         const channelStats = topChannels.length > 0 ? topChannels.map(ch => 
                             `<span style="background: #3498db; color: white; padding: 2px 6px; border-radius: 3px; margin-right: 4px; font-size: 11px; display: inline-block; margin-bottom: 4px;">
-                                📢 ${ch.name} (${ch.count})
+                                📢 ${escapeHtml(ch?.name)} (${escapeHtml(ch?.count)})
                             </span>`
                         ).join('') : '';
                         
@@ -3239,18 +3265,19 @@
                         const topSenders = (summary.sender_stats || []).slice(0, 3);
                         const senderStats = topSenders.length > 0 ? topSenders.map(sender => 
                             `<span style="background: #9b59b6; color: white; padding: 2px 6px; border-radius: 3px; margin-right: 4px; font-size: 11px; display: inline-block; margin-bottom: 4px;">
-                                👤 ${sender.name} (${sender.count})
+                                👤 ${escapeHtml(sender?.name)} (${escapeHtml(sender?.count)})
                             </span>`
                         ).join('') : '';
                         
                         // 消息预览（简化）
                         const messagePreview = (summary.messages_preview || []).slice(0, 3).map(msg => {
                             const msgDate = new Date(msg.timestamp).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
-                            const msgText = msg.text.length > 60 ? msg.text.substring(0, 60) + '...' : msg.text;
+                            const rawText = String(msg?.text || '');
+                            const msgText = rawText.length > 60 ? rawText.substring(0, 60) + '...' : rawText;
                             return `
                                 <div style="background: #f8f9fa; padding: 6px 10px; margin-top: 4px; border-left: 3px solid #3498db; font-size: 12px; line-height: 1.4;">
                                     <span style="color: #666; font-size: 11px;">${msgDate}</span> 
-                                    <span style="color: #333;">${msgText}</span>
+                                    <span style="color: #333;">${escapeHtml(msgText)}</span>
                                 </div>
                             `;
                         }).join('');
@@ -3278,7 +3305,7 @@
                                         📝 AI 分析摘要
                                     </div>
                                     <div style="font-size: 14px; color: #333; line-height: 1.6;">
-                                        ${summary_text}
+                                        ${escapeHtmlPreserveNewlines(summary_text)}
                                     </div>
                                 </div>
                                 
@@ -3287,7 +3314,7 @@
                                     <div style="margin-bottom: 10px;">
                                         <div style="font-size: 12px; color: #666; margin-bottom: 4px;">🔑 关键词</div>
                                         <div style="display: flex; flex-wrap: wrap; gap: 4px;">
-                                            ${keywords.map(k => `<span style="background: #e3f2fd; color: #1976d2; padding: 3px 8px; border-radius: 4px; font-size: 11px;">${k}</span>`).join('')}
+                                            ${keywords.map(k => `<span style="background: #e3f2fd; color: #1976d2; padding: 3px 8px; border-radius: 4px; font-size: 11px;">${escapeHtml(k)}</span>`).join('')}
                                 </div>
                                     </div>
                                 ` : ''}
@@ -3326,7 +3353,7 @@
             } catch (error) {
                 console.error('加载AI分析结果失败:', error);
                 if (list) {
-                    list.innerHTML = `<p style="text-align: center; color: #e74c3c; padding: 40px;">⚠️ 加载失败：${error.message || '未知错误'}</p>`;
+                    list.innerHTML = `<p style="text-align: center; color: #e74c3c; padding: 40px;">⚠️ 加载失败：${escapeHtml(error.message || '未知错误')}</p>`;
                 }
             }
         }
@@ -3447,13 +3474,13 @@
                                     
                                     return `
                                         <tr style="border-bottom: 1px solid #eee;">
-                                            <td style="padding: 12px;"><strong>${user.username}</strong></td>
-                                            <td style="padding: 12px;">${user.display_name || '-'}</td>
+                                            <td style="padding: 12px;"><strong>${escapeHtml(user.username)}</strong></td>
+                                            <td style="padding: 12px;">${escapeHtml(user.display_name || '-')}</td>
                                             <td style="padding: 12px; color: #666;">${createdDate}</td>
                                             <td style="padding: 12px; color: #666;">${lastLogin}</td>
                                             <td style="padding: 12px;">${status}</td>
                                             <td style="padding: 12px; text-align: center;">
-                                                ${canDelete ? `<button class="btn btn-danger" onclick="deleteUser('${user._id}', '${user.username}')" style="padding: 4px 12px; font-size: 12px;">删除</button>` : '<span style="color: #999; font-size: 12px;">不可删除</span>'}
+                                                ${canDelete ? `<button class="btn btn-danger" onclick="deleteUser(${JSON.stringify(String(user._id || ''))}, ${JSON.stringify(String(user.username || ''))})" style="padding: 4px 12px; font-size: 12px;">删除</button>` : '<span style="color: #999; font-size: 12px;">不可删除</span>'}
                                             </td>
                                         </tr>
                                     `;
@@ -3466,7 +3493,7 @@
                 }
             } catch (error) {
                 console.error('加载用户列表失败:', error);
-                document.getElementById('userList').innerHTML = '<p style="text-align: center; color: #e74c3c;">加载失败: ' + (error.message || '未知错误') + '</p>';
+                document.getElementById('userList').innerHTML = `<p style="text-align: center; color: #e74c3c;">加载失败: ${escapeHtml(error.message || '未知错误')}</p>`;
             }
         }
         
@@ -3893,7 +3920,7 @@
                         if (response.uncertain) {
                             const userInfoEl = document.getElementById('telegramUserInfo');
                             if (userInfoEl) {
-                                userInfoEl.innerHTML = `<span style="color: #f39c12;">⚠️ ${response.message || '状态不确定'}</span>`;
+                                userInfoEl.innerHTML = `<span style="color: #f39c12;">⚠️ ${escapeHtml(response.message || '状态不确定')}</span>`;
                             }
                             // 5秒后自动重试一次
                             setTimeout(() => {

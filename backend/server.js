@@ -2,6 +2,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
@@ -106,17 +107,89 @@ const apiLimiter = rateLimit({
 app.use('/api/', apiLimiter);
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
-const PORT = process.env.PORT || 3000;
-
-// 🔒 启动时验证 JWT_SECRET
-if (!process.env.JWT_SECRET || JWT_SECRET === 'your-secret-key-change-this') {
-  console.error('⚠️  警告：JWT_SECRET 未设置或使用默认值！');
-  console.error('⚠️  请设置环境变量 JWT_SECRET 为强随机值（使用 install.sh 或手动设置）');
-  console.error('⚠️  服务将继续运行，但安全性较低');
-  // 不退出进程，让服务继续运行（在生产环境中应该退出，但这里允许继续运行以便调试）
-  // process.exit(1);
+// JWT 密钥：
+// - 优先使用环境变量 JWT_SECRET（建议强随机值）
+// - 若未设置/为空，则生成一次性随机密钥（保证服务可启动，但重启会导致旧 token 失效）
+// - 禁止使用硬编码固定默认值（可被轻易伪造 token）
+let JWT_SECRET = (process.env.JWT_SECRET || '').toString().trim();
+if (!JWT_SECRET) {
+  JWT_SECRET = crypto.randomBytes(48).toString('base64');
+  console.error('⚠️  警告：JWT_SECRET 未设置，已生成一次性随机密钥（重启后旧 token 将失效）');
+  console.error('⚠️  建议在 .env 中设置持久化的强随机 JWT_SECRET');
 }
+// 内部接口访问令牌：用于保护 /api/internal/*（建议在生产环境配置强随机值）
+const INTERNAL_API_TOKEN = (process.env.INTERNAL_API_TOKEN || '').trim();
+const PORT = process.env.PORT || 3000;
+// 是否允许系统初始化后继续公开注册（默认不允许）
+const ALLOW_PUBLIC_REGISTRATION = ['1', 'true', 'yes', 'y', 'on'].includes(
+  String(process.env.ALLOW_PUBLIC_REGISTRATION || '').toLowerCase().trim()
+);
+
+// 🔒 启动时提示 JWT_SECRET（不再允许固定默认值；若未设置将使用一次性随机值）
+if (!process.env.JWT_SECRET) {
+  console.error('ℹ️  提示：当前未设置 JWT_SECRET（正在使用一次性随机密钥）');
+}
+
+// 🔒 启动时提示 INTERNAL_API_TOKEN
+if (!INTERNAL_API_TOKEN) {
+  console.error('⚠️  警告：INTERNAL_API_TOKEN 未设置！');
+  console.error('⚠️  /api/internal/* 将仅依赖网络隔离（强烈建议设置强随机值）');
+}
+
+// -----------------------
+// 内部 API 安全中间件
+// - 优先校验 X-Internal-Token
+// - 若未配置 INTERNAL_API_TOKEN，则回退为“仅允许内网/本机来源”
+// -----------------------
+function normalizeIp(ip) {
+  if (!ip) return '';
+  const s = String(ip);
+  // 处理 ::ffff:127.0.0.1 这类
+  return s.startsWith('::ffff:') ? s.slice('::ffff:'.length) : s;
+}
+
+function isPrivateIp(ipRaw) {
+  const ip = normalizeIp(ipRaw);
+  if (!ip) return false;
+  // ipv6 loopback / unique local / link local
+  if (ip === '::1') return true;
+  if (ip.startsWith('fc') || ip.startsWith('fd')) return true; // fc00::/7
+  if (ip.startsWith('fe80:')) return true; // link-local
+
+  // ipv4
+  const parts = ip.split('.');
+  if (parts.length !== 4) return false;
+  const nums = parts.map(p => Number(p));
+  if (nums.some(n => Number.isNaN(n) || n < 0 || n > 255)) return false;
+  const [a, b] = nums;
+  if (a === 127) return true;
+  if (a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 169 && b === 254) return true;
+  return false;
+}
+
+function internalAuthMiddleware(req, res, next) {
+  try {
+    const headerToken = (req.headers['x-internal-token'] || '').toString().trim();
+    if (INTERNAL_API_TOKEN) {
+      if (headerToken && headerToken === INTERNAL_API_TOKEN) return next();
+      return res.status(403).json({ error: 'Forbidden: internal API token required' });
+    }
+
+    // 未配置 token：仅允许内网/本机来源（尽量减少误伤现有部署）
+    // 注意：在启用 trust proxy 后，req.ip 会基于 X-Forwarded-For，能有效阻断经 Nginx 代理的外网请求
+    const ip = normalizeIp(req.ip || req.connection?.remoteAddress || '');
+    if (isPrivateIp(ip)) return next();
+    return res.status(403).json({ error: 'Forbidden: internal API restricted' });
+  } catch (e) {
+    return res.status(500).json({ error: 'Internal auth failed' });
+  }
+}
+
+// 保护所有内部 API
+app.use('/api/internal', internalAuthMiddleware);
 
 // 默认配置
 const defaultConfig = {
@@ -487,7 +560,11 @@ app.get('/api/auth/check-init', async (req, res) => {
     
     // 检查是否有任何用户
     const userCount = await User.countDocuments();
-    res.json({ initialized: userCount > 0, userCount });
+    // 公开注册策略：
+    // - 无用户（首次初始化）一定允许注册
+    // - 系统已初始化后，默认关闭公开注册（可通过 ALLOW_PUBLIC_REGISTRATION=true 开启）
+    const publicRegistrationAllowed = (userCount === 0) || ALLOW_PUBLIC_REGISTRATION;
+    res.json({ initialized: userCount > 0, userCount, public_registration_allowed: publicRegistrationAllowed });
   } catch (error) {
     console.error('检查系统初始化状态失败:', error);
     res.status(500).json({ initialized: false, error: '检查失败：' + error.message });
@@ -510,16 +587,21 @@ app.post('/api/auth/register', loginLimiter, async (req, res) => {
     if (password.length < 6) {
       return res.status(400).json({ error: '密码长度至少为6位' });
     }
+
+    // 🔒 默认策略：仅允许“首次初始化”注册第一个账号
+    // 若确需开放注册，可设置 ALLOW_PUBLIC_REGISTRATION=true
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: '数据库未连接，请稍后重试' });
+    }
+    const userCount = await User.countDocuments();
+    if (userCount > 0 && !ALLOW_PUBLIC_REGISTRATION) {
+      return res.status(403).json({ error: '系统已初始化：已关闭公开注册，请使用已有账号登录或由主账号创建子账号' });
+    }
     
     // 检查用户名是否已存在
     const existingUser = await User.findOne({ username });
     if (existingUser) {
       return res.status(400).json({ error: '用户名已存在' });
-    }
-    
-    // 确保 MongoDB 连接正常
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ error: '数据库未连接，请稍后重试' });
     }
     
     // 创建主账号（parent_account_id为null）
@@ -2666,7 +2748,8 @@ ${messageId ? `👉 跳转链接：t.me/c/${channelId}/${messageId}` : ''}`;
             }, {
               timeout: 10000,
               headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                ...(INTERNAL_API_TOKEN ? { 'X-Internal-Token': INTERNAL_API_TOKEN } : {})
               }
             });
             console.log(`✅ [告警处理] Telegram 告警已发送到: ${config.alert_target}, 响应:`, response.data);
@@ -2821,7 +2904,8 @@ ${messageId ? `👉 跳转链接：t.me/c/${channelId}/${messageId}` : ''}`;
         }, {
           timeout: 10000,
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            ...(INTERNAL_API_TOKEN ? { 'X-Internal-Token': INTERNAL_API_TOKEN } : {})
           }
         });
         console.log('✅ Telegram 告警已发送到:', config.alert_target);
@@ -2917,7 +3001,8 @@ ${message}`;
         }, {
           timeout: 10000,
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            ...(INTERNAL_API_TOKEN ? { 'X-Internal-Token': INTERNAL_API_TOKEN } : {})
           }
         });
         console.log('✅ [测试告警] Telegram 测试告警已发送到:', config.alert_target);
@@ -4464,7 +4549,8 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
                     const telethonUrl = await getTelethonServiceUrl(userId.toString());
                     console.log(`🔄 [恢复] 触发 Telethon 配置重载以重新初始化客户端... (URL: ${telethonUrl})`);
                     await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
-                      timeout: 10000
+                      timeout: 10000,
+                      headers: INTERNAL_API_TOKEN ? { 'X-Internal-Token': INTERNAL_API_TOKEN } : undefined
                     });
                     console.log(`✅ [恢复] 已触发 Telethon 配置重载`);
                   } catch (reloadError) {
@@ -4510,7 +4596,8 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
                       const telethonUrl = process.env.TELETHON_URL || 'http://telethon:8888';
                       console.log(`🔄 [恢复] 触发 Telethon 配置重载以重新初始化客户端...`);
                       await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
-                        timeout: 10000
+                        timeout: 10000,
+                        headers: INTERNAL_API_TOKEN ? { 'X-Internal-Token': INTERNAL_API_TOKEN } : undefined
                       });
                       console.log(`✅ [恢复] 已触发 Telethon 配置重载`);
                     } catch (reloadError) {
@@ -9255,7 +9342,8 @@ async function notifyTelethonConfigReload(userId = null) {
         await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
           timeout: 5000,
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            ...(INTERNAL_API_TOKEN ? { 'X-Internal-Token': INTERNAL_API_TOKEN } : {})
           }
         });
         console.log(`✅ [配置同步] 已通知多开容器 ${containerName} 重新加载配置`);
@@ -9270,7 +9358,8 @@ async function notifyTelethonConfigReload(userId = null) {
         await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
           timeout: 5000,
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            ...(INTERNAL_API_TOKEN ? { 'X-Internal-Token': INTERNAL_API_TOKEN } : {})
           }
         });
         console.log('✅ [配置同步] 已通知Telethon服务重新加载配置');
@@ -9304,7 +9393,8 @@ app.post('/api/internal/telegram/send', async (req, res) => {
       }, {
         timeout: 10000,
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...(INTERNAL_API_TOKEN ? { 'X-Internal-Token': INTERNAL_API_TOKEN } : {})
         }
       });
       console.log(`📱 Telegram消息已转发到Telethon服务: target=${target}, userId=${userId || 'N/A'}`);
@@ -9815,7 +9905,8 @@ async function performAIAnalysis(triggerType = 'manual', logId = null, userId = 
           }, {
             timeout: 10000,
             headers: {
-              'Content-Type': 'application/json'
+              'Content-Type': 'application/json',
+              ...(INTERNAL_API_TOKEN ? { 'X-Internal-Token': INTERNAL_API_TOKEN } : {})
             }
           });
           console.log('📱 AI 分析结果已通过 Telegram 发送到:', config.alert_target);

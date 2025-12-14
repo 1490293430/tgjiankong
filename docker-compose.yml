@@ -29,7 +29,9 @@ services:
         condition: service_started
     environment:
       - MONGO_URL=mongodb://mongo:27017/tglogs
-      - JWT_SECRET=${JWT_SECRET:-change-this-secret-key-in-production}
+      - JWT_SECRET=${JWT_SECRET}
+      # 保护 /api/internal/* 的内部访问令牌（强烈建议设置强随机值）
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN}
       - PORT=3000
       - NODE_ENV=production
       - TELETHON_URL=http://telethon:8888
@@ -65,6 +67,8 @@ services:
     environment:
       - MONGO_URL=mongodb://mongo:27017/tglogs
       - API_URL=http://api:3000
+      # 与后端一致的内部访问令牌，用于访问 /api/internal/* 并保护自身内部接口
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN}
       - CONFIG_PATH=/app/config.json
       - SESSION_PREFIX=${SESSION_PREFIX:-user}
       - API_ID=${API_ID}

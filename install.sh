@@ -82,6 +82,7 @@ if [ ! -f .env ]; then
 API_ID=${API_ID:-0}
 API_HASH=${API_HASH:-}
 JWT_SECRET=$(openssl rand -base64 32 2>/dev/null || echo "change-this-$(date +%s)")
+INTERNAL_API_TOKEN=$(openssl rand -base64 32 2>/dev/null || echo "internal-$(date +%s)")
 PROJECT_ROOT=${APP_DIR}
 WEB_PORT=5555
 MONGO_URL=mongodb://mongo:27017/tglogs
@@ -150,7 +151,7 @@ echo ""
 echo "✅ 部署完成！"
 echo ""
 echo "📋 访问地址: http://$(hostname -I | awk '{print $1}' 2>/dev/null || echo 'localhost'):5555"
-echo "🔑 默认账号: admin / admin123"
+echo "🔑 首次使用：请打开网页注册第一个账号（建议使用强密码）"
 echo ""
 echo "📝 查看日志: $COMPOSE_CMD logs -f"
 echo "📊 查看状态: $COMPOSE_CMD ps"
