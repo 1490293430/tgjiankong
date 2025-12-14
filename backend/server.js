@@ -2483,6 +2483,21 @@ setInterval(() => {
 const statsCache = new Map(); // key: userId, value: { data, time }
 const STATS_CACHE_TTL = 10000; // 缓存10秒
 
+// 告警去重缓存：防止同一消息重复发送告警
+// key: `${userId}_${channelId}_${messageId}`, value: timestamp
+const alertDedupeCache = new Map();
+const ALERT_DEDUPE_TTL = 5 * 60 * 1000; // 5分钟内不重复发送同一消息的告警
+
+// 清理过期的告警去重缓存
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamp] of alertDedupeCache.entries()) {
+    if (now - timestamp > ALERT_DEDUPE_TTL) {
+      alertDedupeCache.delete(key);
+    }
+  }
+}, 60 * 1000); // 每分钟清理一次
+
 // 获取统计信息（带缓存）
 app.get('/api/stats', authMiddleware, async (req, res) => {
   // const startTime = Date.now();
@@ -2666,38 +2681,19 @@ app.post('/api/internal/alert/push', async (req, res) => {
       }
     }
     
-    // 如果提供了userId，保存日志到数据库
-    if (userIdObj) {
-      const log = new Log({
-        userId: userIdObj,
-        channel: cleanChannel,
-        channelId: channelId || '',
-        sender: cleanFrom,
-        message: cleanMessage,
-        keywords: [cleanKeyword],
-        messageId,
-        alerted: true
-      });
-      await log.save();
-      
-      // 实时推送新消息事件给前端（只推送给该用户）
-      broadcastEvent('new_message', {
-        id: log._id,
-        userId: userId,
-        channel: cleanChannel,
-        channelId: channelId || '',
-        sender: cleanFrom,
-        message: cleanMessage,
-        keywords: [cleanKeyword],
-        time: log.time,
-        alerted: true
-      }, userId);
-      
-      // 推送统计更新事件（只推送给该用户）
-      broadcastEvent('stats_updated', { userId: userId }, userId);
-      
-      // 清除统计缓存
-      statsCache.delete(userId);
+    // 注意：日志已经由Telethon服务保存，这里不再重复保存
+    // 前端推送也由Telethon通过notify_new_message_async处理，这里不再重复推送
+    
+    // 告警去重检查：防止同一消息重复发送告警
+    if (userIdObj && channelId && messageId) {
+      const dedupeKey = `${userIdObj.toString()}_${channelId}_${messageId}`;
+      const lastSentTime = alertDedupeCache.get(dedupeKey);
+      if (lastSentTime && (Date.now() - lastSentTime) < ALERT_DEDUPE_TTL) {
+        console.log(`⚠️ [告警处理] 告警已发送过，跳过重复发送 - key: ${dedupeKey}`);
+        return res.json({ status: 'ok', message: '告警已推送（已去重）' });
+      }
+      // 记录本次发送时间
+      alertDedupeCache.set(dedupeKey, Date.now());
     }
     
     // 加载用户配置发送告警
