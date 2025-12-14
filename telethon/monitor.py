@@ -645,7 +645,11 @@ async def message_handler(event, client):
 
         text = event.raw_text or ""
         if not text:
+            logger.debug("⏭️  [消息处理] 消息为空，跳过")
             return
+        
+        # 记录收到消息（INFO级别，便于调试）
+        logger.info("📨 [消息接收] 收到新消息，长度: %d 字符", len(text))
 
         chat = await event.get_chat()
         channel_id = str(chat.id)
@@ -653,15 +657,21 @@ async def message_handler(event, client):
 
         # check channel filter
         monitored_channels = config.get("channels", []) or []
+        channel_id_int = chat.id
+        channel_id_str = str(channel_id_int)
+        
         if monitored_channels:
+            logger.info("🔍 [频道过滤] 配置了频道过滤，监控列表: %s", monitored_channels)
+            logger.info("🔍 [频道过滤] 当前频道: %s (ID: %s, 类型: %s)", channel_name, channel_id_str, type(channel_id_int).__name__)
             # 同时检查字符串和整数格式的 channel_id（因为配置中可能是整数或字符串）
-            channel_id_int = chat.id
-            channel_id_str = str(channel_id_int)
             if channel_id_str not in monitored_channels and channel_id_int not in monitored_channels:
                 # 也检查字符串格式的 channel_id（处理负数频道ID，如 -1001234567890）
                 if str(channel_id_int) not in [str(c) for c in monitored_channels]:
-                    logger.debug("🔍 [频道过滤] 频道 %s (ID: %s) 不在监控列表中，跳过", channel_name, channel_id_str)
+                    logger.info("⏭️  [频道过滤] 频道 %s (ID: %s) 不在监控列表中，跳过消息", channel_name, channel_id_str)
                     return
+            logger.info("✅ [频道过滤] 频道 %s (ID: %s) 在监控列表中，继续处理", channel_name, channel_id_str)
+        else:
+            logger.info("🔍 [频道过滤] 未配置频道过滤，监控所有频道")
 
         # sender info
         sender_entity = None
@@ -735,24 +745,30 @@ async def message_handler(event, client):
                     break
 
         # keyword checks (cheap)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("🔧 配置快照: keywords=%s alert_keywords=%s regex=%d channels=%s",
-                         config.get("keywords", []),
-                         config.get("alert_keywords", []),
-                         len(COMPILED_ALERT_REGEX),
-                         config.get("channels", []))
-        matched_keywords = [k for k in (config.get("keywords") or []) if k.lower() in text.lower()]
+        keywords_list = config.get("keywords") or []
+        alert_keywords_list = config.get("alert_keywords") or []
+        
+        # 记录每条消息的关键词检查过程（INFO级别，便于调试）
+        logger.info("🔍 [消息处理] 频道: %s, 发送者: %s, 消息长度: %d", channel_name, sender, len(text))
+        logger.info("🔍 [关键词检查] 监控关键词: %s, 告警关键词: %s", keywords_list, alert_keywords_list)
+        
+        matched_keywords = []
+        # 检查监控关键词
+        for k in keywords_list:
+            if k and k.strip() and k.lower() in text.lower():
+                matched_keywords.append(k)
+                logger.info("✅ [关键词匹配] 匹配到监控关键词: %s", k)
 
         # alert keywords (first-match)
         alert_keyword = None
-        alert_keywords_list = config.get("alert_keywords") or []
         if alert_keywords_list:
-            logger.debug("🔍 [关键词检查] 告警关键词列表: %s", alert_keywords_list)
+            logger.info("🔍 [关键词检查] 告警关键词列表: %s", alert_keywords_list)
         for keyword in alert_keywords_list:
-            if keyword.lower() in text.lower():
+            if keyword and keyword.strip() and keyword.lower() in text.lower():
                 alert_keyword = keyword
-                matched_keywords.append(keyword)
-                logger.info("🔔 [告警关键词匹配] 匹配到告警关键词: %s", keyword)
+                if keyword not in matched_keywords:
+                    matched_keywords.append(keyword)
+                logger.info("🔔 [告警关键词匹配] 匹配到告警关键词: %s (消息片段: %s)", keyword, text[:100])
                 break
 
         # compiled regex (precompiled at config load)
@@ -766,6 +782,12 @@ async def message_handler(event, client):
                     break
 
         # save log if needed (async)
+        if matched_keywords:
+            logger.info("✅ [关键词匹配] 匹配到关键词: %s", matched_keywords)
+        elif keywords_list or alert_keywords_list:
+            logger.info("⏭️  [关键词匹配] 未匹配到任何关键词（监控关键词: %d 个, 告警关键词: %d 个）", 
+                       len(keywords_list), len(alert_keywords_list))
+        
         if matched_keywords or log_all:
             log_id = await save_log_async(channel_name, channel_id, sender, text, matched_keywords or [], event.id)
             if matched_keywords:
