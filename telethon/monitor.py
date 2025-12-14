@@ -24,7 +24,6 @@ from mongo_index_init import ensure_indexes
 CONFIG_PATH_ENV = os.getenv("CONFIG_PATH")
 DEFAULT_CONFIG_PATH = "/app/config.json"
 CONFIG_CANDIDATES = [
-    CONFIG_PATH_ENV,
     DEFAULT_CONFIG_PATH,
     os.path.join(os.getcwd(), "config.json"),
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend", "config.json")),
@@ -32,7 +31,13 @@ CONFIG_CANDIDATES = [
 
 
 def resolve_config_path():
-    """返回第一个存在的配置路径；都不存在则使用优先级最高的候选项."""
+    """
+    返回配置文件路径：
+    - 若设置了 CONFIG_PATH 环境变量，始终优先使用该路径（即使暂时不存在，便于后续写入）。
+    - 否则，返回第一个存在的候选路径；若都不存在，则回落到默认路径。
+    """
+    if CONFIG_PATH_ENV:
+        return os.path.abspath(CONFIG_PATH_ENV)
     for candidate in CONFIG_CANDIDATES:
         if candidate and os.path.exists(candidate):
             return os.path.abspath(candidate)
@@ -183,19 +188,21 @@ def load_config_sync():
     """Synchronous file read + json load but called rarely by background task.
        We cache result in CONFIG_CACHE for message handler to use without IO.
     """
-    global CONFIG_CACHE, CONFIG_MTIME, COMPILED_ALERT_REGEX
+    global CONFIG_CACHE, CONFIG_MTIME, COMPILED_ALERT_REGEX, CONFIG_PATH
     try:
         if not os.path.exists(CONFIG_PATH):
-            alt_path = resolve_config_path()
-            if alt_path != CONFIG_PATH:
-                logger.warning("配置文件不存在，尝试备用路径: %s -> %s", CONFIG_PATH, alt_path)
-                CONFIG_PATH = alt_path
-        if not os.path.exists(CONFIG_PATH):
-            CONFIG_CACHE = default_config()
-            CONFIG_MTIME = 0.0
-            COMPILED_ALERT_REGEX = []
-            logger.warning("配置文件不存在: %s，使用默认配置", CONFIG_PATH)
-            return
+            # 仅当未显式指定 CONFIG_PATH 时才尝试备用路径
+            if not CONFIG_PATH_ENV:
+                alt_path = resolve_config_path()
+                if alt_path != CONFIG_PATH and os.path.exists(alt_path):
+                    logger.warning("配置文件不存在，尝试备用路径: %s -> %s", CONFIG_PATH, alt_path)
+                    CONFIG_PATH = alt_path
+            if not os.path.exists(CONFIG_PATH):
+                CONFIG_CACHE = default_config()
+                CONFIG_MTIME = 0.0
+                COMPILED_ALERT_REGEX = []
+                logger.warning("配置文件不存在: %s，使用默认配置（待同步写入）", CONFIG_PATH)
+                return
 
         mtime = os.path.getmtime(CONFIG_PATH)
         if CONFIG_CACHE and mtime == CONFIG_MTIME:
