@@ -1575,8 +1575,60 @@ app.post('/api/config', authMiddleware, async (req, res) => {
             fs.writeFileSync(CONFIG_PATH, JSON.stringify(globalConfig, null, 2));
             console.log(`✅ [配置保存] 配置已同步到全局文件`);
             
+            // 多开模式：同步到用户的独立配置文件
+            const userConfigPath = path.join(__dirname, `config_${userId}.json`);
+            // 检查路径是否是目录（不应该发生，但如果发生需要修复）
+            if (fs.existsSync(userConfigPath) && fs.statSync(userConfigPath).isDirectory()) {
+              console.error(`❌ [配置保存] 配置文件路径是目录而不是文件: ${userConfigPath}`);
+              console.error(`   正在删除错误的目录并重新创建文件...`);
+              try {
+                fs.rmSync(userConfigPath, { recursive: true, force: true });
+                console.log(`✅ [配置保存] 已删除错误的目录: ${userConfigPath}`);
+              } catch (rmError) {
+                console.error(`❌ [配置保存] 删除目录失败: ${rmError.message}`);
+              }
+            }
+            
+            // 构建用户独立配置数据
+            const userConfigData = {
+              user_id: userId.toString(),
+              keywords: configToSync.keywords,
+              channels: configToSync.channels,
+              alert_keywords: configToSync.alert_keywords,
+              alert_regex: configToSync.alert_regex,
+              log_all_messages: configToSync.log_all_messages,
+              alert_target: configToSync.alert_target
+            };
+            
+            // 如果用户配置中有 Telegram API 配置，也添加到配置文件
+            if (configObj.telegram && configObj.telegram.api_id && configObj.telegram.api_hash) {
+              userConfigData.telegram = {
+                api_id: configObj.telegram.api_id,
+                api_hash: configObj.telegram.api_hash
+              };
+            }
+            
+            // 同步 AI 分析配置
+            if (configObj.ai_analysis) {
+              userConfigData.ai_analysis = {
+                enabled: configObj.ai_analysis.enabled || false,
+                ai_trigger_enabled: configObj.ai_analysis.ai_trigger_enabled || false,
+                ai_trigger_users: Array.isArray(configObj.ai_analysis.ai_trigger_users) 
+                  ? configObj.ai_analysis.ai_trigger_users 
+                  : [],
+                ai_trigger_prompt: configObj.ai_analysis.ai_trigger_prompt || ''
+              };
+            }
+            
+            // 写入用户独立配置文件
+            fs.writeFileSync(userConfigPath, JSON.stringify(userConfigData, null, 2));
+            console.log(`✅ [配置保存] 配置已同步到用户独立配置文件: ${userConfigPath}`);
+            console.log(`   - keywords: ${configToSync.keywords?.length || 0} 个`);
+            console.log(`   - alert_keywords: ${configToSync.alert_keywords?.length || 0} 个 ${configToSync.alert_keywords?.length > 0 ? `(${configToSync.alert_keywords.join(', ')})` : ''}`);
+            
             // 立即通知Telethon服务重新加载配置（不阻塞，静默失败）
-            await notifyTelethonConfigReload();
+            // 在多开模式下，通知对应的多开容器；否则通知主容器
+            await notifyTelethonConfigReload(userId.toString());
           }
         } catch (syncError) {
           console.warn('⚠️  [配置保存] 同步配置到全局文件失败（不影响配置保存）:', syncError.message);
@@ -8867,16 +8919,44 @@ app.post('/api/telegram/credentials/delete', authMiddleware, async (req, res) =>
 });
 
 // 通知Telethon服务重新加载配置（不阻塞，静默失败）
-async function notifyTelethonConfigReload() {
+async function notifyTelethonConfigReload(userId = null) {
   try {
-    const telethonUrl = process.env.TELETHON_URL || 'http://telethon:8888';
-    await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
-      timeout: 5000,
-      headers: {
-        'Content-Type': 'application/json'
+    // 如果提供了 userId，通知对应的多开容器；否则通知主容器
+    if (userId) {
+      // 多开模式：通知对应的多开容器
+      // 容器名格式：tg_listener_${userId}
+      // 在 Docker 网络中，可以通过容器名访问
+      const containerName = `tg_listener_${userId}`;
+      const telethonUrl = `http://${containerName}:8888`;
+      
+      try {
+        await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
+          timeout: 5000,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        console.log(`✅ [配置同步] 已通知多开容器 ${containerName} 重新加载配置`);
+      } catch (error) {
+        // 静默失败，不影响配置保存
+        console.warn(`⚠️  [配置同步] 通知多开容器 ${containerName} 重新加载配置失败（不影响配置保存）:`, error.message);
       }
-    });
-    console.log('✅ [配置同步] 已通知Telethon服务重新加载配置');
+    } else {
+      // 单开模式：通知主容器
+      const telethonUrl = process.env.TELETHON_URL || 'http://telethon:8888';
+      try {
+        await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
+          timeout: 5000,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        console.log('✅ [配置同步] 已通知Telethon服务重新加载配置');
+      } catch (error) {
+        // 静默失败，不影响配置保存
+        console.warn('⚠️  [配置同步] 通知Telethon服务重新加载配置失败（不影响配置保存）:', error.message);
+      }
+    }
   } catch (error) {
     // 静默失败，不影响配置保存
     console.warn('⚠️  [配置同步] 通知Telethon服务重新加载配置失败（不影响配置保存）:', error.message);
