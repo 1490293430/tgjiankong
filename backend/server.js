@@ -6399,10 +6399,9 @@ async function syncUserConfigAndStartMultiLoginContainer(userId) {
     fs.writeFileSync(userConfigPath, JSON.stringify(userConfigData, null, 2));
     console.log(`✅ [多开登录] 已创建用户 ${userId} 的独立配置文件: ${userConfigPath}`);
     
-    // 启动或重启该用户的独立容器
-    await startMultiLoginContainer(userId.toString());
-    
-    return true;
+    // 启动或重启该用户的独立容器（必须以实际 Running 为准）
+    const started = await startMultiLoginContainer(userId.toString());
+    return started === true;
   } catch (error) {
     console.error(`❌ [多开登录] 同步用户 ${userId} 配置失败:`, error);
     return false;
@@ -7536,9 +7535,11 @@ async function startMultiLoginContainer(userId) {
     // 等待容器启动并检查状态
     await new Promise(resolve => setTimeout(resolve, 2000));
     
+    let isRunningOk = false;
     try {
       const finalInfo = await container.inspect();
       if (finalInfo.State.Running) {
+        isRunningOk = true;
         console.log(`✅ [多开登录] 容器 ${containerName} 运行正常`);
         
         // 验证网络连接
@@ -7567,9 +7568,11 @@ async function startMultiLoginContainer(userId) {
       }
     } catch (checkError) {
       console.warn(`⚠️  [多开登录] 检查容器状态失败: ${checkError.message}`);
+      isRunningOk = false;
     }
     
-    return true;
+    // 关键：必须以 Running 为准，否则上层会误判导致把主监听停掉
+    return isRunningOk;
   } catch (error) {
     console.error(`❌ [多开登录] 启动容器失败:`, error);
     return false;
@@ -9868,7 +9871,10 @@ async function initializeMultiLoginContainers() {
         
         console.log(`🔍 [启动初始化] 账号 ${account.username} 已启用多开登录，检查已登录账号...`);
         
-        // 停止主容器（如果正在运行），并禁用自动重启
+        // 停止主容器（如果正在运行）。
+        // 关键：如果后续多开容器全部启动失败，需要把主容器恢复启动，避免“收不到消息”
+        let mainWasRunning = false;
+        let mainContainerRef = null;
         try {
           const containers = await docker.listContainers({ all: true });
           const mainContainer = containers.find(c => {
@@ -9881,10 +9887,12 @@ async function initializeMultiLoginContainers() {
           
           if (mainContainer) {
             const container = docker.getContainer(mainContainer.Id);
+            mainContainerRef = container;
             const inspect = await container.inspect();
             
             // 停止主容器（如果正在运行）
             if (inspect.State.Running || inspect.State.Restarting) {
+              mainWasRunning = true;
               console.log(`🛑 [启动初始化] 停止主容器 tg_listener（多开模式下不使用）...`);
               try {
                 await container.stop({ t: 10 });
@@ -9916,7 +9924,8 @@ async function initializeMultiLoginContainers() {
         
         console.log(`📋 [启动初始化] 账号 ${account.username} 下共有 ${accountUsers.length} 个用户（包括主账号和子账号）`);
         
-        // 为每个已登录的用户启动独立容器
+        // 为每个已登录的用户启动独立容器（必须至少一个 Running 才算多开初始化成功）
+        let anyMultiRunning = false;
         for (const user of accountUsers) {
           try {
             const userId = user._id.toString();
@@ -9930,7 +9939,10 @@ async function initializeMultiLoginContainers() {
                 console.log(`✅ [启动初始化] 用户 ${user.username} (${userId}) 已登录，启动独立容器...`);
                 
                 // 启动该用户的独立容器
-                await syncUserConfigAndStartMultiLoginContainer(userId);
+                const ok = await syncUserConfigAndStartMultiLoginContainer(userId);
+                if (ok) {
+                  anyMultiRunning = true;
+                }
                 
                 // 等待一小段时间，避免同时启动太多容器
                 await new Promise(resolve => setTimeout(resolve, 1000));
@@ -9944,6 +9956,19 @@ async function initializeMultiLoginContainers() {
             console.error(`❌ [启动初始化] 启动用户 ${user.username} 的容器失败: ${userError.message}`);
             console.error(`   错误堆栈: ${userError.stack}`);
             // 继续处理下一个用户，不中断整个流程
+          }
+        }
+
+        // 如果多开容器一个都没跑起来，恢复主监听，避免监听真空
+        if (!anyMultiRunning) {
+          console.warn(`⚠️  [启动初始化] 账号 ${account.username} 多开容器全部启动失败，将恢复主容器 tg_listener 以保证继续收消息`);
+          if (mainWasRunning && mainContainerRef) {
+            try {
+              await mainContainerRef.start();
+              console.log('✅ [启动初始化] 主容器 tg_listener 已恢复启动');
+            } catch (e) {
+              console.error(`❌ [启动初始化] 恢复主容器失败: ${e.message}`);
+            }
           }
         }
       } catch (accountError) {
