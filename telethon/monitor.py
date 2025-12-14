@@ -702,17 +702,35 @@ async def message_handler(event, client):
 
         chat = await event.get_chat()
         channel_id = str(chat.id)
-        channel_name = getattr(chat, "title", None) or getattr(chat, "username", None) or "Unknown"
+        chat_title = getattr(chat, "title", None)
+        chat_username = getattr(chat, "username", None)
+        chat_first_name = getattr(chat, "first_name", None)
+        chat_last_name = getattr(chat, "last_name", None)
+
+        # 统一对话显示名：
+        # - 频道/群：优先 title
+        # - 私聊用户：优先 first_name/last_name（可附带 @username）
+        # - 兜底：username / Unknown
+        if chat_title:
+            channel_name = chat_title
+        else:
+            chat_full_name = " ".join([n for n in [chat_first_name, chat_last_name] if n]) if (chat_first_name or chat_last_name) else None
+            if chat_full_name:
+                channel_name = f"{chat_full_name} (@{chat_username})" if chat_username else chat_full_name
+            elif chat_username:
+                channel_name = chat_username
+            else:
+                channel_name = "Unknown"
         # 记录对话解析详情，便于理解“频道/对话名”为何显示为 username
         try:
             logger.info(
                 "🔍 [对话解析] chat_id=%s chat_type=%s title=%s username=%s first_name=%s last_name=%s => channel_name=%s",
                 getattr(chat, "id", None),
                 type(chat).__name__,
-                getattr(chat, "title", None),
-                getattr(chat, "username", None),
-                getattr(chat, "first_name", None),
-                getattr(chat, "last_name", None),
+                chat_title,
+                chat_username,
+                chat_first_name,
+                chat_last_name,
                 channel_name,
             )
         except Exception:
