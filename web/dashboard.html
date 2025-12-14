@@ -1960,7 +1960,7 @@
         let recentLogsLoading = false;
         let recentLogsHasMore = true;
         let recentLogsScrollSetup = false; // 标记是否已设置滚动监听
-        const recentLogsPageSize = 30; // 每页加载30条
+        const recentLogsPageSize = 60; // 每页加载60条（提高一倍，适配手机）
         
         // 加载最近日志（支持分页和无限滚动）- 完美复刻日志页面的无感刷新
         async function loadRecentLogs(reset = false) {
@@ -2017,7 +2017,7 @@
                                 <td>${channelCell}</td>
                                 <td>${idCell}</td>
                                 <td>${keywords}</td>
-                                <td>${log.message.substring(0, 100)}${log.message.length > 100 ? '...' : ''}</td>
+                                <td>${log.message.substring(0, 200)}${log.message.length > 200 ? '...' : ''}</td>
                             </tr>`;
                         });
                         
@@ -2046,7 +2046,7 @@
                                         <td>${channelCell}</td>
                                         <td>${idCell}</td>
                                         <td>${keywords}</td>
-                                        <td>${log.message.substring(0, 100)}${log.message.length > 100 ? '...' : ''}</td>
+                                        <td>${log.message.substring(0, 200)}${log.message.length > 200 ? '...' : ''}</td>
                                     `;
                                     tbody.appendChild(row);
                                 });
