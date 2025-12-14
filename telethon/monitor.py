@@ -1443,19 +1443,48 @@ async def main():
                 # 使用 sys.exit(1) 非正常退出，触发 on-failure 重启策略
                 import sys
                 sys.exit(1)
-        except Exception as start_error:
-            # 其他异常，可能是网络问题或其他错误
-            # 尝试检查授权状态作为备用方案
-            logger.warning("⚠️  [授权检查] start() 失败: %s，尝试检查授权状态...", str(start_error))
-            try:
-                is_authorized = await client.is_user_authorized()
-                logger.info("🔍 [授权检查] 授权状态: %s", is_authorized)
-                
-                if not is_authorized:
+            except Exception as start_error:
+                # 其他异常，可能是网络问题或其他错误
+                # 尝试检查授权状态作为备用方案
+                logger.warning("⚠️  [授权检查] start() 失败: %s，尝试检查授权状态...", str(start_error))
+                try:
+                    is_authorized = await client.is_user_authorized()
+                    logger.info("🔍 [授权检查] 授权状态: %s", is_authorized)
+                    
+                    if not is_authorized:
+                        await client.disconnect()
+                        logger.error("")
+                        logger.error("=" * 60)
+                        logger.error("❌ Telegram 客户端未授权，Session 文件无效或不存在")
+                        logger.error("")
+                        logger.error("📱 请先登录 Telegram 才能开始监控消息：")
+                        logger.error("   1. 访问 Web 界面")
+                        logger.error("   2. 进入 '设置' 标签")
+                        logger.error("   3. 点击 'Telegram 首次登录' 按钮")
+                        logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
+                        logger.error("   5. 登录成功后，重启 Telethon 服务：")
+                        logger.error("      docker compose restart telethon")
+                        logger.error("")
+                        logger.error("⚠️  服务将退出，请完成登录后重启服务")
+                        logger.error("=" * 60)
+                        logger.error("")
+                        import sys
+                        sys.exit(1)
+                    else:
+                        # 如果授权状态为 True，但 start() 失败，可能是其他问题
+                        # 尝试重新连接并启动
+                        logger.warning("⚠️  [授权检查] 授权状态为 True，但 start() 失败，尝试重新连接...")
+                        if not client.is_connected():
+                            await client.connect()
+                        await client.start()
+                except Exception as auth_check_error:
+                    # 检查授权状态也失败，说明 session 确实有问题
                     await client.disconnect()
                     logger.error("")
                     logger.error("=" * 60)
-                    logger.error("❌ Telegram 客户端未授权，Session 文件无效或不存在")
+                    logger.error("❌ 无法验证 Telegram 客户端授权状态")
+                    logger.error("🔍 [错误详情] start() 错误: %s", str(start_error))
+                    logger.error("🔍 [错误详情] 授权检查错误: %s", str(auth_check_error))
                     logger.error("")
                     logger.error("📱 请先登录 Telegram 才能开始监控消息：")
                     logger.error("   1. 访问 Web 界面")
@@ -1470,35 +1499,6 @@ async def main():
                     logger.error("")
                     import sys
                     sys.exit(1)
-                else:
-                    # 如果授权状态为 True，但 start() 失败，可能是其他问题
-                    # 尝试重新连接并启动
-                    logger.warning("⚠️  [授权检查] 授权状态为 True，但 start() 失败，尝试重新连接...")
-                    if not client.is_connected():
-                        await client.connect()
-                    await client.start()
-            except Exception as auth_check_error:
-                # 检查授权状态也失败，说明 session 确实有问题
-                await client.disconnect()
-                logger.error("")
-                logger.error("=" * 60)
-                logger.error("❌ 无法验证 Telegram 客户端授权状态")
-                logger.error("🔍 [错误详情] start() 错误: %s", str(start_error))
-                logger.error("🔍 [错误详情] 授权检查错误: %s", str(auth_check_error))
-                logger.error("")
-                logger.error("📱 请先登录 Telegram 才能开始监控消息：")
-                logger.error("   1. 访问 Web 界面")
-                logger.error("   2. 进入 '设置' 标签")
-                logger.error("   3. 点击 'Telegram 首次登录' 按钮")
-                logger.error("   4. 按照提示完成登录（输入手机号和验证码）")
-                logger.error("   5. 登录成功后，重启 Telethon 服务：")
-                logger.error("      docker compose restart telethon")
-                logger.error("")
-                logger.error("⚠️  服务将退出，请完成登录后重启服务")
-                logger.error("=" * 60)
-                logger.error("")
-                import sys
-                sys.exit(1)
     except EOFError as e:
         # 如果遇到 EOFError，说明尝试了交互式输入（session 无效或不存在）
         logger.error("=" * 60)
