@@ -36,8 +36,9 @@ services:
       - PROJECT_ROOT=${PROJECT_ROOT:-/opt/telegram-monitor}
       # 多开容器自动跟随 telethon 镜像更新（让 git pull + build + up -d 就能生效）
       - TELETHON_IMAGE=${TELETHON_IMAGE:-telegram-monitor-telethon:latest}
-      - MULTI_LOGIN_AUTO_UPDATE_IMAGE=${MULTI_LOGIN_AUTO_UPDATE_IMAGE:-true}
-      - MULTI_LOGIN_AUTO_UPDATE_INTERVAL_SECONDS=${MULTI_LOGIN_AUTO_UPDATE_INTERVAL_SECONDS:-20}
+      # 仅在 tg_api 启动时触发一次多开容器重建检查（不做周期轮询，避免浪费CPU）
+      - MULTI_LOGIN_AUTO_UPDATE_IMAGE=${MULTI_LOGIN_AUTO_UPDATE_IMAGE:-false}
+      - MULTI_LOGIN_AUTO_UPDATE_INTERVAL_SECONDS=${MULTI_LOGIN_AUTO_UPDATE_INTERVAL_SECONDS:-0}
     volumes:
       - ./backend:/app
       - /app/node_modules
