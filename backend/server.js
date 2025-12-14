@@ -7522,55 +7522,21 @@ async function startMultiLoginContainer(userId) {
           console.warn(`⚠️  [多开登录] 重启容器失败: ${restartError.message}`);
           console.log(`🗑️  [多开登录] 删除旧容器并重新创建...`);
           try {
-            await container.stop();
+            await container.stop({ t: 10 });
             await container.remove();
-            // 重新创建容器（上面的代码已经创建过了，这里需要重新执行创建逻辑）
-            // 但由于 container 变量已经指向了被删除的容器，我们需要重新获取
             throw new Error('需要重新创建容器');
           } catch (removeError) {
             throw new Error(`无法删除旧容器: ${removeError.message}`);
           }
         }
+      } else {
+        // 关键修复：容器存在但未运行（State=created），必须显式 start，否则会一直卡在 created
+        console.log(`▶️  [多开登录] 容器 ${containerName} 当前状态为 ${containerInfo.State.Status}，尝试启动...`);
+        await container.start();
       }
     } else {
-      console.log(`▶️  [多开登录] 启动容器 ${containerName}...`);
-      try {
-        await container.start();
-      } catch (startError) {
-        // 如果启动失败，可能是挂载配置有问题，删除容器并重新创建
-        if (startError.message.includes('mount') || startError.message.includes('read-only file system')) {
-          console.warn(`⚠️  [多开登录] 启动容器失败（可能是挂载路径错误）: ${startError.message}`);
-          console.log(`🗑️  [多开登录] 删除旧容器并重新创建...`);
-          try {
-            await container.remove();
-            // 重新创建容器（使用 volume）
-            const projectRoot = '/opt/telegram-monitor';
-            const hostConfigPath = path.join(projectRoot, 'backend', `config_${userId}.json`);
-            const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
-            
-            container = await docker.createContainer({
-              Image: containerImage,
-              name: containerName,
-              Env: Object.entries(envVars).map(([k, v]) => `${k}=${v}`),
-              HostConfig: {
-                Binds: [
-                  `${hostConfigPath}:/app/config_${userId}.json:ro`,
-                  `${sessionHostPath}:${sessionContainerPath}:rw`,
-                  `${hostLogsPath}:/app/logs:rw`
-                ],
-                NetworkMode: networkName,
-                RestartPolicy: { Name: 'unless-stopped' }
-              }
-            });
-            console.log(`✅ [多开登录] 已重新创建容器 ${containerName}`);
-            await container.start();
-          } catch (recreateError) {
-            throw new Error(`重新创建容器失败: ${recreateError.message}`);
-          }
-        } else {
-          throw startError;
-        }
-      }
+      // 理论上这里不会发生（container 为 null 时前面会创建），保留兜底
+      throw new Error('容器对象为空，无法启动（可能创建失败）');
     }
     
     console.log(`✅ [多开登录] 容器 ${containerName} 已请求启动`);
