@@ -6677,8 +6677,9 @@ async function startMultiLoginContainer(userId) {
     }
     
     // 在检查容器之前，先确保宿主机上的配置文件是文件而不是目录
-    // 使用 __dirname 确保路径与容器创建时一致
-    const hostConfigPath = path.join(__dirname, `config_${userId}.json`);
+    // 注意：后端服务在容器内运行，需要使用 PROJECT_ROOT 环境变量获取宿主机路径
+    const projectRoot = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
+    const hostConfigPath = path.join(projectRoot, 'backend', `config_${userId}.json`);
     
     // 强制检查并修复配置文件
     if (fs.existsSync(hostConfigPath)) {
@@ -7033,10 +7034,12 @@ async function startMultiLoginContainer(userId) {
       
       
       // 固定使用项目根目录路径
-      const projectRoot = '/opt/telegram-monitor';
+      const projectRoot = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
       
-      // 构建宿主机路径（使用 __dirname 确保路径正确）
-      const hostConfigPath = path.join(__dirname, `config_${userId}.json`);
+      // 构建宿主机路径
+      // 注意：后端服务在容器内运行，__dirname 是容器内的路径
+      // 但挂载时需要宿主机的路径，所以使用 PROJECT_ROOT 环境变量
+      const hostConfigPath = path.join(projectRoot, 'backend', `config_${userId}.json`);
       const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
       
       // 确保配置文件存在（如果不存在，重新创建）
