@@ -2109,6 +2109,7 @@ app.get('/api/events', authMiddleware, (req, res) => {
         if (clientInfo.heartbeatInterval) {
           clearInterval(clientInfo.heartbeatInterval);
         }
+        clientInfo.closed = true;
         if (clientInfo.res && !clientInfo.res.destroyed && clientInfo.res.writable) {
           clientInfo.res.end();
         }
@@ -2131,11 +2132,38 @@ app.get('/api/events', authMiddleware, (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no'); // 禁用 nginx 缓冲
-  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  // CORS：只有在浏览器带 Origin 时才回显，避免无 Origin 时发送无效组合（Allow-Credentials + *）
+  if (req.headers.origin) {
+    res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
   
+  // 尽可能降低延迟 & 提升长连接稳定性（尤其在代理/容器/Windows 下）
+  try {
+    if (req.socket) {
+      // 避免 Nagle 聚合带来的小包延迟
+      req.socket.setNoDelay(true);
+      // 开启 TCP keepalive，降低 NAT/代理空闲回收概率
+      req.socket.setKeepAlive(true, 60000);
+      // 禁用 socket 超时（SSE 是长连接）
+      req.socket.setTimeout(0);
+    }
+  } catch (e) {
+    // 忽略 socket 设置错误
+  }
+
   // 立即刷新响应头，确保连接建立
   res.flushHeaders();
+
+  // 发送 retry 建议（对标准 EventSource 有效；fetch-stream 客户端可忽略）
+  // 同时发送一段 padding（常见 2KB）以尽快冲破中间层缓冲，提升“首条消息更及时”
+  try {
+    res.write(`retry: 5000\n`);
+    res.write(`: ${' '.repeat(2048)}\n\n`);
+  } catch (e) {
+    // ignore
+  }
 
   // 发送初始连接消息
   try {
@@ -2157,7 +2185,9 @@ app.get('/api/events', authMiddleware, (req, res) => {
     userId: userId,
     connectedAt: Date.now(),
     lastPing: Date.now(),
-    heartbeatInterval: null
+    heartbeatInterval: null,
+    closed: false,
+    backpressureCount: 0
   };
 
   // 将客户端添加到连接池（使用对象而不是直接存储 res）
@@ -2169,17 +2199,28 @@ app.get('/api/events', authMiddleware, (req, res) => {
     if (sseClients.has(clientInfo)) {
       try {
         // 检查响应对象是否仍然可写
-        if (res.writable && !res.destroyed) {
+        if (!clientInfo.closed && res.writable && !res.destroyed) {
           const pingMessage = JSON.stringify({
             type: 'ping',
             timestamp: new Date().toISOString()
           });
-          res.write(`data: ${pingMessage}\n\n`);
+          const ok = res.write(`data: ${pingMessage}\n\n`);
+          if (!ok) {
+            // 客户端读取过慢，避免堆积内存：主动断开让客户端重连
+            clientInfo.backpressureCount += 1;
+            if (clientInfo.backpressureCount >= 2) {
+              throw new Error('SSE backpressure (heartbeat)');
+            }
+            res.once('drain', () => {
+              clientInfo.backpressureCount = 0;
+            });
+          }
           clientInfo.lastPing = Date.now();
         } else {
           // 连接已断开
           clearInterval(heartbeatInterval);
           sseClients.delete(clientInfo);
+          clientInfo.closed = true;
           res.end();
         }
       } catch (err) {
@@ -2187,7 +2228,8 @@ app.get('/api/events', authMiddleware, (req, res) => {
         clearInterval(heartbeatInterval);
         sseClients.delete(clientInfo);
         try {
-        res.end();
+          clientInfo.closed = true;
+          res.end();
         } catch (e) {
           // 忽略结束连接时的错误
         }
@@ -2200,9 +2242,13 @@ app.get('/api/events', authMiddleware, (req, res) => {
   clientInfo.heartbeatInterval = heartbeatInterval;
 
   // 处理客户端断开连接
+  let cleanedUp = false;
   const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
     clearInterval(heartbeatInterval);
     sseClients.delete(clientInfo);
+    clientInfo.closed = true;
     try {
       if (!res.destroyed && res.writable) {
         res.end();
@@ -2256,13 +2302,27 @@ function broadcastEvent(eventType, data, targetUserId = null) {
       const res = clientInfo.res;
       
       // 检查连接是否仍然有效
-      if (!res || res.destroyed || !res.writable) {
+      if (clientInfo.closed || !res || res.destroyed || !res.writable) {
         disconnectedClients.push(clientInfo);
         return;
       }
       
       // 尝试发送消息
-      res.write(formattedMessage);
+      const ok = res.write(formattedMessage);
+      if (!ok) {
+        // 慢客户端：避免内存堆积，主动断开让其重连（前端有自动重连+降级刷新）
+        clientInfo.backpressureCount = (clientInfo.backpressureCount || 0) + 1;
+        disconnectedClients.push(clientInfo);
+        try {
+          clientInfo.closed = true;
+          res.end();
+        } catch (e) {
+          // ignore
+        }
+        return;
+      } else {
+        clientInfo.backpressureCount = 0;
+      }
       
       // 更新最后活跃时间
       clientInfo.lastPing = Date.now();
@@ -2281,6 +2341,7 @@ function broadcastEvent(eventType, data, targetUserId = null) {
         clearInterval(clientInfo.heartbeatInterval);
       }
       if (clientInfo.res && !clientInfo.res.destroyed) {
+        clientInfo.closed = true;
         clientInfo.res.end();
       }
     } catch (e) {
@@ -4677,50 +4738,67 @@ app.delete('/api/backup/:backupName', authMiddleware, async (req, res) => {
 // 用于在 Telethon 直接保存消息到 MongoDB 后，通知前端有新消息
 app.post('/api/internal/message-notify', async (req, res) => {
   try {
-    const { log_id, userId: bodyUserId, channel, channelId, sender, message, keywords, time, alerted } = req.body;
-    
-    // 从log_id获取userId
-    let userId = bodyUserId || null;
-    if (!userId && log_id) {
-      try {
-        const log = await Log.findById(log_id);
-        if (log && log.userId) {
-          userId = log.userId.toString();
+    const body = req.body;
+    const items = Array.isArray(body)
+      ? body
+      : (body && Array.isArray(body.batch) ? body.batch : [body]);
+
+    // 兼容旧 Telethon：单条且缺 userId 时，允许通过 log_id 回查（批量不做回查，避免 DB 负载）
+    if (items.length === 1) {
+      const it = items[0] || {};
+      if (!it.userId && it.log_id) {
+        try {
+          const log = await Log.findById(it.log_id).select('userId').lean();
+          if (log && log.userId) {
+            it.userId = log.userId.toString();
+          }
+        } catch {
+          // ignore
         }
-      } catch (err) {
-        console.error('获取日志userId失败:', err);
+      }
+      items[0] = it;
+    }
+
+    const incrementsByUser = new Map();
+    const touchedUsers = new Set();
+
+    for (const it of items) {
+      if (!it) continue;
+      const log_id = it.log_id;
+      const userId = it.userId ? String(it.userId) : null;
+
+      // 安全保护：没有 userId 绝不能 broadcast 给所有 SSE 连接（否则会数据泄漏/串号）
+      if (userId) {
+        broadcastEvent('new_message', {
+          id: log_id,
+          userId: userId,
+          channel: it.channel || 'Unknown',
+          channelId: it.channelId || '',
+          sender: it.sender || 'Unknown',
+          message: it.message || '',
+          keywords: it.keywords || [],
+          time: it.time || new Date().toISOString(),
+          alerted: it.alerted || false
+        }, userId);
+
+        broadcastEvent('stats_updated', { userId: userId }, userId);
+
+        incrementsByUser.set(userId, (incrementsByUser.get(userId) || 0) + 1);
+        touchedUsers.add(userId);
       }
     }
-    
-    // 推送新消息事件给前端（只推送给该用户）
-    broadcastEvent('new_message', {
-      id: log_id,
-      userId: userId,
-      channel: channel || 'Unknown',
-      channelId: channelId || '',
-      sender: sender || 'Unknown',
-      message: message || '',
-      keywords: keywords || [],
-      time: time || new Date().toISOString(),
-      alerted: alerted || false
-    }, userId);
-    
-    // 推送统计更新事件（只推送给该用户）
-    broadcastEvent('stats_updated', { userId: userId }, userId);
-    
-    // 事件驱动计数触发：不再对每条消息执行 countDocuments（高 CPU/IO）
-    if (userId) {
-      handleCountTriggerOnNewMessage(String(userId)).catch(() => {});
+
+    // 事件驱动计数触发：按 userId 聚合增量，一次性加 N
+    for (const [userId, inc] of incrementsByUser.entries()) {
+      enqueueCountTriggerIncrement(userId, inc);
     }
-    
-    // 清除统计缓存（如果有userId，只清除该用户的缓存；否则清除所有）
-    if (userId) {
+
+    // 清除统计缓存：只清除被触及用户，避免清全局
+    for (const userId of touchedUsers) {
       statsCache.delete(userId);
-    } else {
-      statsCache.clear();
     }
-    
-    res.json({ status: 'ok', message: '消息通知已推送' });
+
+    res.json({ status: 'ok', message: '消息通知已推送', batch: items.length });
   } catch (error) {
     console.error('❌ 消息通知推送失败:', error.message);
     res.status(500).json({ error: '推送消息通知失败：' + error.message });
@@ -9389,6 +9467,8 @@ const countTriggerConfigMap = new Map(); // userId -> { threshold, username }
 const countTriggerCounters = new Map(); // userId -> currentCount
 const countTriggerReconcileTimers = new Map(); // userId -> timeoutId
 let countTriggerConfigRefreshDebounceTimer = null;
+let countTriggerConfigsReady = false; // 启动早期/刷新中：用于避免漏触发
+const pendingCountIncrements = new Map(); // userId -> pendingIncrements
 
 function scheduleCountTriggerConfigRefresh(userIdStr = null, delayMs = 800) {
   // 防抖：短时间内多次保存配置只触发一次刷新
@@ -9396,11 +9476,25 @@ function scheduleCountTriggerConfigRefresh(userIdStr = null, delayMs = 800) {
   countTriggerConfigRefreshDebounceTimer = setTimeout(async () => {
     countTriggerConfigRefreshDebounceTimer = null;
     await refreshCountTriggerConfigs();
+    countTriggerConfigsReady = true;
+    await applyPendingCountIncrements();
     // 配置变更后对该用户做一次轻量对账（如果该用户仍启用 count 触发）
     if (userIdStr) {
       await reconcileCountTriggerUserOnce(String(userIdStr));
     }
   }, Math.max(200, delayMs));
+}
+
+async function applyPendingCountIncrements() {
+  if (pendingCountIncrements.size === 0) return;
+  for (const [userIdStr, inc] of pendingCountIncrements.entries()) {
+    pendingCountIncrements.delete(userIdStr);
+    try {
+      await handleCountTriggerOnNewMessage(userIdStr, Number(inc) || 0);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 async function refreshCountTriggerConfigs() {
@@ -9488,19 +9582,20 @@ function scheduleCountTriggerReconcileOnce(userIdStr, delayMs = 30000) {
   countTriggerReconcileTimers.set(userIdStr, t);
 }
 
-async function handleCountTriggerOnNewMessage(userIdStr) {
+async function handleCountTriggerOnNewMessage(userIdStr, increment = 1) {
   const cfg = countTriggerConfigMap.get(userIdStr);
   if (!cfg) return;
 
   const threshold = cfg.threshold;
-  const current = (countTriggerCounters.get(userIdStr) || 0) + 1;
+  const inc = Math.max(0, Number(increment) || 0);
+  const current = (countTriggerCounters.get(userIdStr) || 0) + inc;
   if (current < threshold) {
     countTriggerCounters.set(userIdStr, current);
     return;
   }
 
-  // 达到阈值：计数归零并异步触发分析（不阻塞请求）
-  countTriggerCounters.set(userIdStr, 0);
+  // 达到阈值：保留余数，触发一次分析（后续 backlog 复查会继续补触发）
+  countTriggerCounters.set(userIdStr, current % threshold);
   console.log(`📊 [事件计数触发] 用户 ${cfg.username || userIdStr} 达到阈值 ${threshold}，触发 AI 分析`);
 
   (async () => {
@@ -9516,6 +9611,21 @@ async function handleCountTriggerOnNewMessage(userIdStr) {
     }
     await recheckAndRetriggerIfBacklog(userIdStr, threshold);
   })();
+}
+
+function enqueueCountTriggerIncrement(userIdStr, inc = 1) {
+  const id = String(userIdStr);
+  const add = Math.max(0, Number(inc) || 0);
+  if (!id || add <= 0) return;
+
+  if (!countTriggerConfigsReady) {
+    // 启动早期/首次消息：先缓存增量，触发一次立即刷新，避免漏触发
+    pendingCountIncrements.set(id, (pendingCountIncrements.get(id) || 0) + add);
+    scheduleCountTriggerConfigRefresh(null, 0);
+    return;
+  }
+
+  handleCountTriggerOnNewMessage(id, add).catch(() => {});
 }
 
 // 执行 AI 批量分析
@@ -10198,6 +10308,8 @@ app.listen(PORT, '0.0.0.0', () => {
   // 启动计数触发配置刷新（事件驱动触发需要阈值配置缓存）
   setTimeout(async () => {
     await refreshCountTriggerConfigs();
+    countTriggerConfigsReady = true;
+    await applyPendingCountIncrements();
     // 启动时一次性对账：补触发可能的 backlog（不再做周期兜底轮询）
     await reconcileAllCountTriggersOnce();
   }, 3500);

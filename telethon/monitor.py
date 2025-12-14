@@ -75,6 +75,10 @@ USER_ID = os.getenv("USER_ID", "").strip()
 AI_CONCURRENCY = int(os.getenv("AI_CONCURRENCY", "2"))
 ALERT_CONCURRENCY = int(os.getenv("ALERT_CONCURRENCY", "4"))
 
+# SSE 新消息通知批量参数（降低后端 QPS/CPU，延迟可控）
+MESSAGE_NOTIFY_BATCH_WINDOW_MS = int(os.getenv("MESSAGE_NOTIFY_BATCH_WINDOW_MS", "200"))
+MESSAGE_NOTIFY_BATCH_MAX = int(os.getenv("MESSAGE_NOTIFY_BATCH_MAX", "50"))
+
 # config reload interval (秒) - 增加到5分钟作为兜底机制（配置变更主要通过HTTP通知立即生效）
 CONFIG_RELOAD_INTERVAL = float(os.getenv("CONFIG_RELOAD_INTERVAL", "300.0"))
 
@@ -111,6 +115,12 @@ MONITORED_CHANNELS_SET: set = set()
 # async semaphores to limit concurrency for heavy tasks
 ai_semaphore = asyncio.Semaphore(AI_CONCURRENCY)
 alert_semaphore = asyncio.Semaphore(ALERT_CONCURRENCY)
+
+# message-notify batching buffer (reduces HTTP QPS & CPU)
+_notify_lock = asyncio.Lock()
+_notify_event = asyncio.Event()
+_notify_buffer: List[dict] = []
+_notify_flushing = False
 
 # shutdown event
 SHUTDOWN = asyncio.Event()
@@ -547,12 +557,77 @@ async def notify_new_message_async(log_id, channel, channel_id, sender, message,
             "time": datetime.utcnow().isoformat(),
             "alerted": alerted
         }
-        # 使用内部API，不需要认证，超时时间短，失败不影响主流程
-        # silent=True: 连接失败时只记录 DEBUG，不记录 ERROR/WARNING
-        await post_json(f"{API_URL}/api/internal/message-notify", payload, timeout=3, silent=True)
+        # 批量发送：降低 HTTP QPS/CPU，默认只增加 ~200ms 延迟
+        await enqueue_message_notify(payload, flush_immediately=bool(alerted))
     except Exception as e:
         # 静默失败，不影响主流程（额外保护层）
         logger.debug("通知新消息失败（不影响功能）: %s", e)
+
+
+async def enqueue_message_notify(payload: dict, flush_immediately: bool = False):
+    """把消息通知放入批量缓冲。flush_immediately=True 会触发立即 flush（用于告警/命中等）"""
+    if not payload:
+        return
+    size = 0
+    async with _notify_lock:
+        _notify_buffer.append(payload)
+        size = len(_notify_buffer)
+
+    # 达到上限或需要立即发送：立刻 flush
+    if flush_immediately or size >= MESSAGE_NOTIFY_BATCH_MAX:
+        asyncio.create_task(flush_message_notify_batch())
+        return
+
+    # 否则交给后台任务在 window 后 flush
+    _notify_event.set()
+
+
+async def flush_message_notify_batch():
+    """把缓冲区中的通知批量发送到后端（可重入保护）。失败会静默丢弃（不影响主流程）。"""
+    global _notify_flushing
+    # 只允许一个 flush 在跑
+    async with _notify_lock:
+        if _notify_flushing:
+            return
+        _notify_flushing = True
+
+    try:
+        while True:
+            async with _notify_lock:
+                if not _notify_buffer:
+                    return
+                batch = _notify_buffer[:MESSAGE_NOTIFY_BATCH_MAX]
+                del _notify_buffer[:len(batch)]
+
+            # 使用同一个 endpoint，后端兼容 batch 格式
+            await post_json(
+                f"{API_URL}/api/internal/message-notify",
+                {"batch": batch},
+                timeout=3,
+                silent=True
+            )
+    except Exception:
+        # 静默失败，不影响主流程（SSE 刷新属于“尽力而为”）
+        pass
+    finally:
+        async with _notify_lock:
+            _notify_flushing = False
+
+
+async def message_notify_batch_worker():
+    """后台批量 flush 任务：收到新事件后等待 window，再 flush。"""
+    window = max(10, MESSAGE_NOTIFY_BATCH_WINDOW_MS) / 1000.0
+    while not SHUTDOWN.is_set():
+        try:
+            await _notify_event.wait()
+            _notify_event.clear()
+            await asyncio.sleep(window)
+            await flush_message_notify_batch()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            # 不让后台任务死掉
+            await asyncio.sleep(0.5)
 
 
 # -----------------------
@@ -998,6 +1073,9 @@ async def main():
 
     # create aiohttp session (需要先创建，才能获取用户配置)
     http_session = aiohttp.ClientSession()
+
+    # start message-notify batch worker
+    notify_worker = asyncio.create_task(message_notify_batch_worker())
 
     # 首先加载配置文件，检查是否有 user_id
     await asyncio.get_event_loop().run_in_executor(None, load_config_sync)
@@ -1724,6 +1802,12 @@ async def main():
     finally:
         SHUTDOWN.set()
         reloader.cancel()
+        notify_worker.cancel()
+        # best-effort flush remaining notifications
+        try:
+            await flush_message_notify_batch()
+        except Exception:
+            pass
         await runner.cleanup()
         await http_session.close()
 
