@@ -2621,7 +2621,7 @@
                 if (resp.ok && data && data.status === 'ok') {
                     const r = data.result || {};
                     el.style.color = '#16a34a';
-                    el.textContent = `完成：email=${r.email}; webhook=${r.webhook}`;
+                    el.textContent = `完成：telegram=${r.telegram || 'N/A'}; email=${r.email || 'N/A'}; webhook=${r.webhook || 'N/A'}`;
                 } else {
                     el.style.color = '#dc2626';
                     el.textContent = `失败：${data?.error || '未知错误'}`;

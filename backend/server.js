@@ -2803,7 +2803,46 @@ app.post('/api/alert/test', authMiddleware, async (req, res) => {
 消息内容：
 ${message}`;
 
-    const result = { telegram: 'handled-by-telethon', email: null, webhook: null };
+    const result = { telegram: null, email: null, webhook: null };
+
+    // Telegram 测试（通过Telethon服务发送）
+    const telegramEnabled = actions?.telegram === true || (typeof actions?.telegram === 'object' && actions.telegram?.enable !== false);
+    if (telegramEnabled && config.alert_target) {
+      try {
+        console.log(`📱 [测试告警] 准备发送Telegram测试告警到: ${config.alert_target}`);
+        const userIdObj = new mongoose.Types.ObjectId(userId);
+        const telethonUrl = await getTelethonServiceUrl(userIdObj.toString());
+        console.log(`🔗 [测试告警] 使用 Telethon 服务 URL: ${telethonUrl} (userId: ${userIdObj.toString()})`);
+        await axios.post(`${telethonUrl}/api/internal/telegram/send`, {
+          target: config.alert_target,
+          message: alertMessage,
+          userId: userIdObj.toString()
+        }, {
+          timeout: 10000,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        console.log('✅ [测试告警] Telegram 测试告警已发送到:', config.alert_target);
+        result.telegram = 'sent';
+      } catch (error) {
+        console.error('❌ [测试告警] Telegram 发送失败:', error.message);
+        if (error.response) {
+          console.error('响应状态:', error.response.status, '响应数据:', error.response.data);
+        }
+        result.telegram = `error: ${error.message}`;
+      }
+    } else {
+      if (!telegramEnabled) {
+        console.log('⚠️ [测试告警] Telegram告警未启用 (alert_actions.telegram:', actions?.telegram, ')');
+        result.telegram = 'disabled (telegram not enabled)';
+      } else if (!config.alert_target) {
+        console.log('⚠️ [测试告警] Telegram告警目标未设置 (alert_target: 空)');
+        result.telegram = 'disabled (alert_target not set)';
+      } else {
+        result.telegram = 'disabled';
+      }
+    }
 
     // 邮件测试
     if (actions.email && actions.email.enable) {
