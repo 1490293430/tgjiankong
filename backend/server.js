@@ -2416,19 +2416,17 @@ app.get('/api/stats', authMiddleware, async (req, res) => {
 
 // 获取 Telethon 服务 URL（根据 userId 和多开模式）
 async function getTelethonServiceUrl(userId = null) {
-  // 如果设置了环境变量，直接使用
-  if (process.env.TELETHON_URL) {
-    console.log(`🔗 [Telethon URL] 使用环境变量 TELETHON_URL: ${process.env.TELETHON_URL}`);
-    return process.env.TELETHON_URL;
-  }
-  
-  // 如果没有 userId，使用默认服务名
+  // 如果没有 userId，使用环境变量或默认服务名
   if (!userId) {
+    if (process.env.TELETHON_URL) {
+      console.log(`🔗 [Telethon URL] 未提供 userId，使用环境变量 TELETHON_URL: ${process.env.TELETHON_URL}`);
+      return process.env.TELETHON_URL;
+    }
     console.log(`🔗 [Telethon URL] 未提供 userId，使用默认服务: http://telethon:8888`);
     return 'http://telethon:8888';
   }
   
-  // 检查是否启用了多开模式
+  // 优先检查是否启用了多开模式（多开模式下必须使用独立容器）
   try {
     const accountId = await getAccountId(userId);
     const accountConfig = await loadUserConfig(accountId.toString());
@@ -2444,14 +2442,22 @@ async function getTelethonServiceUrl(userId = null) {
       console.log(`✅ [Telethon URL] 多开模式，使用容器 URL: ${containerUrl}`);
       return containerUrl;
     } else {
-      // 单开模式：使用默认服务名
+      // 单开模式：使用环境变量或默认服务名
+      if (process.env.TELETHON_URL) {
+        console.log(`✅ [Telethon URL] 单开模式，使用环境变量 TELETHON_URL: ${process.env.TELETHON_URL}`);
+        return process.env.TELETHON_URL;
+      }
       console.log(`✅ [Telethon URL] 单开模式，使用默认服务: http://telethon:8888`);
       return 'http://telethon:8888';
     }
   } catch (error) {
-    // 如果检查失败，使用默认服务名
-    console.warn(`⚠️  [Telethon URL] 无法检查多开模式，使用默认服务: ${error.message}`);
-    console.warn(`⚠️  [Telethon URL] 错误堆栈: ${error.stack}`);
+    // 如果检查失败，使用环境变量或默认服务名
+    console.warn(`⚠️  [Telethon URL] 无法检查多开模式，使用备用方案: ${error.message}`);
+    if (process.env.TELETHON_URL) {
+      console.warn(`⚠️  [Telethon URL] 使用环境变量 TELETHON_URL: ${process.env.TELETHON_URL}`);
+      return process.env.TELETHON_URL;
+    }
+    console.warn(`⚠️  [Telethon URL] 使用默认服务: http://telethon:8888`);
     return 'http://telethon:8888';
   }
 }
