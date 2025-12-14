@@ -9,6 +9,7 @@ from typing import List, Optional, Dict, Any
 import psutil
 import logging
 import signal
+import traceback
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -592,22 +593,37 @@ async def send_telegram_message_async(target: str, message: str) -> bool:
         return False
     
     try:
+        logger.info("🔍 [消息发送] 检查客户端连接状态...")
         if not telegram_client.is_connected():
+            logger.info("🔍 [消息发送] 客户端未连接，正在连接...")
             await telegram_client.connect()
+            logger.info("✅ [消息发送] 客户端已连接")
+        else:
+            logger.info("✅ [消息发送] 客户端已连接")
         
         # 尝试通过用户名或手机号获取实体
+        logger.info("🔍 [消息发送] 正在查找目标: %s", target)
         try:
             entity = await telegram_client.get_entity(target)
+            logger.info("✅ [消息发送] 找到目标实体: %s (ID: %s)", getattr(entity, 'username', None) or getattr(entity, 'first_name', None) or 'Unknown', getattr(entity, 'id', 'Unknown'))
+        except ValueError as ve:
+            # ValueError 通常表示找不到用户
+            logger.error("❌ [消息发送] 无法找到目标用户/群组 %s: %s", target, str(ve))
+            logger.error("   提示: 请检查用户名是否正确，或确保该用户/群组存在且可访问")
+            return False
         except Exception as e:
-            logger.error("❌ 无法找到目标用户/群组 %s: %s", target, str(e))
+            logger.error("❌ [消息发送] 获取目标实体失败 %s: %s (类型: %s)", target, str(e), type(e).__name__)
             return False
         
         # 发送消息
+        logger.info("📤 [消息发送] 正在发送消息到: %s (消息长度: %d 字符)", target, len(message))
         await telegram_client.send_message(entity, message)
-        logger.info("✅ Telegram消息已发送到: %s", target)
+        logger.info("✅ [消息发送] Telegram消息已成功发送到: %s", target)
         return True
     except Exception as e:
-        logger.error("❌ 发送Telegram消息失败: %s", str(e))
+        logger.error("❌ [消息发送] 发送Telegram消息失败: %s (类型: %s)", str(e), type(e).__name__)
+        import traceback
+        logger.error("   错误堆栈: %s", traceback.format_exc())
         return False
 
 
@@ -620,17 +636,28 @@ async def handle_send_telegram(request):
         data = await request.json()
         target = data.get("target")
         message = data.get("message")
+        userId = data.get("userId", "N/A")
+        
+        logger.info("📨 [消息发送] 收到发送请求 - target: %s, message长度: %d, userId: %s", target, len(message) if message else 0, userId)
         
         if not target or not message:
+            logger.error("❌ [消息发送] 缺少必要字段 - target: %s, message: %s", target, "存在" if message else "不存在")
             return web.json_response({"error": "缺少必要字段：target 和 message"}, status=400)
         
-        success = await send_telegram_message_async(target, message)
+        # 处理目标格式（如果包含 @ 符号，保留它；Telegram API 支持带 @ 的用户名）
+        clean_target = str(target).strip()
+        logger.info("🔍 [消息发送] 准备发送消息到: %s", clean_target)
+        
+        success = await send_telegram_message_async(clean_target, message)
         if success:
+            logger.info("✅ [消息发送] 消息已成功发送到: %s", clean_target)
             return web.json_response({"status": "ok", "message": "消息已发送"})
         else:
+            logger.error("❌ [消息发送] 发送失败到: %s", clean_target)
             return web.json_response({"error": "发送失败"}, status=500)
     except Exception as e:
-        logger.error("处理发送Telegram消息请求失败: %s", str(e))
+        logger.error("❌ [消息发送] 处理发送Telegram消息请求失败: %s", str(e))
+        logger.error("   错误堆栈: %s", traceback.format_exc())
         return web.json_response({"error": str(e)}, status=500)
 
 
