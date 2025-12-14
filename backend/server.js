@@ -2256,6 +2256,10 @@ app.get('/api/events', authMiddleware, (req, res) => {
       timestamp: new Date().toISOString()
     });
     res.write(`data: ${initMessage}\n\n`);
+    // 立即刷新，确保初始消息立即发送
+    if (typeof res.flush === 'function') {
+      res.flush();
+    }
   } catch (err) {
     console.error('SSE 初始化消息发送失败:', err);
     return res.end();
@@ -2296,6 +2300,15 @@ app.get('/api/events', authMiddleware, (req, res) => {
             res.once('drain', () => {
               clientInfo.backpressureCount = 0;
             });
+          } else {
+            // 立即刷新心跳消息
+            try {
+              if (typeof res.flush === 'function') {
+                res.flush();
+              }
+            } catch (e) {
+              // 忽略刷新错误
+            }
           }
           clientInfo.lastPing = Date.now();
         } else {
@@ -2404,6 +2417,15 @@ function broadcastEvent(eventType, data, targetUserId = null) {
         return;
       } else {
         clientInfo.backpressureCount = 0;
+      }
+      
+      // 立即刷新响应，确保消息立即发送到客户端
+      try {
+        if (typeof res.flush === 'function') {
+          res.flush();
+        }
+      } catch (e) {
+        // 忽略刷新错误
       }
       
       // 更新最后活跃时间
