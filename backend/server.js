@@ -544,7 +544,21 @@ const authMiddleware = async (req, res, next) => {
     };
     next();
   } catch (error) {
-    return res.status(401).json({ error: '未授权：token 无效' });
+    // 检查是否是 JWT 签名验证失败（可能是 JWT_SECRET 改变了）
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      // 如果是签名错误，提示用户可能是 JWT_SECRET 改变了，需要重新登录
+      if (error.name === 'JsonWebTokenError' && error.message && error.message.includes('signature')) {
+        return res.status(401).json({ 
+          error: '未授权：token 无效。如果您最近设置了 JWT_SECRET，请重新登录以获取新的 token。' 
+        });
+      }
+      return res.status(401).json({ 
+        error: error.name === 'TokenExpiredError' 
+          ? '未授权：token 已过期，请重新登录' 
+          : '未授权：token 无效，请重新登录' 
+      });
+    }
+    return res.status(401).json({ error: '未授权：token 验证失败' });
   }
 };
 
