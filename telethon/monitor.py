@@ -703,6 +703,20 @@ async def message_handler(event, client):
         chat = await event.get_chat()
         channel_id = str(chat.id)
         channel_name = getattr(chat, "title", None) or getattr(chat, "username", None) or "Unknown"
+        # 记录对话解析详情，便于理解“频道/对话名”为何显示为 username
+        try:
+            logger.info(
+                "🔍 [对话解析] chat_id=%s chat_type=%s title=%s username=%s first_name=%s last_name=%s => channel_name=%s",
+                getattr(chat, "id", None),
+                type(chat).__name__,
+                getattr(chat, "title", None),
+                getattr(chat, "username", None),
+                getattr(chat, "first_name", None),
+                getattr(chat, "last_name", None),
+                channel_name,
+            )
+        except Exception:
+            pass
 
         # check channel filter
         monitored_channels = config.get("channels", []) or []
