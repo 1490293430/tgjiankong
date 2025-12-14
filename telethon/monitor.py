@@ -723,33 +723,50 @@ async def message_handler(event, client):
             logger.info("🔍 [频道过滤] 未配置频道过滤，监控所有频道")
 
         # sender info
+        # 先获取 sender 基本信息
         sender_entity = None
         try:
             sender_entity = await event.get_sender()
         except Exception:
             sender_entity = None
 
-        sender = "Unknown"
-        if sender_entity:
-            first_name = getattr(sender_entity, "first_name", None)
-            last_name = getattr(sender_entity, "last_name", None)
-            username = getattr(sender_entity, "username", None)
-            full_name = " ".join([n for n in [first_name, last_name] if n]) if (first_name or last_name) else None
-            if full_name:
-                sender = f"{full_name} (@{username})" if username else full_name
-            elif username:
-                sender = f"@{username}"
-            else:
-                sender = str(getattr(sender_entity, "id", "Unknown"))
-        else:
-            sid = getattr(event, "sender_id", None)
-            sender = str(sid) if sid else channel_name
-
-        sender_id = None
-        if sender_entity:
-            sender_id = getattr(sender_entity, "id", None)
+        # 预取 sender_id，便于后续补全
+        sender_id = getattr(sender_entity, "id", None) if sender_entity else None
         if not sender_id:
             sender_id = getattr(event, "sender_id", None)
+
+        # 如果缺少姓名信息且有 sender_id，再尝试拉取完整实体以补全 first_name/last_name
+        if sender_id and (not sender_entity or (not getattr(sender_entity, "first_name", None) and not getattr(sender_entity, "last_name", None))):
+            try:
+                detailed_entity = await client.get_entity(sender_id)
+                sender_entity = sender_entity or detailed_entity
+            except Exception:
+                # 补全失败时忽略，后续仍会使用已有的 username / id
+                detailed_entity = None
+        else:
+            detailed_entity = None
+
+        # 组装显示名称：优先使用姓名，其次用户名，最后使用ID或频道名
+        first_name = getattr(sender_entity, "first_name", None)
+        last_name = getattr(sender_entity, "last_name", None)
+        username = getattr(sender_entity, "username", None)
+
+        # 如果初次获取为空且补全实体存在，再尝试补全
+        if detailed_entity:
+            first_name = first_name or getattr(detailed_entity, "first_name", None)
+            last_name = last_name or getattr(detailed_entity, "last_name", None)
+            username = username or getattr(detailed_entity, "username", None)
+
+        full_name = " ".join([n for n in [first_name, last_name] if n]) if (first_name or last_name) else None
+
+        if full_name:
+            sender = f"{full_name} (@{username})" if username else full_name
+        elif username:
+            sender = f"@{username}"
+        elif sender_id:
+            sender = str(sender_id)
+        else:
+            sender = channel_name
 
         # ai trigger users normalize
         ai_analysis_config = config.get("ai_analysis", {})
