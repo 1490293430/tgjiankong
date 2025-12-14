@@ -20,7 +20,26 @@ from mongo_index_init import ensure_indexes
 # -----------------------
 # 配置（ENV 或默认）
 # -----------------------
-CONFIG_PATH = os.getenv("CONFIG_PATH", "/app/config.json")
+# 兼容多种运行方式（Docker 容器、本地开发）
+CONFIG_PATH_ENV = os.getenv("CONFIG_PATH")
+DEFAULT_CONFIG_PATH = "/app/config.json"
+CONFIG_CANDIDATES = [
+    CONFIG_PATH_ENV,
+    DEFAULT_CONFIG_PATH,
+    os.path.join(os.getcwd(), "config.json"),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend", "config.json")),
+]
+
+
+def resolve_config_path():
+    """返回第一个存在的配置路径；都不存在则使用优先级最高的候选项."""
+    for candidate in CONFIG_CANDIDATES:
+        if candidate and os.path.exists(candidate):
+            return os.path.abspath(candidate)
+    return os.path.abspath(CONFIG_CANDIDATES[0] or DEFAULT_CONFIG_PATH)
+
+
+CONFIG_PATH = resolve_config_path()
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017")
 MONGO_DBNAME = os.getenv("MONGO_DBNAME", "tglogs")
 API_URL = os.getenv("API_URL", "http://api:3000")
@@ -93,6 +112,30 @@ _cpu_process = None
 _cpu_last_check = 0
 _cpu_check_interval = 10.0  # 每10秒最多检查一次
 
+
+# -----------------------
+# 工具函数
+# -----------------------
+def normalize_list(values) -> List[str]:
+    """将任意输入转换为去除空白的字符串列表."""
+    if values is None:
+        return []
+    # 已是列表
+    if isinstance(values, list):
+        result = []
+        for v in values:
+            s = str(v).strip()
+            if s:
+                result.append(s)
+        return result
+    # 如果是字符串，按换行或逗号拆分
+    if isinstance(values, str):
+        parts = re.split(r"[\n,]", values)
+        return [p.strip() for p in parts if p and p.strip()]
+    # 其他类型，尝试字符串化
+    s = str(values).strip()
+    return [s] if s else []
+
 def log_cpu_usage(tag=""):
     """记录CPU使用率，但限制调用频率以避免自身消耗过多CPU"""
     global _cpu_process, _cpu_last_check
@@ -143,6 +186,11 @@ def load_config_sync():
     global CONFIG_CACHE, CONFIG_MTIME, COMPILED_ALERT_REGEX
     try:
         if not os.path.exists(CONFIG_PATH):
+            alt_path = resolve_config_path()
+            if alt_path != CONFIG_PATH:
+                logger.warning("配置文件不存在，尝试备用路径: %s -> %s", CONFIG_PATH, alt_path)
+                CONFIG_PATH = alt_path
+        if not os.path.exists(CONFIG_PATH):
             CONFIG_CACHE = default_config()
             CONFIG_MTIME = 0.0
             COMPILED_ALERT_REGEX = []
@@ -159,6 +207,13 @@ def load_config_sync():
         # normalize fields with defaults
         base = default_config()
         base.update(cfg or {})
+        
+        # 规范化列表字段，避免 null/对象导致匹配失败
+        base["keywords"] = normalize_list(base.get("keywords"))
+        base["alert_keywords"] = normalize_list(base.get("alert_keywords"))
+        base["channels"] = normalize_list(base.get("channels"))
+        base["alert_regex"] = normalize_list(base.get("alert_regex"))
+        
         CONFIG_CACHE = base
         CONFIG_MTIME = mtime
 
@@ -176,6 +231,12 @@ def load_config_sync():
                     len(CONFIG_CACHE.get("alert_keywords", [])),
                     len(COMPILED_ALERT_REGEX),
                     len(CONFIG_CACHE.get("channels", [])))
+        
+        # 详细日志：显示关键词内容（仅在有关键词时）
+        if CONFIG_CACHE.get("keywords"):
+            logger.info("📋 [配置加载] 监控关键词: %s", CONFIG_CACHE.get("keywords"))
+        if CONFIG_CACHE.get("alert_keywords"):
+            logger.info("🔔 [配置加载] 告警关键词: %s", CONFIG_CACHE.get("alert_keywords"))
     except Exception as e:
         logger.exception("加载配置失败: %s", e)
         CONFIG_CACHE = default_config()
@@ -667,6 +728,12 @@ async def message_handler(event, client):
                     break
 
         # keyword checks (cheap)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("🔧 配置快照: keywords=%s alert_keywords=%s regex=%d channels=%s",
+                         config.get("keywords", []),
+                         config.get("alert_keywords", []),
+                         len(COMPILED_ALERT_REGEX),
+                         config.get("channels", []))
         matched_keywords = [k for k in (config.get("keywords") or []) if k.lower() in text.lower()]
 
         # alert keywords (first-match)
