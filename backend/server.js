@@ -6193,6 +6193,20 @@ async function syncUserConfigAndStartMultiLoginContainer(userId) {
     
     // 为每个用户创建独立的配置文件
     const userConfigPath = path.join(__dirname, `config_${userId}.json`);
+    
+    // 检查路径是否是目录（不应该发生，但如果发生需要修复）
+    if (fs.existsSync(userConfigPath) && fs.statSync(userConfigPath).isDirectory()) {
+      console.error(`❌ [多开登录] 配置文件路径是目录而不是文件: ${userConfigPath}`);
+      console.error(`   正在删除错误的目录并重新创建文件...`);
+      try {
+        fs.rmSync(userConfigPath, { recursive: true, force: true });
+        console.log(`✅ [多开登录] 已删除错误的目录: ${userConfigPath}`);
+      } catch (rmError) {
+        console.error(`❌ [多开登录] 删除目录失败: ${rmError.message}`);
+        throw new Error(`配置文件路径是目录且无法删除: ${userConfigPath}`);
+      }
+    }
+    
     const userConfigData = {
       // 在多开模式下，设置 user_id 让 monitor.py 正确读取
       // monitor.py 会使用 user_id 构建 session 文件名为 user_{user_id}
@@ -6919,6 +6933,19 @@ async function startMultiLoginContainer(userId) {
       const hostLogsPath = path.join(projectRoot, 'logs', 'telethon');
       
       // 确保配置文件存在（如果不存在，重新创建）
+      // 检查路径是否是目录（不应该发生，但如果发生需要修复）
+      if (fs.existsSync(hostConfigPath) && fs.statSync(hostConfigPath).isDirectory()) {
+        console.error(`❌ [多开登录] 配置文件路径是目录而不是文件: ${hostConfigPath}`);
+        console.error(`   正在删除错误的目录并重新创建文件...`);
+        try {
+          fs.rmSync(hostConfigPath, { recursive: true, force: true });
+          console.log(`✅ [多开登录] 已删除错误的目录: ${hostConfigPath}`);
+        } catch (rmError) {
+          console.error(`❌ [多开登录] 删除目录失败: ${rmError.message}`);
+          throw new Error(`配置文件路径是目录且无法删除: ${hostConfigPath}`);
+        }
+      }
+      
       if (!fs.existsSync(hostConfigPath)) {
         console.warn(`⚠️  [多开登录] 配置文件不存在: ${hostConfigPath}，重新创建...`);
         const userConfig = await loadUserConfig(userId.toString());

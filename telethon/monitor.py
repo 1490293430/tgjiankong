@@ -204,6 +204,17 @@ def load_config_sync():
                 logger.warning("配置文件不存在: %s，使用默认配置（待同步写入）", CONFIG_PATH)
                 return
 
+        # 检查路径是否是目录（不应该发生，但如果发生需要处理）
+        if os.path.isdir(CONFIG_PATH):
+            logger.error("❌ [配置加载] 配置路径是目录而不是文件: %s，无法加载配置", CONFIG_PATH)
+            logger.error("   这通常是因为后端创建配置文件时出错，请检查后端日志")
+            # 使用默认配置，但记录严重警告
+            CONFIG_CACHE = default_config()
+            CONFIG_MTIME = 0.0
+            COMPILED_ALERT_REGEX = []
+            logger.error("   使用默认配置（关键词检测将无法工作），请修复配置文件路径问题")
+            return
+
         mtime = os.path.getmtime(CONFIG_PATH)
         if CONFIG_CACHE and mtime == CONFIG_MTIME:
             return  # no change
