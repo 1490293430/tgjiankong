@@ -780,6 +780,10 @@ async def message_handler(event, client):
         else:
             sender = channel_name
 
+        # 记录发件人解析详情，便于排查显示问题
+        logger.info("🔍 [发件人解析] sender_id=%s username=%s first_name=%s last_name=%s => sender=%s",
+                    sender_id, username, first_name, last_name, sender)
+
         # ai trigger users normalize
         ai_analysis_config = config.get("ai_analysis", {})
         ai_trigger_enabled = ai_analysis_config.get("ai_trigger_enabled", False)
