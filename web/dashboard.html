@@ -4427,16 +4427,22 @@
                         }
                     });
                 }
-                document.getElementById('modalTelegramCode')?.addEventListener('keypress', (e) => {
-                    if (e.key === 'Enter' && !telegramLoginInProgress) {
-                        handleTelegramLoginStep();
-                    }
-                });
-                document.getElementById('modalTelegramPassword')?.addEventListener('keypress', (e) => {
-                    if (e.key === 'Enter' && !telegramLoginInProgress) {
-                        handleTelegramLoginStep();
-                    }
-                });
+                const codeInput = document.getElementById('modalTelegramCode');
+                if (codeInput) {
+                    codeInput.addEventListener('keypress', (e) => {
+                        if (e.key === 'Enter' && !telegramLoginInProgress) {
+                            handleTelegramLoginStep();
+                        }
+                    });
+                }
+                const passwordInput2 = document.getElementById('modalTelegramPassword');
+                if (passwordInput2) {
+                    passwordInput2.addEventListener('keypress', (e) => {
+                        if (e.key === 'Enter' && !telegramLoginInProgress) {
+                            handleTelegramLoginStep();
+                        }
+                    });
+                }
             }
             
         });
