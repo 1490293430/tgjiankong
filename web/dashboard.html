@@ -2551,6 +2551,11 @@
                                 const sizeMB = (backup.size / 1024 / 1024).toFixed(2);
                                 const backupPath = backup.path || '';
                                 const escapedPath = escapeHtml(backupPath);
+                                // 处理内联事件中的字符串，防止引号打断 onclick
+                                const backupName = String(backup.name || '');
+                                const safeNameAttr = backupName
+                                    .replace(/\\/g, '\\\\')
+                                    .replace(/'/g, "\\'");
                                 return `
                                     <div style="border: 1px solid #e0e0e0; padding: 12px; margin-bottom: 10px; border-radius: 6px; background: #f9f9f9;">
                                         <div style="display: flex; justify-content: space-between; align-items: flex-start;">
@@ -2568,10 +2573,10 @@
                                                 </div>
                                             </div>
                                             <div style="display: flex; gap: 8px; margin-left: 10px;">
-                                                <button class="btn btn-danger" onclick="deleteBackup(${JSON.stringify(String(backup.name || ''))})" style="padding: 6px 12px; font-size: 13px; background: #e74c3c; border-color: #e74c3c;">
+                                                <button class="btn btn-danger" onclick="deleteBackup('${safeNameAttr}')" style="padding: 6px 12px; font-size: 13px; background: #e74c3c; border-color: #e74c3c;">
                                                     🗑️ 删除
                                                 </button>
-                                                <button class="btn btn-primary" onclick="restoreBackup(${JSON.stringify(String(backup.name || ''))})" style="padding: 6px 12px; font-size: 13px;">
+                                                <button class="btn btn-primary" onclick="restoreBackup('${safeNameAttr}')" style="padding: 6px 12px; font-size: 13px;">
                                                     🔄 恢复
                                                 </button>
                                             </div>
