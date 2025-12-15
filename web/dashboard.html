@@ -3631,15 +3631,18 @@
             }
             
             try {
+                console.log('[删除用户][前端] 发起删除请求', { userId, username });
                 await apiRequest(`/users/${userId}`, {
                     method: 'DELETE'
                 });
                 
                 showToast('用户删除成功', true);
+                console.log('[删除用户][前端] 删除成功', { userId, username });
                 
                 // 刷新用户列表
                 loadUsers();
             } catch (error) {
+                console.error('[删除用户][前端] 删除失败', { userId, username, error: error?.message });
                 showToast('删除用户失败: ' + (error.message || '未知错误'), false);
             }
         }
