@@ -652,6 +652,8 @@ app.post('/api/auth/register', loginLimiter, async (req, res) => {
     if (!savedUser) {
       throw new Error('用户保存失败：保存后无法找到用户');
     }
+  
+  const currentAccountId = currentUser._id; // 主账号ID（用于多开容器检查）
     
     console.log(`✅ 用户已保存到数据库 (userId: ${user._id}, username: ${username})`);
     
