@@ -6840,6 +6840,8 @@ async function startMultiLoginContainer(userId) {
       // 多开模式：SESSION_PREFIX 固定为 "user"
       // monitor.py 会根据 USER_ID 自动构建 session 文件名为 user_{USER_ID}
       SESSION_PREFIX: 'user',
+      // 与后端一致的内部访问令牌：用于访问 /api/internal/*，否则在开启 INTERNAL_API_TOKEN 后会被 403 拒绝
+      ...(INTERNAL_API_TOKEN ? { INTERNAL_API_TOKEN } : {}),
       // 从用户配置中读取 API_ID 和 API_HASH（配置文件已包含这些信息）
       // 如果配置文件中没有，则从环境变量读取（向后兼容）
       API_ID: (configObj.telegram && configObj.telegram.api_id) ? String(configObj.telegram.api_id) : (process.env.API_ID || '0'),
