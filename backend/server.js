@@ -3697,59 +3697,8 @@ app.post('/api/backup', authMiddleware, async (req, res) => {
       }
     }
     
-    // 备份 session 目录（Telegram 登录凭证）
-    // 使用目录挂载方式，直接备份本地目录
-    let sessionBacked = false;
-    
-    try {
-      const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
-      const sessionDir = path.join(PROJECT_ROOT, 'data', 'session');
-      
-      if (fs.existsSync(sessionDir)) {
-        console.log(`📦 [备份] 开始备份 session 目录: ${sessionDir}`);
-        
-        const backupDataPath = path.join(backupPath, 'data');
-        fs.mkdirSync(backupDataPath, { recursive: true });
-        const backupSessionPath = path.join(backupDataPath, 'session');
-        fs.mkdirSync(backupSessionPath, { recursive: true });
-        
-        // 复制所有 session 文件
-        const sessionFiles = fs.readdirSync(sessionDir);
-        for (const file of sessionFiles) {
-          const sourceFile = path.join(sessionDir, file);
-          const destFile = path.join(backupSessionPath, file);
-          if (fs.statSync(sourceFile).isFile()) {
-            fs.copyFileSync(sourceFile, destFile);
-          }
-        }
-        
-        // 统计备份的 session 文件
-        const backupFiles = fs.readdirSync(backupSessionPath);
-        // 统计 .session 文件（不包括 .session-journal）
-        const telegramSessions = backupFiles.filter(f => f.startsWith('telegram') && f.endsWith('.session') && !f.endsWith('.session-journal')).length;
-        const userSessions = backupFiles.filter(f => f.startsWith('user_') && f.endsWith('.session') && !f.endsWith('.session-journal')).length;
-        // 统计 .session-journal 文件
-        const telegramJournals = backupFiles.filter(f => f.startsWith('telegram') && f.endsWith('.session-journal')).length;
-        const userJournals = backupFiles.filter(f => f.startsWith('user_') && f.endsWith('.session-journal')).length;
-        
-        console.log(`✅ [备份] 已备份 session 文件`);
-        if (telegramSessions > 0 || telegramJournals > 0) {
-          console.log(`   - 单开模式: ${telegramSessions} 个 .session 文件${telegramJournals > 0 ? `, ${telegramJournals} 个 .session-journal 文件` : ''}`);
-        }
-        if (userSessions > 0 || userJournals > 0) {
-          console.log(`   - 多开模式: ${userSessions} 个 .session 文件${userJournals > 0 ? `, ${userJournals} 个 .session-journal 文件` : ''}`);
-        }
-        sessionBacked = true;
-      } else {
-        console.log(`ℹ️  [备份] Session 目录不存在: ${sessionDir}`);
-      }
-    } catch (backupError) {
-      console.warn(`⚠️  [备份] 备份 session 文件失败: ${backupError.message}`);
-    }
-    
-    if (!sessionBacked) {
-      console.warn(`⚠️  [备份] session 文件未备份`);
-    }
+    // 不再备份 session 目录（包含登录凭证），避免在备份中存储敏感/临时文件
+    console.log('ℹ️  [备份] 已跳过 session 目录（不再备份 Telegram 登录凭证）');
     
     // 额外导出用户配置快照（JSON格式，方便查看）
     try {
@@ -4461,230 +4410,8 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
             console.warn(`⚠️  [恢复] MongoDB 数据恢复失败`);
           }
           
-          // 恢复 session 目录
-          // 注意：API 容器中 session 目录是只读的，需要通过 Docker API 或直接写入主机目录
-          const sessionSource = path.join(extractedDir, 'data', 'session');
-          
-          let sessionRestored = false;
-          let telethonContainerStopped = false;
-          
-          if (fs.existsSync(sessionSource)) {
-            try {
-              // 尝试直接写入主机目录（如果 API 容器有写权限）
-              // 否则需要通过 Docker API 写入到容器
-              const scriptDir = path.dirname(__filename);
-              const possibleSessionDirs = [
-                path.join(scriptDir, '..', 'data', 'session'),  // 相对路径
-                '/opt/telegram-monitor/data/session',  // 绝对路径（主机）
-                path.join(process.env.PROJECT_ROOT || '/opt/telegram-monitor', 'data', 'session')
-              ];
-              
-              let sessionDir = null;
-              for (const possibleDir of possibleSessionDirs) {
-                try {
-                  // 尝试创建目录（测试写权限）
-                  fs.mkdirSync(possibleDir, { recursive: true });
-                  // 尝试写入测试文件
-                  const testFile = path.join(possibleDir, '.write_test');
-                  fs.writeFileSync(testFile, 'test');
-                  fs.unlinkSync(testFile);
-                  sessionDir = possibleDir;
-                  break;
-                } catch (e) {
-                  // 这个目录不可写，尝试下一个
-                  continue;
-                }
-              }
-              
-              if (!sessionDir) {
-                // 所有目录都不可写，尝试使用 Docker API
-                console.log(`📦 [恢复] 无法直接写入 session 目录，尝试使用 Docker API...`);
-                try {
-                  const Docker = require('dockerode');
-                  const { exec } = require('child_process');
-                  const { promisify } = require('util');
-                  const execAsync = promisify(exec);
-                  
-                  const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-                  
-                  // 查找 telethon 容器（主容器或多开容器）
-                  const containers = await docker.listContainers({ all: true });
-                  const telethonContainers = containers.filter(c => 
-                    c.Names && c.Names.some(name => 
-                      name.includes('tg_listener') || name.includes('telethon')
-                    )
-                  );
-                  
-                  if (telethonContainers.length > 0) {
-                    // 使用第一个 telethon 容器来恢复 session 文件
-                    const container = docker.getContainer(telethonContainers[0].Id);
-                    
-                    // 使用 tar 命令创建 tar 文件
-                    const tarPath = path.join(extractedDir, 'session_temp.tar');
-                    const sessionFiles = fs.readdirSync(sessionSource).filter(f => 
-                      fs.statSync(path.join(sessionSource, f)).isFile()
-                    );
-                    
-                    if (sessionFiles.length > 0) {
-                      // 创建 tar 文件
-                      await execAsync(`cd "${sessionSource}" && tar -cf "${tarPath}" ${sessionFiles.map(f => `"${f}"`).join(' ')}`);
-                      
-                      // 复制到容器
-                      const sessionContainerPath = '/opt/telegram-monitor/data/session';
-                      const tarStream = fs.createReadStream(tarPath);
-                      await container.putArchive(tarStream, { path: sessionContainerPath });
-                      
-                      fs.unlinkSync(tarPath);
-                      console.log(`✅ [恢复] 已通过 Docker API 恢复 session 文件到容器`);
-                      sessionRestored = true;
-                    } else {
-                      console.warn(`⚠️  [恢复] 备份中没有 session 文件`);
-                    }
-                  } else {
-                    console.warn(`⚠️  [恢复] 未找到 telethon 容器，无法恢复 session 文件`);
-                  }
-                } catch (dockerError) {
-                  console.warn(`⚠️  [恢复] 使用 Docker API 恢复 session 文件失败: ${dockerError.message}`);
-                }
-              } else {
-                // 直接写入主机目录
-                console.log(`📦 [恢复] 开始恢复 session 文件到: ${sessionDir}`);
-                
-                // 复制所有 session 文件
-                const sessionFiles = fs.readdirSync(sessionSource);
-                for (const file of sessionFiles) {
-                  const sourceFile = path.join(sessionSource, file);
-                  const destFile = path.join(sessionDir, file);
-                  if (fs.statSync(sourceFile).isFile()) {
-                    fs.copyFileSync(sourceFile, destFile);
-                    console.log(`✅ [恢复] 已恢复文件: ${file}`);
-                  }
-                }
-                
-                console.log(`✅ [恢复] 已恢复 session 文件到目录 ${sessionDir}`);
-                sessionRestored = true;
-              }
-            } catch (restoreError) {
-              console.warn(`⚠️  [恢复] 恢复 session 文件失败: ${restoreError.message}`);
-            }
-            
-            if (!sessionRestored) {
-              console.warn(`⚠️  [恢复] session 文件未恢复`);
-            }
-            
-            // 如果之前停止了容器，现在重新启动
-            if (telethonContainerStopped) {
-              try {
-                const Docker = require('dockerode');
-                const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-                
-                const containerNames = ['tg_listener', 'telethon', 'listener'];
-                for (const containerName of containerNames) {
-                  try {
-                    const container = docker.getContainer(containerName);
-                    const containerInfo = await container.inspect();
-                    
-                    if (!containerInfo.State.Running) {
-                      console.log(`▶️  [恢复] 重新启动容器 ${containerName}...`);
-                      await container.start();
-                      console.log(`✅ [恢复] 已启动容器 ${containerName}`);
-                    }
-                  } catch (containerError) {
-                    // 容器不存在，忽略
-                  }
-                }
-                
-                // 如果恢复了 session，等待容器完全启动后触发配置重载，确保 Telethon 客户端重新初始化
-                if (sessionRestored) {
-                  console.log(`⏳ [恢复] 等待容器完全启动...`);
-                  // 优化：使用容器就绪检查代替固定等待时间
-                  try {
-                    const containerNames = ['tg_listener', 'telethon', 'listener'];
-                    for (const containerName of containerNames) {
-                      try {
-                        const container = docker.getContainer(containerName);
-                        await waitForContainerReady(container, 10); // 最多等待10秒，但通常更快
-                        console.log(`✅ [恢复] 容器 ${containerName} 已就绪`);
-                        break;
-                      } catch (e) {
-                        // 容器不存在或检查失败，继续
-                      }
-                    }
-                  } catch (waitError) {
-                    // 如果检查失败，使用较短的固定等待时间
-                    console.warn(`⚠️  [恢复] 容器就绪检查失败，使用固定等待: ${waitError.message}`);
-                    await new Promise(resolve => setTimeout(resolve, 5000));
-                  }
-                  
-                  // 触发配置重载，这会重新初始化 Telethon 客户端
-                  try {
-                    const axios = require('axios');
-                    const telethonUrl = await getTelethonServiceUrl(userId.toString());
-                    console.log(`🔄 [恢复] 触发 Telethon 配置重载以重新初始化客户端... (URL: ${telethonUrl})`);
-                    await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
-                      timeout: 10000,
-                      headers: INTERNAL_API_TOKEN ? { 'X-Internal-Token': INTERNAL_API_TOKEN } : undefined
-                    });
-                    console.log(`✅ [恢复] 已触发 Telethon 配置重载`);
-                  } catch (reloadError) {
-                    console.warn(`⚠️  [恢复] 触发配置重载失败: ${reloadError.message}`);
-                    console.warn(`⚠️  [恢复] 请手动重启 tg_listener 容器或使用切换账号功能`);
-                  }
-                }
-              } catch (dockerError) {
-                console.warn(`⚠️  [恢复] 无法通过 Docker API 启动容器: ${dockerError.message}`);
-                // 尝试使用 shell 命令
-                try {
-                  await execAsync('docker start tg_listener telethon listener 2>/dev/null || true', {
-                    timeout: 15000
-                  });
-                  console.log(`✅ [恢复] 已通过 shell 命令启动容器`);
-                  
-                  // 如果恢复了 session，等待后触发配置重载
-                  if (sessionRestored) {
-                    console.log(`⏳ [恢复] 等待容器完全启动...`);
-                    // 优化：使用容器就绪检查代替固定等待时间
-                    try {
-                      const Docker = require('dockerode');
-                      const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-                      const containerNames = ['tg_listener', 'telethon', 'listener'];
-                      for (const containerName of containerNames) {
-                        try {
-                          const container = docker.getContainer(containerName);
-                          await waitForContainerReady(container, 10); // 最多等待10秒，但通常更快
-                          console.log(`✅ [恢复] 容器 ${containerName} 已就绪`);
-                          break;
-                        } catch (e) {
-                          // 容器不存在或检查失败，继续
-                        }
-                      }
-                    } catch (waitError) {
-                      // 如果检查失败，使用较短的固定等待时间
-                      console.warn(`⚠️  [恢复] 容器就绪检查失败，使用固定等待: ${waitError.message}`);
-                      await new Promise(resolve => setTimeout(resolve, 5000));
-                    }
-                    
-                    try {
-                      const axios = require('axios');
-                      const telethonUrl = process.env.TELETHON_URL || 'http://telethon:8888';
-                      console.log(`🔄 [恢复] 触发 Telethon 配置重载以重新初始化客户端...`);
-                      await axios.post(`${telethonUrl}/api/internal/config/reload`, {}, {
-                        timeout: 10000,
-                        headers: INTERNAL_API_TOKEN ? { 'X-Internal-Token': INTERNAL_API_TOKEN } : undefined
-                      });
-                      console.log(`✅ [恢复] 已触发 Telethon 配置重载`);
-                    } catch (reloadError) {
-                      console.warn(`⚠️  [恢复] 触发配置重载失败: ${reloadError.message}`);
-                    }
-                  }
-                } catch (shellError) {
-                  console.warn(`⚠️  [恢复] 无法启动容器，请手动启动: ${shellError.message}`);
-                }
-              }
-            }
-          } else {
-            console.log(`ℹ️  [恢复] 备份中未找到 session 目录，跳过恢复`);
-          }
+          // Session 登录凭证不再随备份恢复，防止覆盖现有登录状态
+          console.log('ℹ️  [恢复] 已跳过 session 目录恢复（不再从备份还原 Telegram 登录凭证）');
           
           // 清理临时目录
           if (tempDir && fs.existsSync(tempDir)) {
@@ -4702,8 +4429,7 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
             config: false,
             env: false,
             multiLoginConfigs: false,
-            mongo: false,
-            session: false
+            mongo: false
           };
           
           // 验证配置文件
@@ -4746,18 +4472,8 @@ app.post('/api/backup/restore', authMiddleware, async (req, res) => {
             console.warn('⚠️  [恢复] MongoDB 数据未恢复');
           }
           
-          // 验证 session 文件
-          if (sessionRestored) {
-            verifyResults.session = true;
-            const PROJECT_ROOT = process.env.PROJECT_ROOT || '/opt/telegram-monitor';
-            const sessionDir = path.join(PROJECT_ROOT, 'data', 'session');
-            if (fs.existsSync(sessionDir)) {
-              const sessionFiles = fs.readdirSync(sessionDir).filter(f => f.endsWith('.session') && !f.endsWith('.session-journal'));
-              console.log(`✅ [恢复] Session 文件已恢复（${sessionFiles.length} 个）`);
-            }
-          } else {
-            console.warn('⚠️  [恢复] Session 文件未恢复');
-          }
+          // Session 登录凭证不再随备份恢复
+          console.log('ℹ️  [恢复] Session 登录凭证未参与恢复（刻意跳过）');
           
           // 输出验证总结
           const allVerified = Object.values(verifyResults).every(v => v || !fs.existsSync(extractedDir)); // 如果备份中不存在某些文件，不算失败
