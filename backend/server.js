@@ -120,8 +120,8 @@ if (!JWT_SECRET) {
 // 内部接口访问令牌：用于保护 /api/internal/*（建议在生产环境配置强随机值）
 const INTERNAL_API_TOKEN = (process.env.INTERNAL_API_TOKEN || '').trim();
 const PORT = process.env.PORT || 3000;
-// 是否允许系统初始化后继续公开注册（默认不允许）
-const ALLOW_PUBLIC_REGISTRATION = ['1', 'true', 'yes', 'y', 'on'].includes(
+// 是否允许系统初始化后继续公开注册（默认不允许，支持配置文件与环境变量）
+const ALLOW_PUBLIC_REGISTRATION_ENV = ['1', 'true', 'yes', 'y', 'on'].includes(
   String(process.env.ALLOW_PUBLIC_REGISTRATION || '').toLowerCase().trim()
 );
 
@@ -193,6 +193,8 @@ app.use('/api/internal', internalAuthMiddleware);
 
 // 默认配置
 const defaultConfig = {
+  // 允许系统初始化后公开注册（默认 false，可被环境变量覆盖初始值）
+  allow_public_registration: ALLOW_PUBLIC_REGISTRATION_ENV,
   keywords: [],
   channels: [],
   alert_keywords: [],
@@ -314,6 +316,17 @@ function loadConfig() {
 
 // 初始化配置文件
 loadConfig();
+
+// 获取是否允许公开注册（优先配置文件）
+function isPublicRegistrationAllowed() {
+  try {
+    const cfg = loadConfig();
+    return !!cfg.allow_public_registration;
+  } catch (e) {
+    // 兜底使用环境变量
+    return ALLOW_PUBLIC_REGISTRATION_ENV;
+  }
+}
 
 // ===== 用户配置辅助函数 =====
 
@@ -577,7 +590,7 @@ app.get('/api/auth/check-init', async (req, res) => {
     // 公开注册策略：
     // - 无用户（首次初始化）一定允许注册
     // - 系统已初始化后，默认关闭公开注册（可通过 ALLOW_PUBLIC_REGISTRATION=true 开启）
-    const publicRegistrationAllowed = (userCount === 0) || ALLOW_PUBLIC_REGISTRATION;
+    const publicRegistrationAllowed = (userCount === 0) || isPublicRegistrationAllowed();
     res.json({ initialized: userCount > 0, userCount, public_registration_allowed: publicRegistrationAllowed });
   } catch (error) {
     console.error('检查系统初始化状态失败:', error);
@@ -608,7 +621,7 @@ app.post('/api/auth/register', loginLimiter, async (req, res) => {
       return res.status(503).json({ error: '数据库未连接，请稍后重试' });
     }
     const userCount = await User.countDocuments();
-    if (userCount > 0 && !ALLOW_PUBLIC_REGISTRATION) {
+    if (userCount > 0 && !isPublicRegistrationAllowed()) {
       return res.status(403).json({ error: '系统已初始化：已关闭公开注册，请使用已有账号登录或由主账号创建子账号' });
     }
     
@@ -984,6 +997,41 @@ app.post('/api/users', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error('❌ 创建子账号失败:', error);
     res.status(500).json({ error: '创建子账号失败：' + error.message });
+  }
+});
+
+// 获取 / 设置公开注册开关（仅主账号）
+app.get('/api/admin/public-registration', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = req.user.userObj;
+    if (currentUser.parent_account_id) {
+      return res.status(403).json({ error: '仅主账号可设置公开注册开关' });
+    }
+    return res.json({ enabled: isPublicRegistrationAllowed() });
+  } catch (error) {
+    console.error('❌ [公开注册] 获取状态失败:', error);
+    return res.status(500).json({ error: '获取公开注册状态失败：' + error.message });
+  }
+});
+
+app.post('/api/admin/public-registration', authMiddleware, async (req, res) => {
+  try {
+    const currentUser = req.user.userObj;
+    if (currentUser.parent_account_id) {
+      return res.status(403).json({ error: '仅主账号可设置公开注册开关' });
+    }
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: '参数 enabled 必须为布尔值' });
+    }
+    const cfg = loadConfig();
+    cfg.allow_public_registration = enabled;
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+    console.log(`✅ [公开注册] 已更新: ${enabled ? '开启' : '关闭'}（操作人: ${currentUser.username}）`);
+    return res.json({ enabled });
+  } catch (error) {
+    console.error('❌ [公开注册] 更新失败:', error);
+    return res.status(500).json({ error: '更新公开注册状态失败：' + error.message });
   }
 });
 

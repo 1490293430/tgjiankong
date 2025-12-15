@@ -1195,6 +1195,13 @@
                             <label>显示名称（可选）</label>
                             <input type="text" id="newUserDisplayName" placeholder="显示名称">
                         </div>
+                        <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                            <input type="checkbox" id="allowPublicRegistrationToggle" style="width: 18px; height: 18px; cursor: pointer;" onchange="togglePublicRegistration(this.checked)">
+                            <label for="allowPublicRegistrationToggle" style="margin: 0; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                                <span>开启公开注册</span>
+                                <span style="font-size: 12px; color: #666;">勾选即开启，未勾选即关闭</span>
+                            </label>
+                        </div>
                         <button class="btn btn-primary" onclick="createUser()">➕ 创建用户</button>
                     </div>
                 </div>
@@ -3543,6 +3550,37 @@
                 showToast('创建用户失败: ' + (error.message || '未知错误'), false);
             }
         }
+
+        // 加载公开注册开关状态（仅主账号可见）
+        async function loadPublicRegistrationSetting() {
+            const checkbox = document.getElementById('allowPublicRegistrationToggle');
+            if (!checkbox) return;
+            try {
+                const data = await apiRequest('/admin/public-registration');
+                checkbox.checked = !!data.enabled;
+            } catch (error) {
+                // 主账号检测失败或无权限时隐藏开关，防止误操作
+                checkbox.checked = false;
+                console.warn('获取公开注册状态失败:', error);
+            }
+        }
+
+        // 切换公开注册开关（勾选即生效）
+        async function togglePublicRegistration(enabled) {
+            const token = checkAuth();
+            if (!token) return;
+            const checkbox = document.getElementById('allowPublicRegistrationToggle');
+            try {
+                await apiRequest('/admin/public-registration', {
+                    method: 'POST',
+                    body: JSON.stringify({ enabled })
+                });
+                showToast(enabled ? '已开启公开注册' : '已关闭公开注册', true);
+            } catch (error) {
+                showToast('更新公开注册失败: ' + (error.message || '未知错误'), false);
+                if (checkbox) checkbox.checked = !enabled;
+            }
+        }
         
         // 切换多开登录功能
         async function toggleMultiLogin(enabled) {
@@ -3743,6 +3781,7 @@
                     const currentUser = users.find(u => u.username === localStorage.getItem('username'));
                     if (currentUser && !currentUser.parent_account_id) {
                         userManagementSection.style.display = 'block';
+                        loadPublicRegistrationSetting();
                     } else {
                         userManagementSection.style.display = 'none';
                     }
