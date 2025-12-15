@@ -1592,7 +1592,8 @@
             }
             
             refreshIntervalTimer = setInterval(() => {
-                const activeTab = document.querySelector('.tab-content.active')?.id;
+                const activeTabEl = document.querySelector('.tab-content.active');
+                const activeTab = activeTabEl ? activeTabEl.id : undefined;
                 if (activeTab === 'dashboard') {
                     loadStats();
                     loadRecentLogs(true); // 重置并加载
@@ -1639,7 +1640,8 @@
                 return;
             }
             
-            const activeTab = document.querySelector('.tab-content.active')?.id;
+            const activeTabEl = document.querySelector('.tab-content.active');
+            const activeTab = activeTabEl ? activeTabEl.id : undefined;
             
             switch (event.type) {
                 case 'connected':
@@ -1935,7 +1937,7 @@
             const alertedLogsEl = document.getElementById('alertedLogs');
             
             // 如果有现有内容，先淡出
-            if (statsGrid && (totalLogsEl?.textContent !== '-' && totalLogsEl?.textContent !== '0')) {
+            if (statsGrid && totalLogsEl && (totalLogsEl.textContent !== '-' && totalLogsEl.textContent !== '0')) {
                 statsGrid.style.transition = 'opacity 0.2s ease-out';
                 statsGrid.style.opacity = '0.5';
             }
@@ -2209,8 +2211,8 @@
                     return;
                 }
                 // Telegram API 凭证
-                const apiId = (config.telegram?.api_id ?? 0) || 0;
-                const apiHashConfigured = config.telegram?.api_hash_configured || false;
+                const apiId = (config.telegram && typeof config.telegram.api_id !== 'undefined' ? config.telegram.api_id : 0) || 0;
+                const apiHashConfigured = config.telegram && config.telegram.api_hash_configured ? config.telegram.api_hash_configured : false;
                 document.getElementById('tgApiId').value = apiId;
                 
                 // 根据是否已配置显示不同的占位符
@@ -2257,14 +2259,14 @@
                 document.getElementById('alertTarget').value = config.alert_target || '';
                 
                 // ✅ 修复：正确处理 false 值，使用 Boolean() 转换确保正确处理 false
-                const emailEnable = config.alert_actions?.email?.enable !== undefined ? Boolean(config.alert_actions.email.enable) : false;
-                const webhookEnable = config.alert_actions?.webhook?.enable !== undefined ? Boolean(config.alert_actions.webhook.enable) : false;
+                const emailEnable = (config.alert_actions && config.alert_actions.email && config.alert_actions.email.enable !== undefined) ? Boolean(config.alert_actions.email.enable) : false;
+                const webhookEnable = (config.alert_actions && config.alert_actions.webhook && config.alert_actions.webhook.enable !== undefined) ? Boolean(config.alert_actions.webhook.enable) : false;
                 
                 document.getElementById('enableEmail').checked = emailEnable;
                 document.getElementById('enableWebhook').checked = webhookEnable;
                 
                 // ✅ 修复：无论enable状态如何，都要填充email配置字段，确保配置能正确保存
-                if (config.alert_actions?.email) {
+                if (config.alert_actions && config.alert_actions.email) {
                     document.getElementById('smtpHost').value = config.alert_actions.email.smtp_host || '';
                     document.getElementById('smtpPort').value = config.alert_actions.email.smtp_port || 465;
                     document.getElementById('emailUsername').value = config.alert_actions.email.username || '';
@@ -2276,13 +2278,13 @@
                 }
                 
                 // ✅ 修复：无论enable状态如何，都要填充webhook配置字段，确保配置能正确保存
-                if (config.alert_actions?.webhook) {
+                if (config.alert_actions && config.alert_actions.webhook) {
                     document.getElementById('webhookUrl').value = config.alert_actions.webhook.url || '';
                     document.getElementById('webhookConfig').style.display = webhookEnable ? 'block' : 'none';
                 }
                 
                 // AI 分析配置
-                const aiEnable = config.ai_analysis?.enabled || false;
+                const aiEnable = (config.ai_analysis && config.ai_analysis.enabled) ? config.ai_analysis.enabled : false;
                 document.getElementById('enableAI').checked = aiEnable;
                 
                 // ✅ 修复：无论enable状态如何，都要填充AI配置字段，确保配置能正确保存和恢复
@@ -2332,7 +2334,7 @@
             }
             
             const saveButton = document.querySelector('button[onclick="saveTelegramCredentials()"]');
-            const originalText = saveButton?.textContent || '💾 保存 Telegram 凭证';
+            const originalText = (saveButton && saveButton.textContent) ? saveButton.textContent : '💾 保存 Telegram 凭证';
             if (saveButton) {
                 saveButton.disabled = true;
                 saveButton.textContent = '💾 保存中...';
@@ -2388,7 +2390,7 @@
             }
             
             const deleteButton = document.querySelector('button[onclick="deleteTelegramCredentials()"]');
-            const originalText = deleteButton?.textContent || '🗑️ 删除凭证';
+            const originalText = (deleteButton && deleteButton.textContent) ? deleteButton.textContent : '🗑️ 删除凭证';
             if (deleteButton) {
                 deleteButton.disabled = true;
                 deleteButton.textContent = '🗑️ 删除中...';
@@ -2476,7 +2478,7 @@
             
             // 显示保存中提示
             const saveButton = document.querySelector('button[onclick="saveConfig()"]');
-            const originalText = saveButton?.textContent || '💾 保存配置';
+            const originalText = (saveButton && saveButton.textContent) ? saveButton.textContent : '💾 保存配置';
             if (saveButton) {
                 saveButton.disabled = true;
                 saveButton.textContent = '💾 保存中...';
@@ -2498,7 +2500,7 @@
                 if (result && result.status === 'ok') {
                     showToast('配置保存成功！', true);
                 } else {
-                    showToast('保存失败：' + (result?.error || '未知错误'), false);
+                    showToast('保存失败：' + ((result && result.error) || '未知错误'), false);
                 }
             } catch (error) {
                 // 恢复按钮状态
@@ -2526,7 +2528,7 @@
                     // 刷新备份列表
                     await loadBackupList();
                 } else {
-                    showToast('❌ 备份失败：' + (result?.error || '未知错误'), false);
+                    showToast('❌ 备份失败：' + ((result && result.error) || '未知错误'), false);
                 }
             } catch (error) {
                 console.error('创建备份失败:', error);
@@ -2645,7 +2647,7 @@
                     // 刷新备份列表
                     await loadBackupList();
                 } else {
-                    showToast('❌ 删除失败：' + (result?.error || '未知错误'), false);
+                    showToast('❌ 删除失败：' + ((result && result.error) || '未知错误'), false);
                 }
             } catch (error) {
                 console.error('删除备份失败:', error);
@@ -2678,7 +2680,7 @@
                     // 刷新备份列表
                     await loadBackupList();
                 } else {
-                    showToast('❌ 恢复失败：' + (result?.error || '未知错误'), false);
+                    showToast('❌ 恢复失败：' + ((result && result.error) || '未知错误'), false);
                 }
             } catch (error) {
                 console.error('恢复备份失败:', error);
