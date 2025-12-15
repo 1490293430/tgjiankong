@@ -2885,10 +2885,10 @@
                     <h2 style="margin: 0 0 15px 0; font-size: 18px;">选择用户</h2>
                     <div style="max-height: 400px; overflow-y: auto;">
                         ${users.map(user => `
-                            <div style="padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" 
-                                 onmouseover="this.style.background='#f5f5f5'" 
-                                 onmouseout="this.style.background='white'"
-                                 onclick="switchUser(${JSON.stringify(String(user._id || ''))}, ${JSON.stringify(String(user.username || ''))})">
+                            <div class="switch-user-item" 
+                                 data-user-id="${escapeHtml(String(user._id || ''))}" 
+                                 data-username="${escapeHtml(user.username || '')}"
+                                 style="padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
                                 <div>
                                     <div style="font-weight: 500;">${escapeHtml(user.username)}</div>
                                     <div style="font-size: 12px; color: #666;">${escapeHtml(user.display_name || user.username)}</div>
@@ -2899,6 +2899,17 @@
                     </div>
                     <button onclick="this.parentElement.remove()" style="margin-top: 15px; width: 100%; padding: 8px; background: #95a5a6; color: white; border: none; border-radius: 4px; cursor: pointer;">取消</button>
                 `;
+                
+                // 绑定切换事件与悬停效果
+                menu.querySelectorAll('.switch-user-item').forEach(item => {
+                    item.addEventListener('mouseenter', () => item.style.background = '#f5f5f5');
+                    item.addEventListener('mouseleave', () => item.style.background = 'white');
+                    item.addEventListener('click', () => {
+                        const userId = item.getAttribute('data-user-id');
+                        const uname = item.getAttribute('data-username');
+                        switchUser(userId, uname);
+                    });
+                });
                 
                 // 关闭菜单的函数
                 menu.addEventListener('click', (e) => {
@@ -3488,7 +3499,7 @@
                                             <td style="padding: 12px; color: #666;">${lastLogin}</td>
                                             <td style="padding: 12px;">${status}</td>
                                             <td style="padding: 12px; text-align: center;">
-                                                ${canDelete ? `<button class="btn btn-danger" onclick="deleteUser(${JSON.stringify(String(user._id || ''))}, ${JSON.stringify(String(user.username || ''))})" style="padding: 4px 12px; font-size: 12px;">删除</button>` : '<span style="color: #999; font-size: 12px;">不可删除</span>'}
+                                                ${canDelete ? `<button class="btn btn-danger delete-user-btn" data-user-id="${escapeHtml(String(user._id || ''))}" data-username="${escapeHtml(user.username || '')}" style="padding: 4px 12px; font-size: 12px;">删除</button>` : '<span style="color: #999; font-size: 12px;">不可删除</span>'}
                                             </td>
                                         </tr>
                                     `;
@@ -3496,6 +3507,16 @@
                             </tbody>
                         </table>
                     `;
+                    
+                    // 绑定删除按钮事件，避免依赖字符串内联调用导致失效
+                    userList.querySelectorAll('.delete-user-btn').forEach(btn => {
+                        btn.addEventListener('click', (e) => {
+                            e.stopPropagation(); // 防止冒泡导致意外行为
+                            const uid = btn.getAttribute('data-user-id');
+                            const uname = btn.getAttribute('data-username');
+                            deleteUser(uid, uname);
+                        });
+                    });
                 } else {
                     userList.innerHTML = '<p style="text-align: center; color: #999;">暂无用户</p>';
                 }
