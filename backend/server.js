@@ -993,6 +993,7 @@ app.delete('/api/users/:userId', authMiddleware, async (req, res) => {
     const { userId } = req.params;
     const currentUser = req.user.userObj;
     const currentAccountId = await getAccountId(currentUser._id);
+    console.log(`🗑️ [删除子账号] 请求人: ${currentUser.username}(${currentUser._id}), 目标: ${userId}, 主账号: ${currentAccountId}`);
     
     // 不允许删除自己
     if (userId === currentUser._id.toString()) {
@@ -1019,8 +1020,10 @@ app.delete('/api/users/:userId', authMiddleware, async (req, res) => {
     await User.findByIdAndDelete(userId);
     await UserConfig.deleteOne({ userId });
     
+    console.log(`✅ [删除子账号] ${currentUser.username} 删除了子账号 ${user.username} (${userId})`);
     res.json({ status: 'ok', message: '子账号删除成功' });
   } catch (error) {
+    console.error(`❌ [删除子账号] 失败: ${error.message}`);
     res.status(500).json({ error: '删除子账号失败：' + error.message });
   }
 });
@@ -1053,9 +1056,11 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
     const { userId } = req.params;
     const currentUser = req.user.userObj;
     const currentAccountId = await getAccountId(currentUser._id);
+    console.log(`🔁 [切换用户] 请求人: ${currentUser.username}(${currentUser._id}), 目标: ${userId}, 主账号: ${currentAccountId}`);
     
     const targetUser = await User.findById(userId);
     if (!targetUser || !targetUser.is_active) {
+      console.warn(`⚠️ [切换用户] 目标不存在或禁用: ${userId}`);
       return res.status(404).json({ error: '用户不存在或已被禁用' });
     }
     
@@ -1064,6 +1069,7 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
     
     // 权限检查：只能切换到同一主账号下的账号
     if (currentAccountId.toString() !== targetAccountId.toString()) {
+      console.warn(`⚠️ [切换用户] 权限不足：请求主账号 ${currentAccountId}, 目标主账号 ${targetAccountId}`);
       return res.status(403).json({ error: '权限不足：只能切换到同一账号下的其他用户' });
     }
     
@@ -1312,7 +1318,7 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
       }
     }, 500); // 延迟500ms，确保切换用户响应已返回
     
-    console.log(`✅ 用户 ${currentUser.username} 切换到用户: ${targetUser.username} (userId: ${targetUser._id})`);
+    console.log(`✅ [切换用户] ${currentUser.username} -> ${targetUser.username} (userId: ${targetUser._id})`);
     
     res.json({ 
       token, 
