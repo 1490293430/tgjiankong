@@ -50,6 +50,11 @@ class AIAnalysisService {
     const retryDelay = Math.pow(2, retryCount) * 1000; // 指数退避：1秒、2秒、4秒
 
     try {
+      const hasCustomPrompt = !!(customPrompt && String(customPrompt).trim());
+      // 如果使用了自定义提示词（通常是固定用户触发），默认不再强制 JSON 输出，让 AI 按提示词直接产出成品文本
+      // 其他场景仍然使用严格 JSON，方便结构化存储
+      const enforceJsonFormat = !hasCustomPrompt;
+
       // 构建分析内容（过滤系统自发的告警/分析推送，减少噪音；同时去重重复刷屏）
       const seen = new Set();
       const filtered = [];
@@ -73,11 +78,14 @@ class AIAnalysisService {
       // 使用自定义提示词或默认提示词
       const promptToUse = customPrompt !== null ? customPrompt : this.prompt;
       
-      console.log(`🔄 AI 分析请求 (消息数: ${messageCount}, 超时: ${timeout/1000}秒, 重试: ${retryCount}/${maxRetries}, 提示词: ${promptToUse ? `"${promptToUse.substring(0, 30)}..."` : '(空)'})`);
+      console.log(`🔄 AI 分析请求 (消息数: ${messageCount}, 超时: ${timeout/1000}秒, 重试: ${retryCount}/${maxRetries}, 提示词: ${promptToUse ? `"${promptToUse.substring(0, 30)}..."` : '(空)'}, JSON模式: ${enforceJsonFormat})`);
 
       // 构建用户消息内容
-      // 定义严格的JSON格式要求
-      const jsonFormatExample = `{
+      let userContent = '';
+
+      if (enforceJsonFormat) {
+        // 定义严格的JSON格式要求（结构化模式）
+        const jsonFormatExample = `{
   "sentiment": "neutral",
   "sentiment_score": 0.0,
   "categories": ["分类1", "分类2"],
@@ -86,15 +94,23 @@ class AIAnalysisService {
   "topics": ["话题1", "话题2"],
   "risk_level": "low"
 }`;
-      
-      let userContent = '';
-      if (promptToUse && promptToUse.trim()) {
-        // 如果有提示词：严格遵守提示词的输出结构，但把最终报告放进 summary 字段（仍然只返回 JSON）
-        userContent = `${promptToUse}\n\n【Telegram 群聊天记录原文】\n${messageTexts}\n\n重要：\n- 你必须只返回一个有效的JSON对象，不要包含任何其他文本、解释或代码块标记。\n- 你必须严格遵守上方提示词的“输出结构/特殊规则/最终额外输出”。\n- 你的最终完整报告必须写入 summary 字段。\n- summary 如需分行，请在字符串内使用 \\\\n 表示换行（不要在引号内直接写真实换行符）。\n\nJSON格式如下：\n${jsonFormatExample}\n\n字段说明：\n- sentiment: 整体情感，必须是 \"positive\"、\"neutral\" 或 \"negative\" 之一\n- sentiment_score: 情感分数，-1到1之间的数字\n- categories: 主要内容分类，字符串数组\n- summary: 最终报告（可较长，允许用 \\\\n 表示分行）\n- keywords: 关键词列表，字符串数组，最多10个\n- topics: 主要话题，字符串数组\n- risk_level: 风险等级，必须是 \"low\"、\"medium\" 或 \"high\" 之一\n\n请严格按照上述格式返回JSON，不要添加任何其他内容。`;
+        
+        if (promptToUse && promptToUse.trim()) {
+          // 有提示词：仍然要求返回 JSON，把最终报告放进 summary 字段
+          userContent = `${promptToUse}\n\n【Telegram 群聊天记录原文】\n${messageTexts}\n\n重要：\n- 你必须只返回一个有效的JSON对象，不要包含任何其他文本、解释或代码块标记。\n- 你必须严格遵守上方提示词的“输出结构/特殊规则/最终额外输出”。\n- 你的最终完整报告必须写入 summary 字段。\n- summary 如需分行，请在字符串内使用 \\\\n 表示换行（不要在引号内直接写真实换行符）。\n\nJSON格式如下：\n${jsonFormatExample}\n\n字段说明：\n- sentiment: 整体情感，必须是 \"positive\"、\"neutral\" 或 \"negative\" 之一\n- sentiment_score: 情感分数，-1到1之间的数字\n- categories: 主要内容分类，字符串数组\n- summary: 最终报告（可较长，允许用 \\\\n 表示分行）\n- keywords: 关键词列表，字符串数组，最多10个\n- topics: 主要话题，字符串数组\n- risk_level: 风险等级，必须是 \"low\"、\"medium\" 或 \"high\" 之一\n\n请严格按照上述格式返回JSON，不要添加任何其他内容。`;
+        } else {
+          // 没有提示词：默认结构化模式
+          userContent = `请分析以下消息内容，并返回JSON格式的分析结果。\n\n消息内容：\n${messageTexts}\n\n重要：你必须只返回一个有效的JSON对象，不要包含任何其他文本、解释或代码块标记。JSON格式如下：\n${jsonFormatExample}\n\n字段说明：\n- sentiment: 整体情感，必须是 "positive"、"neutral" 或 "negative" 之一\n- sentiment_score: 情感分数，-1到1之间的数字\n- categories: 主要内容分类，字符串数组\n- summary: 消息摘要（允许较长）。如需分行，请在字符串内使用 \\n 表示换行（不要在引号内直接写真实换行符）。\n- keywords: 关键词列表，字符串数组，最多10个\n- topics: 主要话题，字符串数组\n- risk_level: 风险等级，必须是 "low"、"medium" 或 "high" 之一\n\n请严格按照上述格式返回JSON，不要添加任何其他内容。`;
+        }
       } else {
-        // 如果提示词为空，只发送消息内容和严格的JSON格式要求
-        userContent = `请分析以下消息内容，并返回JSON格式的分析结果。\n\n消息内容：\n${messageTexts}\n\n重要：你必须只返回一个有效的JSON对象，不要包含任何其他文本、解释或代码块标记。JSON格式如下：\n${jsonFormatExample}\n\n字段说明：\n- sentiment: 整体情感，必须是 "positive"、"neutral" 或 "negative" 之一\n- sentiment_score: 情感分数，-1到1之间的数字\n- categories: 主要内容分类，字符串数组\n- summary: 消息摘要（允许较长）。如需分行，请在字符串内使用 \\n 表示换行（不要在引号内直接写真实换行符）。\n- keywords: 关键词列表，字符串数组，最多10个\n- topics: 主要话题，字符串数组\n- risk_level: 风险等级，必须是 "low"、"medium" 或 "high" 之一\n\n请严格按照上述格式返回JSON，不要添加任何其他内容。`;
+        // 自定义提示词自由模式：不再强制 JSON，直接让模型按提示词输出“成品文本”
+        const fallbackPrompt = '请对以下消息生成简明的关键信息报告，避免多余解释。';
+        userContent = `${promptToUse && promptToUse.trim() ? promptToUse : fallbackPrompt}\n\n【Telegram 群聊天记录原文】\n${messageTexts}\n\n重要：\n- 直接输出最终报告，不要再添加JSON或多余解释。\n- 如需分段，正常使用换行即可。\n- 严禁返回代码块标记（如 \\\`\\\`\\\`）。`;
       }
+
+      const systemContent = enforceJsonFormat
+        ? '你是一个专业的消息分析助手。你必须只返回一个有效的JSON对象（允许包含空白与换行）。不要输出任何额外文本、解释或代码块标记。务必让JSON可被严格解析。'
+        : '你是一个专业的消息分析助手。请直接输出最终报告的纯文本，不要返回JSON、代码块或任何多余解释。';
 
       // 调用 OpenAI API
       const response = await axios.post(
@@ -104,7 +120,7 @@ class AIAnalysisService {
           messages: [
             {
               role: 'system',
-              content: '你是一个专业的消息分析助手。你必须只返回一个有效的JSON对象（允许包含空白与换行）。不要输出任何额外文本、解释或代码块标记。务必让JSON可被严格解析。'
+              content: systemContent
             },
             {
               role: 'user',
@@ -156,9 +172,32 @@ class AIAnalysisService {
         console.log(`✅ [AI解析] 收到内容，长度: ${content.length} 字符`);
       }
       
-      // 尝试解析 JSON
+      // 自由模式：直接把模型输出当作摘要，不做 JSON 解析
       let analysisResult;
-      try {
+      if (!enforceJsonFormat) {
+        let plainSummary = content
+          .replace(/```json\n?/gi, '')
+          .replace(/```\n?/g, '')
+          .trim();
+
+        if (!plainSummary || plainSummary.length === 0) {
+          plainSummary = 'AI 未返回有效内容';
+        }
+
+        analysisResult = {
+          sentiment: 'neutral',
+          sentiment_score: 0,
+          categories: ['未分类'],
+          summary: plainSummary,
+          keywords: [],
+          topics: [],
+          risk_level: 'low',
+          raw_response: content,
+          format: 'plain'
+        };
+      } else {
+        // 尝试解析 JSON
+        try {
         // 清理可能的代码块标记和多余空白
         let cleanContent = content
           .replace(/```json\n?/gi, '')  // 移除 ```json
@@ -450,6 +489,7 @@ class AIAnalysisService {
         };
         
         console.warn(`⚠️  [AI解析] 使用降级解析 - sentiment: ${extractedSentiment}, risk_level: ${extractedRisk}, summary长度: ${extractedSummary.length}`);
+      }
       }
 
       return {

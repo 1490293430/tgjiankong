@@ -520,14 +520,21 @@ async def trigger_ai_analysis_async(sender_id, client, log_id=None):
                 return
             if result.get("success"):
                 analysis = result.get("analysis", {})
-                summary = (
-                    "🤖 AI 分析结果\n\n"
-                    f"📊 分析消息数: {result.get('message_count', 0)}\n\n"
-                    f"整体情感: {analysis.get('sentiment', 'unknown')} (score={analysis.get('sentiment_score', 0)})\n\n"
-                    f"风险等级: {analysis.get('risk_level', 'unknown')}\n\n"
-                    f"摘要:\n{analysis.get('summary', '无')}\n\n"
-                    f"关键词: {', '.join(analysis.get('keywords', []))}"
-                )
+                is_plain = analysis.get("format") == "plain"
+                if is_plain:
+                    # 自定义提示词自由模式：直接把 AI 生成的成品文本发给用户
+                    summary = analysis.get("summary", "无")
+                    if result.get("message_count"):
+                        summary = f"🤖 AI 分析结果（{result.get('message_count')}条）\n\n{summary}"
+                else:
+                    summary = (
+                        "🤖 AI 分析结果\n\n"
+                        f"📊 分析消息数: {result.get('message_count', 0)}\n\n"
+                        f"整体情感: {analysis.get('sentiment', 'unknown')} (score={analysis.get('sentiment_score', 0)})\n\n"
+                        f"风险等级: {analysis.get('risk_level', 'unknown')}\n\n"
+                        f"摘要:\n{analysis.get('summary', '无')}\n\n"
+                        f"关键词: {', '.join(analysis.get('keywords', []))}"
+                    )
                 try:
                     # 发送给用户（非阻塞）
                     await client.send_message(int(sender_id), summary)
