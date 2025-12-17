@@ -665,11 +665,11 @@ app.post('/api/auth/register', loginLimiter, async (req, res) => {
       // 配置创建失败不影响用户创建成功
     }
     
-    // 生成 JWT token
+    // 生成 JWT token（永不过期）
     const token = jwt.sign({ 
       userId: user._id.toString(), 
       username: user.username 
-    }, JWT_SECRET, { expiresIn: '24h' });
+    }, JWT_SECRET);
     
     console.log(`✅ 新账号注册成功 (username: ${username}, userId: ${user._id})`);
     
@@ -718,11 +718,11 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
     user.last_login = new Date();
     await user.save();
     
-    // 生成 JWT token
+    // 生成 JWT token（永不过期）
     const token = jwt.sign({ 
       userId: user._id.toString(), 
       username: user.username 
-    }, JWT_SECRET, { expiresIn: '24h' });
+    }, JWT_SECRET);
     
     console.log(`✅ 登录成功 (username: ${username}, userId: ${user._id})`);
     res.json({ 
@@ -1123,11 +1123,11 @@ app.post('/api/users/:userId/switch', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: '权限不足：只能切换到同一账号下的其他用户' });
     }
     
-    // 生成目标用户的 JWT token
+    // 生成目标用户的 JWT token（永不过期）
     const token = jwt.sign({ 
       userId: targetUser._id.toString(), 
       username: targetUser.username 
-    }, JWT_SECRET, { expiresIn: '24h' });
+    }, JWT_SECRET);
     
     // 更新最后登录时间
     targetUser.last_login = new Date();
