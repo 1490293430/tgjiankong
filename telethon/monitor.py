@@ -1761,8 +1761,10 @@ async def main():
         sys.exit(1)
     
     # 注册消息处理器
-    client.add_event_handler(lambda e: message_handler(e, client), events.NewMessage())
-    logger.info("✅ [事件注册] 已注册 NewMessage 事件处理器")
+    # 重要：设置 outgoing=False 只监控收到的消息，不监控自己发送的消息
+    # 这可以防止告警消息触发关键词匹配导致无限循环
+    client.add_event_handler(lambda e: message_handler(e, client), events.NewMessage(outgoing=False))
+    logger.info("✅ [事件注册] 已注册 NewMessage 事件处理器（仅监控收到的消息）")
     
     # 获取用户信息（添加重试逻辑处理 session 文件锁定）
     max_get_me_retries = 5
