@@ -13,6 +13,8 @@ import traceback
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.tl.types import PeerUser, PeerChat, PeerChannel
+from telethon.tl.functions.messages import GetForumTopicsByIDRequest
 import aiohttp
 from aiohttp import web
 import motor.motor_asyncio
@@ -130,6 +132,8 @@ SHUTDOWN = asyncio.Event()
 # sender 显示名缓存（减少高频消息下重复 get_entity / GetFullUserRequest 的 CPU/网络开销）
 SENDER_CACHE_TTL_SEC = float(os.getenv("SENDER_CACHE_TTL_SEC", "3600"))  # 1小时
 _SENDER_DISPLAY_CACHE: Dict[str, Any] = {}  # sender_id(str) -> {"sender": str, "ts": float}
+TOPIC_CACHE_TTL_SEC = float(os.getenv("TOPIC_CACHE_TTL_SEC", "3600"))
+_TOPIC_TITLE_CACHE: Dict[str, Any] = {}  # "channel_id:topic_id" -> {"title": str, "ts": float}
 
 
 # CPU监控 - 使用缓存减少开销，避免频繁调用导致CPU峰值
@@ -160,6 +164,54 @@ def normalize_list(values) -> List[str]:
     # 其他类型，尝试字符串化
     s = str(values).strip()
     return [s] if s else []
+
+
+def extract_topic_id_from_message(message) -> Optional[str]:
+    """Return Telegram forum topic id for a message, if it belongs to a topic."""
+    if not message:
+        return None
+    reply_to = getattr(message, "reply_to", None)
+    if not reply_to:
+        return None
+
+    topic_id = getattr(reply_to, "reply_to_top_id", None)
+    if not topic_id and getattr(reply_to, "forum_topic", False):
+        topic_id = getattr(reply_to, "reply_to_msg_id", None)
+    if not topic_id:
+        return None
+
+    try:
+        topic_id_int = int(topic_id)
+    except (TypeError, ValueError):
+        return None
+    return str(topic_id_int) if topic_id_int > 0 else None
+
+
+async def resolve_topic_title(client, chat, topic_id: Optional[str]) -> str:
+    """Resolve a forum topic title with a short TTL cache."""
+    if not client or not chat or not topic_id:
+        return ""
+
+    import time as _time
+    channel_id = str(getattr(chat, "id", ""))
+    cache_key = f"{channel_id}:{topic_id}"
+    cached = _TOPIC_TITLE_CACHE.get(cache_key)
+    if cached and (_time.time() - float(cached.get("ts", 0))) < TOPIC_CACHE_TTL_SEC:
+        return str(cached.get("title") or "")
+
+    try:
+        result = await client(GetForumTopicsByIDRequest(peer=chat, topics=[int(topic_id)]))
+        for topic in getattr(result, "topics", []) or []:
+            if str(getattr(topic, "id", "")) == str(topic_id):
+                title = str(getattr(topic, "title", "") or "")
+                _TOPIC_TITLE_CACHE[cache_key] = {"title": title, "ts": _time.time()}
+                return title
+    except Exception as e:
+        logger.debug("解析话题标题失败 channel_id=%s topic_id=%s: %s", channel_id, topic_id, e)
+
+    _TOPIC_TITLE_CACHE[cache_key] = {"title": "", "ts": _time.time()}
+    return ""
+
 
 def log_cpu_usage(tag=""):
     """记录CPU使用率，但限制调用频率以避免自身消耗过多CPU"""
@@ -452,7 +504,7 @@ async def post_json(url: str, payload: dict, timeout: int = 10, silent: bool = F
 # -----------------------
 # async DB write
 # -----------------------
-async def save_log_async(channel, channel_id, sender, message, keywords, message_id):
+async def save_log_async(channel, channel_id, sender, message, keywords, message_id, channel_username="", channel_type="", topic_id="", topic_title="", sender_id=""):
     try:
         from bson import ObjectId
         
@@ -481,7 +533,12 @@ async def save_log_async(channel, channel_id, sender, message, keywords, message
         doc = {
             "channel": channel,
             "channelId": str(channel_id),
+            "channelUsername": str(channel_username or "").lstrip("@"),
+            "channelType": str(channel_type or ""),
+            "topicId": str(topic_id or ""),
+            "topicTitle": str(topic_title or ""),
             "sender": sender,
+            "senderId": str(sender_id or ""),
             "message": message,
             "keywords": keywords if isinstance(keywords, list) else [keywords],
             "time": datetime.utcnow(),
@@ -552,7 +609,7 @@ async def trigger_ai_analysis_async(sender_id, client, log_id=None):
 # -----------------------
 # 消息通知（异步，触发前端SSE推送）
 # -----------------------
-async def notify_new_message_async(log_id, channel, channel_id, sender, message, keywords, alerted):
+async def notify_new_message_async(log_id, channel, channel_id, sender, message, keywords, alerted, channel_username="", channel_type="", topic_id="", topic_title="", sender_id=""):
     """通知后端有新消息，触发SSE推送（非阻塞，不等待结果）"""
     try:
         # 尽量把 userId 一并传给后端，避免后端每条消息都 Log.findById 查 userId（高 CPU/IO）
@@ -569,7 +626,12 @@ async def notify_new_message_async(log_id, channel, channel_id, sender, message,
             "userId": user_id_str,
             "channel": channel,
             "channelId": str(channel_id),
+            "channelUsername": str(channel_username or "").lstrip("@"),
+            "channelType": str(channel_type or ""),
+            "topicId": str(topic_id or ""),
+            "topicTitle": str(topic_title or ""),
             "sender": sender,
+            "senderId": str(sender_id or ""),
             "message": message,
             "keywords": keywords if isinstance(keywords, list) else [keywords] if keywords else [],
             "time": datetime.utcnow().isoformat(),
@@ -698,7 +760,7 @@ async def send_alert_async(keyword, message, sender, channel, channel_id, messag
 # -----------------------
 # Telegram消息发送（异步）
 # -----------------------
-async def send_telegram_message_async(target: str, message: str) -> bool:
+async def send_telegram_message_async(target: str, message: str, topic_id: str = "") -> bool:
     """
     发送Telegram消息到指定目标
     :param target: 目标（用户名、手机号或用户ID）
@@ -719,24 +781,67 @@ async def send_telegram_message_async(target: str, message: str) -> bool:
         else:
             logger.info("✅ [消息发送] 客户端已连接")
         
-        # 尝试通过用户名或手机号获取实体
-        logger.info("🔍 [消息发送] 正在查找目标: %s", target)
-        try:
-            entity = await telegram_client.get_entity(target)
-            logger.info("✅ [消息发送] 找到目标实体: %s (ID: %s)", getattr(entity, 'username', None) or getattr(entity, 'first_name', None) or 'Unknown', getattr(entity, 'id', 'Unknown'))
-        except ValueError as ve:
-            # ValueError 通常表示找不到用户
-            logger.error("❌ [消息发送] 无法找到目标用户/群组 %s: %s", target, str(ve))
-            logger.error("   提示: 请检查用户名是否正确，或确保该用户/群组存在且可访问")
+        clean_target = str(target).strip()
+        clean_topic_id = str(topic_id or "").strip()
+        reply_to_topic = None
+        if clean_topic_id:
+            if not re.fullmatch(r"\d+", clean_topic_id):
+                logger.error("❌ [消息发送] 话题ID无效: %s（必须是纯数字，例如 458347）", clean_topic_id)
+                return False
+            reply_to_topic = int(clean_topic_id)
+
+        # 数字 ID 需要按 Telegram peer 类型解析：
+        # - 2068233924: 用户 ID（仅限联系人/已有私聊/缓存中可访问用户）
+        # - -123456789: 普通群 ID
+        # - -1001234567890: 频道/超级群 ID
+        target_candidates = []
+        if re.fullmatch(r"-?\d+", clean_target):
+            numeric_target = int(clean_target)
+            target_candidates.append(numeric_target)
+            if clean_target.startswith("-100") and len(clean_target) > 4:
+                target_candidates.append(PeerChannel(int(clean_target[4:])))
+            elif numeric_target < 0:
+                target_candidates.append(PeerChat(abs(numeric_target)))
+            else:
+                target_candidates.append(PeerUser(numeric_target))
+        else:
+            target_candidates.append(clean_target)
+
+        # 尝试通过用户名、手机号或数字 ID 获取实体
+        logger.info("🔍 [消息发送] 正在查找目标: %s", clean_target)
+        entity = None
+        last_error = None
+
+        async def try_resolve_entity():
+            nonlocal entity, last_error
+            for candidate in target_candidates:
+                try:
+                    logger.info("🔍 [消息发送] 尝试解析目标候选: %s (类型: %s)", candidate, type(candidate).__name__)
+                    entity = await telegram_client.get_entity(candidate)
+                    logger.info("✅ [消息发送] 找到目标实体: %s (ID: %s)", getattr(entity, 'username', None) or getattr(entity, 'first_name', None) or getattr(entity, 'title', None) or 'Unknown', getattr(entity, 'id', 'Unknown'))
+                    return True
+                except Exception as e:
+                    last_error = e
             return False
-        except Exception as e:
-            logger.error("❌ [消息发送] 获取目标实体失败 %s: %s (类型: %s)", target, str(e), type(e).__name__)
+
+        resolved = await try_resolve_entity()
+        if not resolved:
+            try:
+                logger.info("🔄 [消息发送] 目标未命中缓存，刷新最近对话后重试...")
+                await telegram_client.get_dialogs(limit=200)
+                resolved = await try_resolve_entity()
+            except Exception as refresh_error:
+                logger.warning("⚠️ [消息发送] 刷新对话缓存失败: %s", str(refresh_error))
+
+        if not resolved:
+            logger.error("❌ [消息发送] 无法找到目标用户/群组 %s: %s", clean_target, str(last_error))
+            logger.error("   提示: @xxx 必须是用户名；纯数字 ID 仅支持当前账号可访问/已有对话缓存的用户或群组；超级群/频道通常使用 -100 开头的 ID")
             return False
         
         # 发送消息
-        logger.info("📤 [消息发送] 正在发送消息到: %s (消息长度: %d 字符)", target, len(message))
-        await telegram_client.send_message(entity, message)
-        logger.info("✅ [消息发送] Telegram消息已成功发送到: %s", target)
+        logger.info("📤 [消息发送] 正在发送消息到: %s%s (消息长度: %d 字符)", clean_target, f" topic_id={reply_to_topic}" if reply_to_topic else "", len(message))
+        await telegram_client.send_message(entity, message, reply_to=reply_to_topic)
+        logger.info("✅ [消息发送] Telegram消息已成功发送到: %s", clean_target)
         return True
     except Exception as e:
         logger.error("❌ [消息发送] 发送Telegram消息失败: %s (类型: %s)", str(e), type(e).__name__)
@@ -760,6 +865,7 @@ async def handle_send_telegram(request):
         data = await request.json()
         target = data.get("target")
         message = data.get("message")
+        topic_id = data.get("topic_id") or data.get("topicId") or ""
         userId = data.get("userId", "N/A")
         
         logger.info("📨 [消息发送] 收到发送请求 - target: %s, message长度: %d, userId: %s", target, len(message) if message else 0, userId)
@@ -772,7 +878,7 @@ async def handle_send_telegram(request):
         clean_target = str(target).strip()
         logger.info("🔍 [消息发送] 准备发送消息到: %s", clean_target)
         
-        success = await send_telegram_message_async(clean_target, message)
+        success = await send_telegram_message_async(clean_target, message, topic_id)
         if success:
             logger.info("✅ [消息发送] 消息已成功发送到: %s", clean_target)
             return web.json_response({"status": "ok", "message": "消息已发送"})
@@ -856,6 +962,11 @@ async def message_handler(event, client):
                 channel_name = chat_username
             else:
                 channel_name = "Unknown"
+
+        channel_username = chat_username or ""
+        channel_type = type(chat).__name__
+        topic_id = extract_topic_id_from_message(getattr(event, "message", None))
+        topic_title = await resolve_topic_title(client, chat, topic_id) if topic_id else ""
         # 记录对话解析详情，便于理解“频道/对话名”为何显示为 username
         try:
             logger.info(
@@ -922,12 +1033,14 @@ async def message_handler(event, client):
         first_name = getattr(sender_entity, "first_name", None)
         last_name = getattr(sender_entity, "last_name", None)
         username = getattr(sender_entity, "username", None)
+        sender_title = getattr(sender_entity, "title", None)
 
         # 如果初次获取为空且补全实体存在，再尝试补全
         if detailed_entity:
             first_name = first_name or getattr(detailed_entity, "first_name", None)
             last_name = last_name or getattr(detailed_entity, "last_name", None)
             username = username or getattr(detailed_entity, "username", None)
+            sender_title = sender_title or getattr(detailed_entity, "title", None)
 
         # 如果仍然缺少姓名，再尝试使用 message.from_id 拉取实体
         if not first_name and not last_name:
@@ -938,6 +1051,7 @@ async def message_handler(event, client):
                     first_name = getattr(from_entity, "first_name", None) or first_name
                     last_name = getattr(from_entity, "last_name", None) or last_name
                     username = username or getattr(from_entity, "username", None)
+                    sender_title = sender_title or getattr(from_entity, "title", None)
             except Exception:
                 pass
 
@@ -959,9 +1073,13 @@ async def message_handler(event, client):
         # 如果命中缓存，保留缓存的 sender 显示名（避免覆盖）
         if not cached_hit:
             if full_name:
-                sender = full_name
+                sender = f"{full_name} (@{username})" if username else full_name
+            elif sender_title:
+                sender = sender_title
             elif username:
                 sender = f"@{username}"
+            elif sender_id and str(sender_id) == str(getattr(chat, "id", "")) and channel_name and channel_name != "Unknown":
+                sender = channel_name
             elif sender_id:
                 sender = str(sender_id)
             else:
@@ -971,8 +1089,10 @@ async def message_handler(event, client):
             sender = sender or (str(sender_id) if sender_id else channel_name)
 
         # 写入缓存（只缓存有 sender_id 的情况）
-        if sender_id:
+        if sender_id and not re.fullmatch(r"-?\d+", str(sender or "").strip()):
             _SENDER_DISPLAY_CACHE[str(sender_id)] = {"sender": sender, "ts": _time.time()}
+        elif sender_id:
+            _SENDER_DISPLAY_CACHE.pop(str(sender_id), None)
 
         # 记录发件人解析详情（默认只在 verbose_logs 时输出）
         if verbose_logs:
@@ -1062,7 +1182,10 @@ async def message_handler(event, client):
             logger.info("✅ [关键词匹配] 频道=%s 发送者=%s 命中=%s", channel_name, sender, matched_keywords)
         
         if matched_keywords or log_all:
-            log_id = await save_log_async(channel_name, channel_id, sender, text, matched_keywords or [], event.id)
+            log_id = await save_log_async(
+                channel_name, channel_id, sender, text, matched_keywords or [], event.id,
+                channel_username, channel_type, topic_id or "", topic_title or "", sender_id or ""
+            )
             if matched_keywords:
                 logger.info("监控触发 | %s | %s", channel_name, matched_keywords)
             elif log_all and verbose_logs:
@@ -1072,7 +1195,8 @@ async def message_handler(event, client):
             if log_id:
                 asyncio.create_task(notify_new_message_async(
                     log_id, channel_name, channel_id, sender, text, 
-                    matched_keywords or [], bool(matched_keywords)
+                    matched_keywords or [], bool(matched_keywords),
+                    channel_username, channel_type, topic_id or "", topic_title or "", sender_id or ""
                 ))
 
             # trigger AI analysis (async, limited)

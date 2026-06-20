@@ -403,6 +403,16 @@
             grid-column: 1 / -1;
         }
 
+        .auto-send-schedule {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .auto-send-schedule .checkbox-group {
+            margin: 0;
+        }
+
         @media (max-width: 768px) {
             .auto-send-grid {
                 grid-template-columns: 1fr;
@@ -591,15 +601,14 @@
 
         /* 仪表盘 - 最近日志滚动框：提高长度（高度）以适配手机 */
         #recentLogs {
-            max-height: 1200px; /* 原 600px，提高一倍 */
-            overflow-y: auto;
-            overflow-x: auto; /* 防止表格撑破容器导致“宽度变宽” */
+            max-height: none;
+            overflow: visible;
             width: 100%;
             max-width: 100%;
             position: relative;
-            -webkit-overflow-scrolling: touch; /* iOS/部分移动端：让容器内滚动更顺滑并稳定触发scroll */
-            overscroll-behavior: contain;      /* 防止滚动链把手势传给页面，导致无限滚动不触发 */
-            touch-action: pan-y;               /* 明确主要是竖向滚动，减少横向拖拽干扰 */
+            -webkit-overflow-scrolling: auto;
+            overscroll-behavior: auto;
+            touch-action: auto;
         }
 
         /* 手机端：按屏幕高度自适应，减少页面底部空白 */
@@ -610,8 +619,8 @@
                  * - 用 dvh 避免浏览器地址栏伸缩导致跳动
                  * - 用 clamp 保证不会过短/过长
                  */
-                height: clamp(360px, 55dvh, 620px);
-                max-height: clamp(360px, 55dvh, 620px);
+                height: auto;
+                max-height: none;
             }
         }
         
@@ -2047,61 +2056,120 @@
         }
         
         // 解析频道/用户信息
-        function parseChannelInfo(channel, channelId, sender) {
-            // 从 sender 中提取用户名
-            let userName = '';  // 用户名，如 @zhangsan
-            let userDisplayName = ''; // 用户名字，如 "张三"
+        function parseChannelInfo(logOrChannel, channelId, sender) {
+            const log = (logOrChannel && typeof logOrChannel === 'object') ? logOrChannel : {
+                channel: logOrChannel,
+                channelId,
+                sender
+            };
+            const channelText = String(log.channel || '').trim();
+            const senderText = String(log.sender || '').trim();
+            const channelIdText = String(log.channelId || '').trim();
+            const channelUsername = String(log.channelUsername || '').replace(/^@/, '').trim();
+            const channelType = String(log.channelType || '').trim();
+            const topicId = String(log.topicId || '').trim();
+            const topicTitle = String(log.topicTitle || '').trim();
+            const senderId = String(log.senderId || '').trim();
+            const isNumericId = (value) => /^-?\d+$/.test(String(value || '').trim());
+            const usernamePattern = /@([A-Za-z0-9_]{5,32})/;
+            const stripUsername = (value) => String(value || '')
+                .replace(/\s*\(@[A-Za-z0-9_]{5,32}\)\s*/g, ' ')
+                .replace(usernamePattern, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+            const channelTargetId = (channelType === 'Channel' && channelIdText && !channelIdText.startsWith('-100'))
+                ? `-100${channelIdText}`
+                : channelIdText;
+
+            let userName = '';
+            let userDisplayName = '';
             
-            if (sender) {
+            if (senderText) {
                 // sender 格式可能是：
                 // - "张三 (@zhangsan)"
                 // - "@zhangsan"
                 // - "7675376057" (纯ID)
-                const usernameMatch = sender.match(/@([^\s)]+)/);
+                const usernameMatch = senderText.match(usernamePattern);
                 if (usernameMatch) {
                     userName = '@' + usernameMatch[1];
-                    // 提取名字（去掉用户名部分）
-                    userDisplayName = sender.replace(/\s*\(@[^\s)]+\)\s*/, '').trim();
-                    if (userDisplayName === userName) {
-                        userDisplayName = ''; // 如果只有用户名，没有名字
-                    }
+                    userDisplayName = stripUsername(senderText);
                 } else {
                     // 没有 @username，可能是纯数字ID或名字
-                    if (/^\d+$/.test(sender.trim())) {
+                    if (isNumericId(senderText)) {
                         userDisplayName = ''; // 纯数字ID，不显示名字
                     } else {
-                        userDisplayName = sender; // 有名字
+                        userDisplayName = senderText; // 有名字
                     }
                 }
             }
             
-            // 如果没有用户名，尝试从channel提取或使用channelId
+            // 只有真实的 Telegram username 才显示 @xxx，不把数字 ID 伪装成 @数字
             if (!userName) {
-                if (channel && channel.startsWith('@')) {
-                    userName = channel;
+                if (channelText.startsWith('@') && !isNumericId(channelText.slice(1))) {
+                    userName = channelText;
                 } else {
-                    userName = `@${channelId}`;
+                    const channelUsernameMatch = channelText.match(usernamePattern);
+                    userName = channelUsernameMatch ? '@' + channelUsernameMatch[1] : '';
+                }
+            }
+
+            if (!userName) {
+                if (userDisplayName) {
+                    userName = userDisplayName;
+                } else if (senderText && isNumericId(senderText) && senderText === channelIdText && channelText && !isNumericId(channelText)) {
+                    userName = channelText;
+                } else {
+                    userName = '无公开用户名';
                 }
             }
             
             // 判断是频道消息还是私聊消息
             // 如果channel看起来是频道名称（不是@开头，不是纯数字），则是频道消息
-            const isChannelMessage = channel && !channel.startsWith('@') && !/^\d+$/.test(channel.trim());
+            const isChannelMessage = channelText && !channelText.startsWith('@') && !isNumericId(channelText);
             
             let displayName;
             if (isChannelMessage) {
                 // 频道消息：频道栏显示频道名
-                displayName = channel || 'Unknown';
+                displayName = channelText || 'Unknown';
             } else {
                 // 私聊消息：频道栏显示用户名字（如果有），否则显示channel
-                displayName = userDisplayName || channel || sender || 'Unknown';
+                displayName = userDisplayName || channelText || senderText || 'Unknown';
             }
             
             return {
                 displayName: displayName,
                 userName: userName,
-                id: channelId || 'N/A'
+                id: senderId ? `ID: ${senderId}` : (channelIdText ? `ID: ${channelIdText}` : 'N/A'),
+                channelTarget: channelUsername ? `@${channelUsername}` : (channelTargetId || ''),
+                channelId: channelTargetId ? `ID: ${channelTargetId}` : '',
+                topicId: topicId,
+                topicTitle: topicTitle
             };
+        }
+
+        function renderChannelCell(info) {
+            const lines = [];
+            if (info.channelTarget) {
+                lines.push(info.channelTarget);
+            }
+            if (info.channelId) {
+                lines.push(info.channelId);
+            }
+            if (info.topicId) {
+                const topicName = info.topicTitle || '未命名话题';
+                lines.push(`话题：${topicName} ${info.topicId}`);
+            }
+            return `<div style="line-height: 1.45;">
+                <div>${escapeHtml(info.displayName)}</div>
+                ${lines.map(line => `<div style="font-size: 11px; color: #777; margin-top: 2px;">${escapeHtml(line)}</div>`).join('')}
+            </div>`;
+        }
+
+        function renderSenderCell(info) {
+            return `<div style="line-height: 1.4;">
+                <div style="font-size: 13px; color: #666;">${escapeHtml(info.userName)}</div>
+                <div style="font-size: 11px; color: #999; margin-top: 2px;">${escapeHtml(info.id)}</div>
+            </div>`;
         }
         
         // 最近日志滚动加载相关变量
@@ -2149,18 +2217,14 @@
                     
                     if (isFirstPage) {
                         // 第一页：创建新表格（完全复刻日志页面的无感刷新方式）
-                        let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>ID</th><th>关键词</th><th>消息</th></tr></thead><tbody>';
+                        let html = '<table class="log-table"><thead><tr><th>时间</th><th>频道</th><th>发送者</th><th>关键词</th><th>消息</th></tr></thead><tbody>';
                         
                         data.logs.forEach(log => {
                             const keywordsArr = Array.isArray(log.keywords) ? log.keywords : [];
                             const keywords = keywordsArr.map(k => `<span class="keyword-badge">${escapeHtml(k)}</span>`).join('');
-                            const info = parseChannelInfo(log.channel, log.channelId, log.sender);
-                            
-                            const channelCell = escapeHtml(info.displayName);
-                            const idCell = `<div style="line-height: 1.4;">
-                                <div style="font-size: 12px; color: #666;">${escapeHtml(info.userName)}</div>
-                                <div style="font-size: 11px; color: #999; margin-top: 2px;">${escapeHtml(info.id)}</div>
-                            </div>`;
+                            const info = parseChannelInfo(log);
+                            const channelCell = renderChannelCell(info);
+                            const idCell = renderSenderCell(info);
                             const msg = String(log.message || '');
                             const msgShort = msg.substring(0, 200) + (msg.length > 200 ? '...' : '');
                             
@@ -2185,13 +2249,9 @@
                                 data.logs.forEach(log => {
                                     const keywordsArr = Array.isArray(log.keywords) ? log.keywords : [];
                                     const keywords = keywordsArr.map(k => `<span class="keyword-badge">${escapeHtml(k)}</span>`).join('');
-                                    const info = parseChannelInfo(log.channel, log.channelId, log.sender);
-                                    
-                                    const channelCell = escapeHtml(info.displayName);
-                                    const idCell = `<div style="line-height: 1.4;">
-                                        <div style="font-size: 12px; color: #666;">${escapeHtml(info.userName)}</div>
-                                        <div style="font-size: 11px; color: #999; margin-top: 2px;">${escapeHtml(info.id)}</div>
-                                    </div>`;
+                                    const info = parseChannelInfo(log);
+                                    const channelCell = renderChannelCell(info);
+                                    const idCell = renderSenderCell(info);
                                     const msg = String(log.message || '');
                                     const msgShort = msg.substring(0, 200) + (msg.length > 200 ? '...' : '');
                                     
@@ -2244,15 +2304,15 @@
             
             // 使用防抖来避免频繁触发
             let scrollTimeout;
-            container.addEventListener('scroll', function() {
+            const handleScroll = function() {
                 clearTimeout(scrollTimeout);
                 scrollTimeout = setTimeout(() => {
-                    // 检查是否滚动到底部（距离底部50px以内）
-                    const scrollTop = container.scrollTop;
-                    const scrollHeight = container.scrollHeight;
-                    const clientHeight = container.clientHeight;
+                    const activeTab = document.querySelector('.tab-content.active')?.id;
+                    if (activeTab && activeTab !== 'dashboard') return;
                     
-                    if (scrollHeight - scrollTop - clientHeight < 50 && recentLogsHasMore && !recentLogsLoading) {
+                    const rect = container.getBoundingClientRect();
+                    const nearBottom = rect.bottom - window.innerHeight < 240;
+                    if (nearBottom && recentLogsHasMore && !recentLogsLoading) {
                         // 显示加载提示
                         let loadingDiv = container.querySelector('.loading-more');
                         if (!loadingDiv) {
@@ -2267,17 +2327,26 @@
                         loadRecentLogs(false);
                     }
                 }, 200);
-            });
+            };
+
+            window.addEventListener('scroll', handleScroll, { passive: true });
+            window.addEventListener('resize', handleScroll);
+            container.addEventListener('scroll', handleScroll, { passive: true });
         }
 
         function createAutoSendConfig(overrides = {}) {
+            const hasEnabled = Object.prototype.hasOwnProperty.call(overrides, 'enabled');
+            const scheduledTime = String(overrides.scheduled_time || overrides.scheduledTime || '').trim();
             return {
                 id: overrides.id || `auto_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-                enabled: Boolean(overrides.enabled),
+                enabled: hasEnabled ? Boolean(overrides.enabled) : true,
                 target_type: overrides.target_type === 'private' ? 'private' : 'group',
                 target: overrides.target || '',
+                topic_id: String(overrides.topic_id || overrides.topicId || '').trim(),
                 message: overrides.message || '',
-                interval_seconds: Math.max(1, parseInt(overrides.interval_seconds, 10) || 60)
+                interval_seconds: Math.max(1, parseInt(overrides.interval_seconds, 10) || 60),
+                scheduled_enabled: overrides.scheduled_enabled === true || overrides.scheduledEnabled === true || overrides.scheduled_enabled === 'true' || overrides.scheduledEnabled === 'true',
+                scheduled_time: scheduledTime
             };
         }
 
@@ -2312,19 +2381,25 @@
                             </div>
                         </div>
                         <div class="form-group">
-                            <label>接收类型</label>
-                            <select class="auto-send-target-type">
-                                <option value="group" ${item.target_type === 'group' ? 'selected' : ''}>群组</option>
-                                <option value="private" ${item.target_type === 'private' ? 'selected' : ''}>个人</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
                             <label>群组或个人</label>
                             <input type="text" class="auto-send-target" value="${escapeHtml(item.target)}" placeholder="@username 或 Telegram ID">
                         </div>
                         <div class="form-group">
-                            <label>发送间隔（秒）</label>
-                            <input type="number" class="auto-send-interval" value="${escapeHtml(item.interval_seconds)}" min="1">
+                            <label>话题ID</label>
+                            <input type="text" class="auto-send-topic" value="${escapeHtml(item.topic_id || '')}" placeholder="可选，例如 458347">
+                        </div>
+                        <div class="form-group">
+                            <label>循环间隔（秒）</label>
+                            <input type="number" class="auto-send-interval" value="${escapeHtml(item.interval_seconds)}" min="1" ${item.scheduled_enabled ? 'disabled' : ''}>
+                        </div>
+                        <div class="form-group">
+                            <div class="auto-send-schedule">
+                                <div class="checkbox-group">
+                                    <input type="checkbox" class="auto-send-scheduled-enabled" ${item.scheduled_enabled ? 'checked' : ''} onchange="updateAutoSendScheduleState(this.closest('.auto-send-config'))">
+                                    <label>定时发送</label>
+                                </div>
+                                <input type="time" class="auto-send-time" value="${escapeHtml(item.scheduled_time || '')}" ${item.scheduled_enabled ? '' : 'disabled'}>
+                            </div>
                         </div>
                         <div class="form-group full">
                             <label>消息内容</label>
@@ -2333,19 +2408,37 @@
                     </div>
                 </div>
             `).join('');
+            container.querySelectorAll('.auto-send-config').forEach(updateAutoSendScheduleState);
+        }
+
+        function updateAutoSendScheduleState(card) {
+            if (!card) return;
+            const scheduled = card.querySelector('.auto-send-scheduled-enabled')?.checked || false;
+            const intervalInput = card.querySelector('.auto-send-interval');
+            const timeInput = card.querySelector('.auto-send-time');
+            if (intervalInput) {
+                intervalInput.disabled = scheduled;
+            }
+            if (timeInput) {
+                timeInput.disabled = !scheduled;
+            }
         }
 
         function collectAutoSendConfigs() {
             return Array.from(document.querySelectorAll('.auto-send-config')).map(card => {
                 const id = card.getAttribute('data-auto-send-id') || `auto_${Date.now()}_${Math.random().toString(16).slice(2)}`;
                 const intervalInput = card.querySelector('.auto-send-interval');
+                const scheduledEnabled = card.querySelector('.auto-send-scheduled-enabled')?.checked || false;
                 return {
                     id,
                     enabled: card.querySelector('.auto-send-enabled')?.checked || false,
-                    target_type: card.querySelector('.auto-send-target-type')?.value === 'private' ? 'private' : 'group',
+                    target_type: 'group',
                     target: (card.querySelector('.auto-send-target')?.value || '').trim(),
+                    topic_id: (card.querySelector('.auto-send-topic')?.value || '').trim(),
                     message: (card.querySelector('.auto-send-message')?.value || '').trim(),
-                    interval_seconds: Math.max(1, parseInt(intervalInput?.value, 10) || 60)
+                    interval_seconds: Math.max(1, parseInt(intervalInput?.value, 10) || 60),
+                    scheduled_enabled: scheduledEnabled,
+                    scheduled_time: (card.querySelector('.auto-send-time')?.value || '').trim()
                 };
             });
         }
@@ -2377,6 +2470,16 @@
             const invalid = autoSendConfigs.find(item => item.enabled && (!item.target || !item.message));
             if (invalid) {
                 showToast('❌ 已启用的自动发送配置必须填写群组/个人和消息内容', false);
+                return;
+            }
+            const invalidTopic = autoSendConfigs.find(item => item.enabled && item.topic_id && !/^\d+$/.test(item.topic_id));
+            if (invalidTopic) {
+                showToast('❌ 话题ID必须是纯数字，例如 458347', false);
+                return;
+            }
+            const invalidScheduled = autoSendConfigs.find(item => item.enabled && item.scheduled_enabled && !/^([01]\d|2[0-3]):[0-5]\d$/.test(item.scheduled_time || ''));
+            if (invalidScheduled) {
+                showToast('❌ 启用定时发送时必须选择发送时间', false);
                 return;
             }
 
@@ -2963,14 +3066,11 @@
                 data.logs.forEach(log => {
                     const keywordsArr = Array.isArray(log.keywords) ? log.keywords : [];
                     const keywords = keywordsArr.map(k => `<span class="keyword-badge">${escapeHtml(k)}</span>`).join('');
-                    const info = parseChannelInfo(log.channel, log.channelId, log.sender);
+                    const info = parseChannelInfo(log);
                     
-                    // 统一处理：频道栏显示名字，发送者栏显示用户名和ID（双排）
-                    const channelCell = escapeHtml(info.displayName);
-                    const senderCell = `<div style="line-height: 1.4;">
-                        <div style="font-size: 13px; color: #666;">${escapeHtml(info.userName)}</div>
-                        <div style="font-size: 11px; color: #999; margin-top: 2px;">${escapeHtml(info.id)}</div>
-                    </div>`;
+                    // 统一处理：频道栏显示群/频道和话题，发送者栏显示用户名和ID
+                    const channelCell = renderChannelCell(info);
+                    const senderCell = renderSenderCell(info);
                     const msg = String(log.message || '');
                     const msgShort = msg.substring(0, 150) + (msg.length > 150 ? '...' : '');
                     

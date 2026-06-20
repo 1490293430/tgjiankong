@@ -59,6 +59,10 @@ const userConfigSchema = new mongoose.Schema({
         type: String,
         default: ''
       },
+      topic_id: {
+        type: String,
+        default: ''
+      },
       message: {
         type: String,
         default: ''
@@ -67,6 +71,14 @@ const userConfigSchema = new mongoose.Schema({
         type: Number,
         default: 60,
         min: 1
+      },
+      scheduled_enabled: {
+        type: Boolean,
+        default: false
+      },
+      scheduled_time: {
+        type: String,
+        default: ''
       }
     }],
     default: []

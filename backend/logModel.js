@@ -9,9 +9,29 @@ const logSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  channelUsername: {
+    type: String,
+    default: ''
+  },
+  channelType: {
+    type: String,
+    default: ''
+  },
+  topicId: {
+    type: String,
+    default: ''
+  },
+  topicTitle: {
+    type: String,
+    default: ''
+  },
   sender: {
     type: String,
     default: 'Unknown'
+  },
+  senderId: {
+    type: String,
+    default: ''
   },
   message: {
     type: String,

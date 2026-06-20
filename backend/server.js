@@ -481,17 +481,25 @@ function sanitizeAutoSendConfigs(configs) {
     .map((item, index) => {
       const id = String(item?.id || `auto_${Date.now()}_${index}`).trim();
       const target = String(item?.target || '').trim();
+      const topicId = String(item?.topic_id ?? item?.topicId ?? '').trim();
+      const safeTopicId = /^\d+$/.test(topicId) ? topicId : '';
       const message = String(item?.message || '').trim();
       const intervalSeconds = Math.max(1, Math.floor(Number(item?.interval_seconds) || 60));
       const targetType = item?.target_type === 'private' ? 'private' : 'group';
+      const scheduledEnabled = item?.scheduled_enabled === true || item?.scheduledEnabled === true || item?.scheduled_enabled === 'true' || item?.scheduledEnabled === 'true';
+      const scheduledTime = String(item?.scheduled_time ?? item?.scheduledTime ?? '').trim();
+      const safeScheduledTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(scheduledTime) ? scheduledTime : '';
 
       return {
         id: id || `auto_${Date.now()}_${index}`,
         enabled: Boolean(item?.enabled),
         target_type: targetType,
         target,
+        topic_id: safeTopicId,
         message,
-        interval_seconds: intervalSeconds
+        interval_seconds: intervalSeconds,
+        scheduled_enabled: scheduledEnabled,
+        scheduled_time: safeScheduledTime
       };
     })
     .filter(item => item.id);
@@ -501,6 +509,28 @@ const autoSendSchedules = new Map();
 
 function getAutoSendScheduleKey(userId, configId) {
   return `${userId}:${configId}`;
+}
+
+function getNextDailyDelayMs(timeString) {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(timeString || '').trim());
+  if (!match) {
+    return null;
+  }
+
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(Number(match[1]), Number(match[2]), 0, 0);
+  if (next <= now) {
+    next.setDate(next.getDate() + 1);
+  }
+  return next.getTime() - now.getTime();
+}
+
+function getAutoSendNextDelayMs(autoConfig) {
+  if (autoConfig?.scheduled_enabled) {
+    return getNextDailyDelayMs(autoConfig.scheduled_time);
+  }
+  return Math.max(1, Number(autoConfig?.interval_seconds) || 60) * 1000;
 }
 
 function stopAutoSendScheduler() {
@@ -520,6 +550,7 @@ async function sendAutoTelegramMessage(userId, autoConfig) {
   const telethonUrl = await getTelethonServiceUrl(userId);
   await axios.post(`${telethonUrl}/api/internal/telegram/send`, {
     target: autoConfig.target,
+    topic_id: autoConfig.topic_id || '',
     message: autoConfig.message
   }, {
     timeout: 15000,
@@ -532,7 +563,12 @@ async function sendAutoTelegramMessage(userId, autoConfig) {
 
 function scheduleAutoSendItem(userId, autoConfig) {
   const key = getAutoSendScheduleKey(userId, autoConfig.id);
-  const intervalMs = Math.max(1, Number(autoConfig.interval_seconds) || 60) * 1000;
+  const initialDelayMs = getAutoSendNextDelayMs(autoConfig);
+  if (initialDelayMs === null) {
+    console.warn(`⚠️  [自动发送] 配置 ${autoConfig.id} 已启用定时发送，但发送时间无效，已跳过 (userId: ${userId})`);
+    return;
+  }
+
   const schedule = {
     timeout: null,
     running: false
@@ -547,7 +583,8 @@ function scheduleAutoSendItem(userId, autoConfig) {
       schedule.running = true;
       try {
         await sendAutoTelegramMessage(userId, autoConfig);
-        console.log(`✅ [自动发送] 已发送配置 ${autoConfig.id} 到 ${autoConfig.target} (userId: ${userId})`);
+        const modeText = autoConfig.scheduled_enabled ? `定时 ${autoConfig.scheduled_time}` : `间隔 ${autoConfig.interval_seconds} 秒`;
+        console.log(`✅ [自动发送] 已发送配置 ${autoConfig.id} 到 ${autoConfig.target} (${modeText}, userId: ${userId})`);
       } catch (error) {
         console.error(`❌ [自动发送] 发送失败 (userId: ${userId}, target: ${autoConfig.target}):`, error.message);
       } finally {
@@ -556,12 +593,18 @@ function scheduleAutoSendItem(userId, autoConfig) {
     }
 
     if (autoSendSchedules.has(key)) {
-      schedule.timeout = setTimeout(tick, intervalMs);
+      const nextDelayMs = getAutoSendNextDelayMs(autoConfig);
+      if (nextDelayMs === null) {
+        console.warn(`⚠️  [自动发送] 配置 ${autoConfig.id} 定时发送时间无效，停止调度 (userId: ${userId})`);
+        autoSendSchedules.delete(key);
+        return;
+      }
+      schedule.timeout = setTimeout(tick, nextDelayMs);
     }
   };
 
-  schedule.timeout = setTimeout(tick, intervalMs);
   autoSendSchedules.set(key, schedule);
+  schedule.timeout = setTimeout(tick, initialDelayMs);
 }
 
 async function refreshAutoSendScheduler() {
@@ -4793,7 +4836,12 @@ app.post('/api/internal/message-notify', async (req, res) => {
           userId: userId,
           channel: it.channel || 'Unknown',
           channelId: it.channelId || '',
+          channelUsername: it.channelUsername || '',
+          channelType: it.channelType || '',
+          topicId: it.topicId || '',
+          topicTitle: it.topicTitle || '',
           sender: it.sender || 'Unknown',
+          senderId: it.senderId || '',
           message: it.message || '',
           keywords: it.keywords || [],
           time: it.time || new Date().toISOString(),
