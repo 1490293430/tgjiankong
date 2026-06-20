@@ -1,6 +1,7 @@
 {
   "keywords": [],
   "channels": [],
+  "auto_send_configs": [],
   "alert_keywords": [],
   "alert_regex": [],
   "alert_target": "",

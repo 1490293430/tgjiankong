@@ -40,6 +40,37 @@ const userConfigSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  auto_send_configs: {
+    type: [{
+      id: {
+        type: String,
+        required: true
+      },
+      enabled: {
+        type: Boolean,
+        default: false
+      },
+      target_type: {
+        type: String,
+        enum: ['group', 'private'],
+        default: 'group'
+      },
+      target: {
+        type: String,
+        default: ''
+      },
+      message: {
+        type: String,
+        default: ''
+      },
+      interval_seconds: {
+        type: Number,
+        default: 60,
+        min: 1
+      }
+    }],
+    default: []
+  },
   telegram: {
     api_id: {
       type: Number,

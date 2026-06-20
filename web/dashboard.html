@@ -289,17 +289,20 @@
         }
         
         .form-group input,
-        .form-group textarea {
+        .form-group textarea,
+        .form-group select {
             width: 100%;
             padding: 12px;
             border: 2px solid #e0e0e0;
             border-radius: 8px;
             font-size: 14px;
             transition: border-color 0.3s;
+            background: white;
         }
         
         .form-group input:focus,
-        .form-group textarea:focus {
+        .form-group textarea:focus,
+        .form-group select:focus {
             outline: none;
             border-color: #667eea;
         }
@@ -354,6 +357,56 @@
             background: #d32f2f;
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(244, 67, 54, 0.3);
+        }
+
+        .auto-send-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 18px;
+            flex-wrap: wrap;
+        }
+
+        .auto-send-toolbar h2 {
+            margin: 0;
+        }
+
+        .auto-send-config {
+            border: 1px solid #e8e8ef;
+            border-radius: 8px;
+            padding: 18px;
+            margin-bottom: 16px;
+            background: #fff;
+        }
+
+        .auto-send-config-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .auto-send-config-title {
+            font-weight: 700;
+            color: #333;
+        }
+
+        .auto-send-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+        }
+
+        .auto-send-grid .full {
+            grid-column: 1 / -1;
+        }
+
+        @media (max-width: 768px) {
+            .auto-send-grid {
+                grid-template-columns: 1fr;
+            }
         }
         
         .log-table {
@@ -719,6 +772,7 @@
         <div class="nav-tabs">
             <button class="nav-tab active" onclick="switchTab('dashboard', this)">📊 仪表盘</button>
             <button class="nav-tab" onclick="switchTab('ai', this)">🤖 AI 分析</button>
+            <button class="nav-tab" onclick="switchTab('autoSend', this)">📤 自动发送</button>
             <button class="nav-tab" onclick="switchTab('logs', this)">📝 日志</button>
             <button class="nav-tab" onclick="switchTab('config', this)">⚙️ 配置</button>
             <button class="nav-tab" onclick="switchTab('settings', this)">⚙️ 设置</button>
@@ -744,6 +798,18 @@
             <div class="card">
                 <h2>最近日志</h2>
                 <div id="recentLogs" class="loading">加载中...</div>
+            </div>
+        </div>
+
+        <!-- 自动发送 -->
+        <div id="autoSend" class="tab-content">
+            <div class="card">
+                <div class="auto-send-toolbar">
+                    <h2>自动发送</h2>
+                    <button class="btn btn-primary" onclick="addAutoSendConfig()">➕ 添加</button>
+                </div>
+                <div id="autoSendConfigs"></div>
+                <button class="btn btn-primary" onclick="saveAutoSendConfigs()">💾 保存自动发送配置</button>
             </div>
         </div>
         
@@ -1321,6 +1387,7 @@
         let currentPage = 1;
         let currentAIPage = 1;
         let config = {};
+        let autoSendConfigs = [];
         let eventSource = null; // SSE 事件源连接
         let sseConnected = false; // SSE 连接状态
         let refreshIntervalTimer = null; // 定期刷新定时器
@@ -1908,6 +1975,7 @@
             // 使用 Promise.all 等待所有数据加载完成
             Promise.all([
                 tabName === 'dashboard' ? Promise.all([loadStats(), loadRecentLogs(true)]) : Promise.resolve(),
+                tabName === 'autoSend' ? loadAutoSendConfigs() : Promise.resolve(),
                 tabName === 'config' ? loadConfig() : Promise.resolve(),
                 tabName === 'ai' ? Promise.all([loadAIStats(), loadAISummaries()]) : Promise.resolve(),
                 tabName === 'logs' ? loadLogs() : Promise.resolve(),
@@ -2201,6 +2269,146 @@
                 }, 200);
             });
         }
+
+        function createAutoSendConfig(overrides = {}) {
+            return {
+                id: overrides.id || `auto_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+                enabled: Boolean(overrides.enabled),
+                target_type: overrides.target_type === 'private' ? 'private' : 'group',
+                target: overrides.target || '',
+                message: overrides.message || '',
+                interval_seconds: Math.max(1, parseInt(overrides.interval_seconds, 10) || 60)
+            };
+        }
+
+        function normalizeAutoSendConfigs(configs) {
+            if (!Array.isArray(configs)) {
+                return [];
+            }
+            return configs.map(item => createAutoSendConfig(item));
+        }
+
+        function renderAutoSendConfigs() {
+            const container = document.getElementById('autoSendConfigs');
+            if (!container) return;
+
+            if (!autoSendConfigs.length) {
+                container.innerHTML = '<p style="text-align: center; color: #999; padding: 32px 0;">暂无自动发送配置</p>';
+                return;
+            }
+
+            container.innerHTML = autoSendConfigs.map((item, index) => `
+                <div class="auto-send-config" data-auto-send-id="${escapeHtml(item.id)}">
+                    <div class="auto-send-config-header">
+                        <div class="auto-send-config-title">配置 ${index + 1}</div>
+                        <button class="btn btn-danger" onclick="deleteAutoSendConfig(this.closest('.auto-send-config').dataset.autoSendId)">删除</button>
+                    </div>
+                    <div class="auto-send-grid">
+                        <div class="form-group">
+                            <label>启用状态</label>
+                            <div class="checkbox-group">
+                                <input type="checkbox" class="auto-send-enabled" ${item.enabled ? 'checked' : ''}>
+                                <label>启用自动发送</label>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>接收类型</label>
+                            <select class="auto-send-target-type">
+                                <option value="group" ${item.target_type === 'group' ? 'selected' : ''}>群组</option>
+                                <option value="private" ${item.target_type === 'private' ? 'selected' : ''}>个人</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>群组或个人</label>
+                            <input type="text" class="auto-send-target" value="${escapeHtml(item.target)}" placeholder="@username 或 Telegram ID">
+                        </div>
+                        <div class="form-group">
+                            <label>发送间隔（秒）</label>
+                            <input type="number" class="auto-send-interval" value="${escapeHtml(item.interval_seconds)}" min="1">
+                        </div>
+                        <div class="form-group full">
+                            <label>消息内容</label>
+                            <textarea class="auto-send-message" placeholder="输入要自动发送的消息">${escapeHtml(item.message)}</textarea>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function collectAutoSendConfigs() {
+            return Array.from(document.querySelectorAll('.auto-send-config')).map(card => {
+                const id = card.getAttribute('data-auto-send-id') || `auto_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+                const intervalInput = card.querySelector('.auto-send-interval');
+                return {
+                    id,
+                    enabled: card.querySelector('.auto-send-enabled')?.checked || false,
+                    target_type: card.querySelector('.auto-send-target-type')?.value === 'private' ? 'private' : 'group',
+                    target: (card.querySelector('.auto-send-target')?.value || '').trim(),
+                    message: (card.querySelector('.auto-send-message')?.value || '').trim(),
+                    interval_seconds: Math.max(1, parseInt(intervalInput?.value, 10) || 60)
+                };
+            });
+        }
+
+        async function loadAutoSendConfigs() {
+            try {
+                config = await apiRequest('/config');
+                autoSendConfigs = normalizeAutoSendConfigs(config?.auto_send_configs || []);
+                renderAutoSendConfigs();
+            } catch (error) {
+                console.error('加载自动发送配置失败:', error);
+                showToast('❌ 加载自动发送配置失败：' + (error.message || '未知错误'), false);
+            }
+        }
+
+        function addAutoSendConfig() {
+            autoSendConfigs = collectAutoSendConfigs();
+            autoSendConfigs.push(createAutoSendConfig());
+            renderAutoSendConfigs();
+        }
+
+        function deleteAutoSendConfig(id) {
+            autoSendConfigs = collectAutoSendConfigs().filter(item => item.id !== id);
+            renderAutoSendConfigs();
+        }
+
+        async function saveAutoSendConfigs() {
+            autoSendConfigs = collectAutoSendConfigs();
+            const invalid = autoSendConfigs.find(item => item.enabled && (!item.target || !item.message));
+            if (invalid) {
+                showToast('❌ 已启用的自动发送配置必须填写群组/个人和消息内容', false);
+                return;
+            }
+
+            const saveButton = document.querySelector('button[onclick="saveAutoSendConfigs()"]');
+            const originalText = saveButton ? saveButton.textContent : '💾 保存自动发送配置';
+            if (saveButton) {
+                saveButton.disabled = true;
+                saveButton.textContent = '💾 保存中...';
+            }
+
+            try {
+                const result = await apiRequest('/config', {
+                    method: 'POST',
+                    body: JSON.stringify({ auto_send_configs: autoSendConfigs })
+                });
+
+                if (result && result.status === 'ok') {
+                    config.auto_send_configs = autoSendConfigs;
+                    showToast('自动发送配置保存成功！', true);
+                } else {
+                    showToast('保存失败：' + ((result && result.error) || '未知错误'), false);
+                }
+            } catch (error) {
+                console.error('保存自动发送配置失败:', error);
+                showToast('❌ 保存失败：' + (error.message || '未知错误'), false);
+            } finally {
+                if (saveButton) {
+                    saveButton.disabled = false;
+                    saveButton.textContent = originalText;
+                }
+            }
+        }
         
         // 加载配置
         async function loadConfig() {
@@ -2210,6 +2418,8 @@
                     console.warn('配置加载失败：返回值为空');
                     return;
                 }
+                autoSendConfigs = normalizeAutoSendConfigs(config.auto_send_configs || []);
+                renderAutoSendConfigs();
                 // Telegram API 凭证
                 const apiId = (config.telegram && typeof config.telegram.api_id !== 'undefined' ? config.telegram.api_id : 0) || 0;
                 const apiHashConfigured = config.telegram && config.telegram.api_hash_configured ? config.telegram.api_hash_configured : false;
@@ -3842,10 +4052,13 @@
         if (savedTab === 'users') {
             savedTab = 'settings'; // 兼容旧版本，将users映射到settings
         }
+        const tabNames = ['dashboard', 'ai', 'autoSend', 'logs', 'config', 'settings'];
+        if (!tabNames.includes(savedTab)) {
+            savedTab = 'dashboard';
+        }
         
         document.querySelectorAll('.nav-tab').forEach((tab, index) => {
             tab.classList.remove('active');
-            const tabNames = ['dashboard', 'ai', 'logs', 'config', 'settings'];
             if (tabNames[index] === savedTab) {
                 tab.classList.add('active');
             }
@@ -3868,6 +4081,8 @@
                         loadStats(),
                         loadRecentLogs(true) // 重置并加载
                     ]);
+                } else if (savedTab === 'autoSend') {
+                    await loadAutoSendConfigs();
                 } else if (savedTab === 'config') {
                     await loadConfig();
                 } else if (savedTab === 'ai') {

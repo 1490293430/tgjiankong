@@ -197,6 +197,7 @@ const defaultConfig = {
   allow_public_registration: ALLOW_PUBLIC_REGISTRATION_ENV,
   keywords: [],
   channels: [],
+  auto_send_configs: [],
   alert_keywords: [],
   alert_regex: [],
   alert_target: '',
@@ -397,6 +398,7 @@ async function loadUserConfig(userId, skipCache = false) {
     const defaultConfig = {
       keywords: [],
       channels: [],
+      auto_send_configs: [],
       alert_keywords: [],
       alert_regex: [],
       alert_target: '',
@@ -472,6 +474,130 @@ async function saveUserConfig(userId, configData) {
   }
 }
 
+function sanitizeAutoSendConfigs(configs) {
+  if (!Array.isArray(configs)) return [];
+
+  return configs
+    .map((item, index) => {
+      const id = String(item?.id || `auto_${Date.now()}_${index}`).trim();
+      const target = String(item?.target || '').trim();
+      const message = String(item?.message || '').trim();
+      const intervalSeconds = Math.max(1, Math.floor(Number(item?.interval_seconds) || 60));
+      const targetType = item?.target_type === 'private' ? 'private' : 'group';
+
+      return {
+        id: id || `auto_${Date.now()}_${index}`,
+        enabled: Boolean(item?.enabled),
+        target_type: targetType,
+        target,
+        message,
+        interval_seconds: intervalSeconds
+      };
+    })
+    .filter(item => item.id);
+}
+
+const autoSendSchedules = new Map();
+
+function getAutoSendScheduleKey(userId, configId) {
+  return `${userId}:${configId}`;
+}
+
+function stopAutoSendScheduler() {
+  for (const schedule of autoSendSchedules.values()) {
+    if (schedule.timeout) {
+      clearTimeout(schedule.timeout);
+    }
+  }
+  autoSendSchedules.clear();
+}
+
+async function sendAutoTelegramMessage(userId, autoConfig) {
+  if (!autoConfig?.enabled || !autoConfig.target || !autoConfig.message) {
+    return;
+  }
+
+  const telethonUrl = await getTelethonServiceUrl(userId);
+  await axios.post(`${telethonUrl}/api/internal/telegram/send`, {
+    target: autoConfig.target,
+    message: autoConfig.message
+  }, {
+    timeout: 15000,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(INTERNAL_API_TOKEN ? { 'X-Internal-Token': INTERNAL_API_TOKEN } : {})
+    }
+  });
+}
+
+function scheduleAutoSendItem(userId, autoConfig) {
+  const key = getAutoSendScheduleKey(userId, autoConfig.id);
+  const intervalMs = Math.max(1, Number(autoConfig.interval_seconds) || 60) * 1000;
+  const schedule = {
+    timeout: null,
+    running: false
+  };
+
+  const tick = async () => {
+    if (!autoSendSchedules.has(key)) {
+      return;
+    }
+
+    if (!schedule.running) {
+      schedule.running = true;
+      try {
+        await sendAutoTelegramMessage(userId, autoConfig);
+        console.log(`✅ [自动发送] 已发送配置 ${autoConfig.id} 到 ${autoConfig.target} (userId: ${userId})`);
+      } catch (error) {
+        console.error(`❌ [自动发送] 发送失败 (userId: ${userId}, target: ${autoConfig.target}):`, error.message);
+      } finally {
+        schedule.running = false;
+      }
+    }
+
+    if (autoSendSchedules.has(key)) {
+      schedule.timeout = setTimeout(tick, intervalMs);
+    }
+  };
+
+  schedule.timeout = setTimeout(tick, intervalMs);
+  autoSendSchedules.set(key, schedule);
+}
+
+async function refreshAutoSendScheduler() {
+  try {
+    stopAutoSendScheduler();
+
+    if (mongoose.connection.readyState !== 1) {
+      console.warn('⚠️  [自动发送] MongoDB 未连接，暂不启动自动发送调度器');
+      return;
+    }
+
+    const configs = await UserConfig.find({ 'auto_send_configs.enabled': true })
+      .select('userId auto_send_configs')
+      .lean();
+
+    let scheduledCount = 0;
+    for (const cfg of configs) {
+      const userId = cfg.userId?.toString();
+      if (!userId) continue;
+
+      const user = await User.findById(userId).select('is_active').lean();
+      if (!user?.is_active) continue;
+
+      for (const autoConfig of sanitizeAutoSendConfigs(cfg.auto_send_configs)) {
+        if (!autoConfig.enabled || !autoConfig.target || !autoConfig.message) continue;
+        scheduleAutoSendItem(userId, autoConfig);
+        scheduledCount += 1;
+      }
+    }
+
+    console.log(`✅ [自动发送] 调度器已刷新，启用配置数: ${scheduledCount}`);
+  } catch (error) {
+    console.error('❌ [自动发送] 刷新调度器失败:', error.message);
+  }
+}
+
 // 初始化默认管理员用户（向后兼容：如果系统已有用户，不再创建；如果没有用户，也不自动创建，让用户注册）
 async function initDefaultAdmin() {
   try {
@@ -511,7 +637,9 @@ mongoose.connection.on('disconnected', () => {
   // 静默断开，不输出日志
 });
 mongoose.connection.on('reconnected', () => {
-  // 静默重连，不输出日志
+  refreshAutoSendScheduler().catch(err => {
+    console.warn('⚠️  [自动发送] MongoDB 重连后刷新调度器失败:', err.message);
+  });
 });
 
 mongoose.connect(MONGO_URL, {
@@ -524,6 +652,7 @@ mongoose.connect(MONGO_URL, {
   // 静默连接成功，不输出日志
   // 初始化默认管理员
   await initDefaultAdmin();
+  await refreshAutoSendScheduler();
 })
 .catch((err) => {
   // 静默连接失败，但记录到控制台（不输出到日志）
@@ -1598,6 +1727,13 @@ app.post('/api/config', authMiddleware, async (req, res) => {
     }
     
     incoming.multi_login_enabled = newMultiLoginEnabled;
+
+    if (incoming.auto_send_configs !== undefined) {
+      incoming.auto_send_configs = sanitizeAutoSendConfigs(incoming.auto_send_configs);
+      console.log(`📋 [配置保存] auto_send_configs: ${incoming.auto_send_configs.length} 个`);
+    } else if (currentConfig.auto_send_configs) {
+      incoming.auto_send_configs = currentConfig.auto_send_configs;
+    }
     
     // 准备更新数据
     const updateData = {
@@ -1799,6 +1935,13 @@ app.post('/api/config', authMiddleware, async (req, res) => {
           await startAIAnalysisTimer();
           console.log('✅ [配置保存] AI 分析定时器已重启');
         }, 1000);
+      }
+
+      if (incoming.auto_send_configs) {
+        setTimeout(async () => {
+          console.log('🔄 [配置保存] 自动发送配置已更新，刷新调度器');
+          await refreshAutoSendScheduler();
+        }, 500);
       }
       
       // 处理多开登录状态变化和配置同步
