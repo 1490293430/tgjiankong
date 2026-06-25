@@ -2,6 +2,9 @@ FROM node:18-alpine
 
 WORKDIR /app
 
+# 安装时区数据，让容器内 date 与 Node 本地时间都使用 TZ 设置
+RUN apk add --no-cache tzdata
+
 # 复制依赖文件
 COPY package.json ./
 

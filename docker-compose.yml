@@ -28,6 +28,7 @@ services:
       mongo:
         condition: service_started
     environment:
+      - TZ=Asia/Shanghai
       - MONGO_URL=mongodb://mongo:27017/tglogs
       - JWT_SECRET=${JWT_SECRET}
       # 保护 /api/internal/* 的内部访问令牌（强烈建议设置强随机值）
@@ -65,6 +66,7 @@ services:
       - mongo
       - api
     environment:
+      - TZ=Asia/Shanghai
       - MONGO_URL=mongodb://mongo:27017/tglogs
       - API_URL=http://api:3000
       # 与后端一致的内部访问令牌，用于访问 /api/internal/* 并保护自身内部接口

@@ -393,6 +393,77 @@
             color: #333;
         }
 
+        .auto-send-switch {
+            min-height: 42px;
+            display: flex;
+            align-items: center;
+        }
+
+        .auto-send-switch-control {
+            display: inline-flex !important;
+            align-items: center;
+            gap: 10px;
+            margin: 0 !important;
+            cursor: pointer;
+            user-select: none;
+            font-weight: 600;
+            color: #444;
+        }
+
+        .auto-send-switch-control input[type="checkbox"] {
+            position: absolute;
+            opacity: 0;
+            width: 1px;
+            height: 1px;
+            pointer-events: none;
+        }
+
+        .auto-send-switch-track {
+            width: 52px;
+            height: 28px;
+            border-radius: 999px;
+            background: #d7dbe8;
+            position: relative;
+            flex: 0 0 auto;
+            transition: background 0.2s ease, box-shadow 0.2s ease;
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.16);
+        }
+
+        .auto-send-switch-track::after {
+            content: '';
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.24);
+            transition: transform 0.2s ease;
+        }
+
+        .auto-send-switch-control input[type="checkbox"]:checked + .auto-send-switch-track {
+            background: linear-gradient(135deg, #2fbf71 0%, #17a673 100%);
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.12), 0 0 0 3px rgba(47, 191, 113, 0.14);
+        }
+
+        .auto-send-switch-control input[type="checkbox"]:checked + .auto-send-switch-track::after {
+            transform: translateX(24px);
+        }
+
+        .auto-send-switch-control input[type="checkbox"]:focus-visible + .auto-send-switch-track {
+            outline: 3px solid rgba(102, 126, 234, 0.28);
+            outline-offset: 2px;
+        }
+
+        .auto-send-switch-control input[type="checkbox"]:disabled + .auto-send-switch-track {
+            opacity: 0.65;
+        }
+
+        .auto-send-switch-text {
+            line-height: 1.2;
+        }
+
         .auto-send-grid {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -403,13 +474,13 @@
             grid-column: 1 / -1;
         }
 
-        .auto-send-schedule {
+        .auto-send-trigger {
             display: flex;
             flex-direction: column;
             gap: 8px;
         }
 
-        .auto-send-schedule .checkbox-group {
+        .auto-send-trigger .checkbox-group {
             margin: 0;
         }
 
@@ -1397,6 +1468,7 @@
         let currentAIPage = 1;
         let config = {};
         let autoSendConfigs = [];
+        let autoSendSaving = false;
         let eventSource = null; // SSE 事件源连接
         let sseConnected = false; // SSE 连接状态
         let refreshIntervalTimer = null; // 定期刷新定时器
@@ -2336,16 +2408,23 @@
 
         function createAutoSendConfig(overrides = {}) {
             const hasEnabled = Object.prototype.hasOwnProperty.call(overrides, 'enabled');
+            const hasIntervalEnabled = Object.prototype.hasOwnProperty.call(overrides, 'interval_enabled') ||
+                Object.prototype.hasOwnProperty.call(overrides, 'intervalEnabled');
+            const scheduledEnabled = overrides.scheduled_enabled === true || overrides.scheduledEnabled === true ||
+                overrides.scheduled_enabled === 'true' || overrides.scheduledEnabled === 'true';
             const scheduledTime = String(overrides.scheduled_time || overrides.scheduledTime || '').trim();
             return {
                 id: overrides.id || `auto_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-                enabled: hasEnabled ? Boolean(overrides.enabled) : true,
+                enabled: hasEnabled ? Boolean(overrides.enabled) : false,
                 target_type: overrides.target_type === 'private' ? 'private' : 'group',
                 target: overrides.target || '',
                 topic_id: String(overrides.topic_id || overrides.topicId || '').trim(),
                 message: overrides.message || '',
                 interval_seconds: Math.max(1, parseInt(overrides.interval_seconds, 10) || 60),
-                scheduled_enabled: overrides.scheduled_enabled === true || overrides.scheduledEnabled === true || overrides.scheduled_enabled === 'true' || overrides.scheduledEnabled === 'true',
+                interval_enabled: hasIntervalEnabled
+                    ? (overrides.interval_enabled === true || overrides.intervalEnabled === true || overrides.interval_enabled === 'true' || overrides.intervalEnabled === 'true')
+                    : !scheduledEnabled,
+                scheduled_enabled: scheduledEnabled,
                 scheduled_time: scheduledTime
             };
         }
@@ -2375,9 +2454,12 @@
                     <div class="auto-send-grid">
                         <div class="form-group">
                             <label>启用状态</label>
-                            <div class="checkbox-group">
-                                <input type="checkbox" class="auto-send-enabled" ${item.enabled ? 'checked' : ''}>
-                                <label>启用自动发送</label>
+                            <div class="auto-send-switch">
+                                <label class="auto-send-switch-control">
+                                    <input type="checkbox" class="auto-send-enabled" ${item.enabled ? 'checked' : ''} onchange="handleAutoSendEnabledChange(this)">
+                                    <span class="auto-send-switch-track"></span>
+                                    <span class="auto-send-switch-text">启用自动发送</span>
+                                </label>
                             </div>
                         </div>
                         <div class="form-group">
@@ -2389,13 +2471,18 @@
                             <input type="text" class="auto-send-topic" value="${escapeHtml(item.topic_id || '')}" placeholder="可选，例如 458347">
                         </div>
                         <div class="form-group">
-                            <label>循环间隔（秒）</label>
-                            <input type="number" class="auto-send-interval" value="${escapeHtml(item.interval_seconds)}" min="1" ${item.scheduled_enabled ? 'disabled' : ''}>
+                            <div class="auto-send-trigger">
+                                <div class="checkbox-group">
+                                    <input type="checkbox" class="auto-send-interval-enabled" ${item.interval_enabled ? 'checked' : ''} onchange="updateAutoSendTriggerState(this.closest('.auto-send-config'))">
+                                    <label>循环间隔</label>
+                                </div>
+                                <input type="number" class="auto-send-interval" value="${escapeHtml(item.interval_seconds)}" min="1" ${item.interval_enabled ? '' : 'disabled'}>
+                            </div>
                         </div>
                         <div class="form-group">
-                            <div class="auto-send-schedule">
+                            <div class="auto-send-trigger">
                                 <div class="checkbox-group">
-                                    <input type="checkbox" class="auto-send-scheduled-enabled" ${item.scheduled_enabled ? 'checked' : ''} onchange="updateAutoSendScheduleState(this.closest('.auto-send-config'))">
+                                    <input type="checkbox" class="auto-send-scheduled-enabled" ${item.scheduled_enabled ? 'checked' : ''} onchange="updateAutoSendTriggerState(this.closest('.auto-send-config'))">
                                     <label>定时发送</label>
                                 </div>
                                 <input type="time" class="auto-send-time" value="${escapeHtml(item.scheduled_time || '')}" ${item.scheduled_enabled ? '' : 'disabled'}>
@@ -2408,16 +2495,17 @@
                     </div>
                 </div>
             `).join('');
-            container.querySelectorAll('.auto-send-config').forEach(updateAutoSendScheduleState);
+            container.querySelectorAll('.auto-send-config').forEach(updateAutoSendTriggerState);
         }
 
-        function updateAutoSendScheduleState(card) {
+        function updateAutoSendTriggerState(card) {
             if (!card) return;
+            const interval = card.querySelector('.auto-send-interval-enabled')?.checked || false;
             const scheduled = card.querySelector('.auto-send-scheduled-enabled')?.checked || false;
             const intervalInput = card.querySelector('.auto-send-interval');
             const timeInput = card.querySelector('.auto-send-time');
             if (intervalInput) {
-                intervalInput.disabled = scheduled;
+                intervalInput.disabled = !interval;
             }
             if (timeInput) {
                 timeInput.disabled = !scheduled;
@@ -2428,6 +2516,7 @@
             return Array.from(document.querySelectorAll('.auto-send-config')).map(card => {
                 const id = card.getAttribute('data-auto-send-id') || `auto_${Date.now()}_${Math.random().toString(16).slice(2)}`;
                 const intervalInput = card.querySelector('.auto-send-interval');
+                const intervalEnabled = card.querySelector('.auto-send-interval-enabled')?.checked || false;
                 const scheduledEnabled = card.querySelector('.auto-send-scheduled-enabled')?.checked || false;
                 return {
                     id,
@@ -2437,6 +2526,7 @@
                     topic_id: (card.querySelector('.auto-send-topic')?.value || '').trim(),
                     message: (card.querySelector('.auto-send-message')?.value || '').trim(),
                     interval_seconds: Math.max(1, parseInt(intervalInput?.value, 10) || 60),
+                    interval_enabled: intervalEnabled,
                     scheduled_enabled: scheduledEnabled,
                     scheduled_time: (card.querySelector('.auto-send-time')?.value || '').trim()
                 };
@@ -2465,27 +2555,45 @@
             renderAutoSendConfigs();
         }
 
-        async function saveAutoSendConfigs() {
-            autoSendConfigs = collectAutoSendConfigs();
-            const invalid = autoSendConfigs.find(item => item.enabled && (!item.target || !item.message));
+        function validateAutoSendConfigs(items, showMessage = true) {
+            const invalid = items.find(item => item.enabled && (!item.target || !item.message));
             if (invalid) {
-                showToast('❌ 已启用的自动发送配置必须填写群组/个人和消息内容', false);
-                return;
+                if (showMessage) showToast('❌ 已启用的自动发送配置必须填写群组/个人和消息内容', false);
+                return false;
             }
-            const invalidTopic = autoSendConfigs.find(item => item.enabled && item.topic_id && !/^\d+$/.test(item.topic_id));
+            const invalidTrigger = items.find(item => item.enabled && !item.interval_enabled && !item.scheduled_enabled);
+            if (invalidTrigger) {
+                if (showMessage) showToast('❌ 已启用的自动发送配置必须勾选循环间隔或定时发送', false);
+                return false;
+            }
+            const invalidTopic = items.find(item => item.enabled && item.topic_id && !/^\d+$/.test(item.topic_id));
             if (invalidTopic) {
-                showToast('❌ 话题ID必须是纯数字，例如 458347', false);
-                return;
+                if (showMessage) showToast('❌ 话题ID必须是纯数字，例如 458347', false);
+                return false;
             }
-            const invalidScheduled = autoSendConfigs.find(item => item.enabled && item.scheduled_enabled && !/^([01]\d|2[0-3]):[0-5]\d$/.test(item.scheduled_time || ''));
+            const invalidScheduled = items.find(item => item.enabled && item.scheduled_enabled && !/^([01]\d|2[0-3]):[0-5]\d$/.test(item.scheduled_time || ''));
             if (invalidScheduled) {
-                showToast('❌ 启用定时发送时必须选择发送时间', false);
-                return;
+                if (showMessage) showToast('❌ 启用定时发送时必须选择发送时间', false);
+                return false;
+            }
+            return true;
+        }
+
+        async function persistAutoSendConfigs(options = {}) {
+            const { silent = false } = options;
+            autoSendConfigs = collectAutoSendConfigs();
+            if (!validateAutoSendConfigs(autoSendConfigs, !silent)) {
+                return false;
+            }
+            if (autoSendSaving) {
+                if (!silent) showToast('自动发送配置正在保存，请稍后再试', false);
+                return false;
             }
 
             const saveButton = document.querySelector('button[onclick="saveAutoSendConfigs()"]');
             const originalText = saveButton ? saveButton.textContent : '💾 保存自动发送配置';
-            if (saveButton) {
+            autoSendSaving = true;
+            if (saveButton && !silent) {
                 saveButton.disabled = true;
                 saveButton.textContent = '💾 保存中...';
             }
@@ -2498,19 +2606,43 @@
 
                 if (result && result.status === 'ok') {
                     config.auto_send_configs = autoSendConfigs;
-                    showToast('自动发送配置保存成功！', true);
+                    if (!silent) showToast('自动发送配置保存成功！', true);
+                    return true;
                 } else {
-                    showToast('保存失败：' + ((result && result.error) || '未知错误'), false);
+                    if (!silent) showToast('保存失败：' + ((result && result.error) || '未知错误'), false);
+                    return false;
                 }
             } catch (error) {
                 console.error('保存自动发送配置失败:', error);
-                showToast('❌ 保存失败：' + (error.message || '未知错误'), false);
+                if (!silent) showToast('❌ 保存失败：' + (error.message || '未知错误'), false);
+                return false;
             } finally {
-                if (saveButton) {
+                autoSendSaving = false;
+                if (saveButton && !silent) {
                     saveButton.disabled = false;
                     saveButton.textContent = originalText;
                 }
             }
+        }
+
+        async function saveAutoSendConfigs() {
+            await persistAutoSendConfigs({ silent: false });
+        }
+
+        async function handleAutoSendEnabledChange(input) {
+            const previousChecked = !input.checked;
+            input.disabled = true;
+            const saved = await persistAutoSendConfigs({ silent: true });
+            input.disabled = false;
+            if (saved) {
+                showToast(input.checked ? '自动发送已启用' : '自动发送已关闭', true);
+                return;
+            }
+
+            input.checked = previousChecked;
+            autoSendConfigs = normalizeAutoSendConfigs(config.auto_send_configs || []);
+            renderAutoSendConfigs();
+            showToast('❌ 自动发送开关保存失败，请检查配置是否完整', false);
         }
         
         // 加载配置

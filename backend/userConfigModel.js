@@ -72,6 +72,10 @@ const userConfigSchema = new mongoose.Schema({
         default: 60,
         min: 1
       },
+      interval_enabled: {
+        type: Boolean,
+        default: true
+      },
       scheduled_enabled: {
         type: Boolean,
         default: false

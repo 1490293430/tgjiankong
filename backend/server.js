@@ -487,6 +487,11 @@ function sanitizeAutoSendConfigs(configs) {
       const intervalSeconds = Math.max(1, Math.floor(Number(item?.interval_seconds) || 60));
       const targetType = item?.target_type === 'private' ? 'private' : 'group';
       const scheduledEnabled = item?.scheduled_enabled === true || item?.scheduledEnabled === true || item?.scheduled_enabled === 'true' || item?.scheduledEnabled === 'true';
+      const hasIntervalEnabled = item?.interval_enabled !== undefined || item?.intervalEnabled !== undefined;
+      const intervalEnabledValue = item?.interval_enabled ?? item?.intervalEnabled;
+      const intervalEnabled = hasIntervalEnabled
+        ? (intervalEnabledValue === true || intervalEnabledValue === 'true')
+        : !scheduledEnabled;
       const scheduledTime = String(item?.scheduled_time ?? item?.scheduledTime ?? '').trim();
       const safeScheduledTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(scheduledTime) ? scheduledTime : '';
 
@@ -498,6 +503,7 @@ function sanitizeAutoSendConfigs(configs) {
         topic_id: safeTopicId,
         message,
         interval_seconds: intervalSeconds,
+        interval_enabled: intervalEnabled,
         scheduled_enabled: scheduledEnabled,
         scheduled_time: safeScheduledTime
       };
@@ -526,16 +532,13 @@ function getNextDailyDelayMs(timeString) {
   return next.getTime() - now.getTime();
 }
 
-function getAutoSendNextDelayMs(autoConfig) {
-  if (autoConfig?.scheduled_enabled) {
-    return getNextDailyDelayMs(autoConfig.scheduled_time);
-  }
-  return Math.max(1, Number(autoConfig?.interval_seconds) || 60) * 1000;
-}
-
 function stopAutoSendScheduler() {
   for (const schedule of autoSendSchedules.values()) {
-    if (schedule.timeout) {
+    if (schedule.timeouts) {
+      for (const timeout of schedule.timeouts) {
+        clearTimeout(timeout);
+      }
+    } else if (schedule.timeout) {
       clearTimeout(schedule.timeout);
     }
   }
@@ -563,18 +566,20 @@ async function sendAutoTelegramMessage(userId, autoConfig) {
 
 function scheduleAutoSendItem(userId, autoConfig) {
   const key = getAutoSendScheduleKey(userId, autoConfig.id);
-  const initialDelayMs = getAutoSendNextDelayMs(autoConfig);
-  if (initialDelayMs === null) {
-    console.warn(`⚠️  [自动发送] 配置 ${autoConfig.id} 已启用定时发送，但发送时间无效，已跳过 (userId: ${userId})`);
-    return;
-  }
-
   const schedule = {
-    timeout: null,
+    timeouts: new Set(),
     running: false
   };
 
-  const tick = async () => {
+  const addTimeout = (callback, delayMs) => {
+    const timeout = setTimeout(async () => {
+      schedule.timeouts.delete(timeout);
+      await callback();
+    }, delayMs);
+    schedule.timeouts.add(timeout);
+  };
+
+  const sendTick = async (modeText) => {
     if (!autoSendSchedules.has(key)) {
       return;
     }
@@ -583,28 +588,60 @@ function scheduleAutoSendItem(userId, autoConfig) {
       schedule.running = true;
       try {
         await sendAutoTelegramMessage(userId, autoConfig);
-        const modeText = autoConfig.scheduled_enabled ? `定时 ${autoConfig.scheduled_time}` : `间隔 ${autoConfig.interval_seconds} 秒`;
         console.log(`✅ [自动发送] 已发送配置 ${autoConfig.id} 到 ${autoConfig.target} (${modeText}, userId: ${userId})`);
       } catch (error) {
         console.error(`❌ [自动发送] 发送失败 (userId: ${userId}, target: ${autoConfig.target}):`, error.message);
       } finally {
         schedule.running = false;
       }
-    }
-
-    if (autoSendSchedules.has(key)) {
-      const nextDelayMs = getAutoSendNextDelayMs(autoConfig);
-      if (nextDelayMs === null) {
-        console.warn(`⚠️  [自动发送] 配置 ${autoConfig.id} 定时发送时间无效，停止调度 (userId: ${userId})`);
-        autoSendSchedules.delete(key);
-        return;
-      }
-      schedule.timeout = setTimeout(tick, nextDelayMs);
+    } else {
+      console.warn(`⚠️  [自动发送] 配置 ${autoConfig.id} 上一次发送尚未完成，跳过本次触发 (${modeText}, userId: ${userId})`);
     }
   };
 
+  const scheduleIntervalTick = () => {
+    if (autoSendSchedules.has(key)) {
+      const intervalMs = Math.max(1, Number(autoConfig.interval_seconds) || 60) * 1000;
+      addTimeout(async () => {
+        await sendTick(`循环间隔 ${autoConfig.interval_seconds} 秒`);
+        scheduleIntervalTick();
+      }, intervalMs);
+    }
+  };
+
+  const scheduleDailyTick = () => {
+    const nextDelayMs = getNextDailyDelayMs(autoConfig.scheduled_time);
+    if (nextDelayMs === null) {
+      console.warn(`⚠️  [自动发送] 配置 ${autoConfig.id} 已启用定时发送，但发送时间无效，跳过定时触发 (userId: ${userId})`);
+      return;
+    }
+
+    addTimeout(async () => {
+      await sendTick(`定时 ${autoConfig.scheduled_time}`);
+      if (autoSendSchedules.has(key)) {
+        scheduleDailyTick();
+      }
+    }, nextDelayMs);
+  };
+
   autoSendSchedules.set(key, schedule);
-  schedule.timeout = setTimeout(tick, initialDelayMs);
+
+  let triggerCount = 0;
+  if (autoConfig.interval_enabled) {
+    scheduleIntervalTick();
+    triggerCount += 1;
+  }
+  if (autoConfig.scheduled_enabled) {
+    scheduleDailyTick();
+    triggerCount += 1;
+  }
+
+  if (triggerCount === 0) {
+    autoSendSchedules.delete(key);
+    console.warn(`⚠️  [自动发送] 配置 ${autoConfig.id} 已启用但未开启循环间隔或定时发送，已跳过 (userId: ${userId})`);
+  }
+
+  return triggerCount;
 }
 
 async function refreshAutoSendScheduler() {
@@ -620,7 +657,8 @@ async function refreshAutoSendScheduler() {
       .select('userId auto_send_configs')
       .lean();
 
-    let scheduledCount = 0;
+    let configCount = 0;
+    let triggerCount = 0;
     for (const cfg of configs) {
       const userId = cfg.userId?.toString();
       if (!userId) continue;
@@ -630,12 +668,15 @@ async function refreshAutoSendScheduler() {
 
       for (const autoConfig of sanitizeAutoSendConfigs(cfg.auto_send_configs)) {
         if (!autoConfig.enabled || !autoConfig.target || !autoConfig.message) continue;
-        scheduleAutoSendItem(userId, autoConfig);
-        scheduledCount += 1;
+        const triggers = scheduleAutoSendItem(userId, autoConfig) || 0;
+        if (triggers > 0) {
+          configCount += 1;
+          triggerCount += triggers;
+        }
       }
     }
 
-    console.log(`✅ [自动发送] 调度器已刷新，启用配置数: ${scheduledCount}`);
+    console.log(`✅ [自动发送] 调度器已刷新，启用配置数: ${configCount}，启用触发器数: ${triggerCount}`);
   } catch (error) {
     console.error('❌ [自动发送] 刷新调度器失败:', error.message);
   }
@@ -5065,6 +5106,7 @@ async function getOrCreateTempLoginContainer(userId, configHostPath, sessionHost
     name: containerName,
     Cmd: ['sleep', '3600'], // 让容器保持运行（1小时）
     Env: [
+      'TZ=Asia/Shanghai',
       'PYTHONUNBUFFERED=1'
     ],
     HostConfig: {
@@ -5657,7 +5699,7 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
           Cmd: execArgs,
           AttachStdout: true,
           AttachStderr: true,
-          Env: ['PYTHONUNBUFFERED=1']
+          Env: ['TZ=Asia/Shanghai', 'PYTHONUNBUFFERED=1']
         });
         
         // 启动 exec 并获取输出
@@ -5755,6 +5797,7 @@ async function execLoginScriptWithDockerRun(command, args, userId = null, reuseC
       Tty: false,
       OpenStdin: false,
       Env: [
+        'TZ=Asia/Shanghai',
         'PYTHONUNBUFFERED=1'  // 禁用 Python 输出缓冲
       ],
       HostConfig: {
@@ -6797,6 +6840,7 @@ async function startMultiLoginContainer(userId) {
     //   - monitor.py 会自动使用 user_{USER_ID} 作为 session 文件名
     //   - 实际文件：data/session/user_${userId}.session
     const envVars = {
+      TZ: process.env.TZ || 'Asia/Shanghai',
       MONGO_URL: process.env.MONGO_URL || 'mongodb://mongo:27017/tglogs',
       API_URL: process.env.API_URL || 'http://api:3000',
       CONFIG_PATH: `/app/config_${userId}.json`,
@@ -7072,24 +7116,17 @@ async function startMultiLoginContainer(userId) {
       if (!needRecreate && containerInfo.Config && containerInfo.Config.Env) {
         const envVars = containerInfo.Config.Env;
         const sessionPrefixEnv = envVars.find(env => env.startsWith('SESSION_PREFIX='));
-        if (sessionPrefixEnv) {
-          const currentSessionPrefix = sessionPrefixEnv.split('=')[1];
+        const tzEnv = envVars.find(env => env.startsWith('TZ='));
+        const currentSessionPrefix = sessionPrefixEnv ? sessionPrefixEnv.split('=')[1] : '';
+        const currentTz = tzEnv ? tzEnv.split('=').slice(1).join('=') : '';
+        if (currentSessionPrefix !== 'user' || currentTz !== 'Asia/Shanghai') {
           if (currentSessionPrefix !== 'user') {
-            console.warn(`⚠️  [多开登录] 容器使用错误的 SESSION_PREFIX: ${currentSessionPrefix}，应该是 "user"`);
-            console.log(`🗑️  [多开登录] 将删除旧容器并重新创建以修复环境变量...`);
-            try {
-              if (containerInfo.State.Running) {
-                await container.stop();
-              }
-              await container.remove();
-              needRecreate = true;
-              container = null;
-            } catch (removeError) {
-              console.warn(`⚠️  [多开登录] 删除旧容器失败: ${removeError.message}`);
-            }
+            console.warn(`⚠️  [多开登录] 容器使用错误的 SESSION_PREFIX: ${currentSessionPrefix || '(缺失)'}，应该是 "user"`);
           }
-        } else {
-          console.warn(`⚠️  [多开登录] 容器缺少 SESSION_PREFIX 环境变量，将重新创建...`);
+          if (currentTz !== 'Asia/Shanghai') {
+            console.warn(`⚠️  [多开登录] 容器使用错误的 TZ: ${currentTz || '(缺失)'}，应该是 "Asia/Shanghai"`);
+          }
+          console.log(`🗑️  [多开登录] 将删除旧容器并重新创建以修复环境变量...`);
           try {
             if (containerInfo.State.Running) {
               await container.stop();
@@ -7100,6 +7137,8 @@ async function startMultiLoginContainer(userId) {
           } catch (removeError) {
             console.warn(`⚠️  [多开登录] 删除旧容器失败: ${removeError.message}`);
           }
+        } else {
+          console.log(`✅ [多开登录] 容器环境变量正确: SESSION_PREFIX=user, TZ=Asia/Shanghai`);
         }
       }
       
